@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import * as api from "../api";
 import type { ChannelInfo, ChatMessage, GrantActionRef, Organization, TeammateInfo } from "../types";
 import { Icon } from "../components/Icon";
@@ -6,6 +6,7 @@ import { Avatar } from "../components/Avatar";
 import { chips, fitLabel, headline, type BidPayload } from "../decision";
 import { openExternal } from "../external";
 import { roleAtLeast } from "../roles";
+import { pendingGcpWork } from "../gcp-activity";
 
 export function agentColor(key: string): string {
   const hue = [...key].reduce((n, c) => (n * 31 + c.charCodeAt(0)) % 360, 7);
@@ -17,6 +18,7 @@ export function splitAgent(teammates: Map<string, TeammateInfo>, agentKey: strin
   const mate = teammates.get(agentKey);
   return mate ? { name: mate.name, role: mate.role } : { name: agentKey, role: "" };
 }
+
 
 export function ChatView({
   org,
@@ -48,6 +50,7 @@ export function ChatView({
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const canPost = roleAtLeast(org.role, "member");
+  const gcpWorking = useMemo(() => pendingGcpWork(messages), [messages]);
 
   // Agent-initiated panel opening (spec §2): messages that arrive via the SSE
   // refresh — not just direct send responses — can carry openWorkspace.
@@ -191,6 +194,12 @@ export function ChatView({
         >
           ↓ Latest
         </button>
+      )}
+      {!working && gcpWorking && (
+        <div className="working-strip" aria-live="polite">
+          <span className="presence working" style={{ position: "static" }} aria-hidden="true" />
+          {gcpWorking.label}
+        </div>
       )}
       {working && (
         <div className={`working-strip${working.waiting ? " waiting" : ""}`} aria-live="polite">

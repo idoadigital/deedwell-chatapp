@@ -314,6 +314,10 @@ export interface ChatMessage {
     goToChannelId?: string;
     huddleId?: string;
     huddleEvent?: string;
+    /** Grant-platform tasks started by this turn (working indicator). */
+    gcpTasks?: Array<{ task_id: string; task_type: string; status: string }>;
+    /** Bridge milestone for a finished platform task (clears the indicator). */
+    gcpTaskId?: string;
   };
   created_at: string;
 }
