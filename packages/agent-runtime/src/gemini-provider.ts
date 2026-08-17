@@ -122,7 +122,7 @@ export class GeminiProvider implements ModelProvider {
     this.model = opts.model ?? process.env.GEMINI_MODEL ?? "gemini-2.5-flash";
   }
 
-  async complete(request: ModelRequest, retried = false): Promise<ModelResponse> {
+  async complete(request: ModelRequest, retried = false, rateLimitAttempt = 0): Promise<ModelResponse> {
     const requestId = Math.random().toString(36).slice(2, 10);
     const started = Date.now();
     const user = [
@@ -155,7 +155,24 @@ export class GeminiProvider implements ModelProvider {
     );
     if (res.status === 401 && !retried) {
       this.tokens.invalidate();
-      return await this.complete(request, true);
+      return await this.complete(request, true, rateLimitAttempt);
+    }
+    // Vertex's per-minute quota is easy to hit under normal concurrent load
+    // (research worker + local chat engine sharing the same project/model) —
+    // this is expected, transient pressure, not a real failure. Back off and
+    // retry rather than surfacing it as a hard error on the first burst.
+    const RATE_LIMIT_MAX_RETRIES = 4;
+    if ((res.status === 429 || res.status === 503) && rateLimitAttempt < RATE_LIMIT_MAX_RETRIES) {
+      const retryAfterHeader = Number(res.headers.get("retry-after"));
+      const backoffMs = Number.isFinite(retryAfterHeader) && retryAfterHeader > 0
+        ? retryAfterHeader * 1000
+        : Math.min(1000 * 2 ** rateLimitAttempt, 20_000) + Math.floor(Math.random() * 500);
+      console.log(JSON.stringify({
+        at: "model_request_backoff", requestId, provider: "gemini", model: this.model,
+        status: res.status, attempt: rateLimitAttempt + 1, backoffMs,
+      }));
+      await new Promise((resolve) => setTimeout(resolve, backoffMs));
+      return await this.complete(request, retried, rateLimitAttempt + 1);
     }
     if (!res.ok) {
       const body = await res.text().catch(() => "");

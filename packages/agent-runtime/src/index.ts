@@ -140,7 +140,15 @@ export async function runAgentTask<T>(
   let lastError = "";
   const maxAttempts = agent.maxOutputRetries + 1;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    const response = await provider.complete(request);
+    // A blind retry sends the identical prompt again — if the model is even
+    // slightly deterministic (as most are at low temperature), every attempt
+    // fails the same way for the same reason. From the second attempt on,
+    // tell it exactly what was wrong with its own last answer.
+    const attemptRequest = attempt === 1 ? request : {
+      ...request,
+      task: `${request.task}\n\nYour previous attempt did not satisfy the required output contract: ${lastError}\nCorrect this and return a complete, valid response — do not repeat the same mistake.`,
+    };
+    const response = await provider.complete(attemptRequest);
     tokens += response.tokensEstimated;
     try {
       const parsed = schema.parse(JSON.parse(response.text));
