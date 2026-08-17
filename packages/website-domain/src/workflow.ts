@@ -13,7 +13,7 @@ import {
 } from "@deedwell/schemas";
 import { digitalStrategist, websiteCopywriter, websiteDeveloper } from "./agents.js";
 import { renderSite } from "./renderer.js";
-import { runSiteChecks } from "./checks.js";
+import { blockingFailures, runSiteChecks } from "./checks.js";
 
 export const WEBSITE_BUILD_WORKFLOW = "website-build";
 export const WEBSITE_UPDATE_WORKFLOW = "website-update";
@@ -64,12 +64,21 @@ async function getSite(ctx: Ctx, siteId: string) {
   };
 }
 
+/** A site must have a root page: if no page is slugged "home", the first
+ *  page becomes it — deterministic, applied on both read and write so page
+ *  sets written before this rule self-heal. */
+function normalizeHome(pages: SitePage[]): SitePage[] {
+  return pages.some((p) => p.slug === "home")
+    ? pages
+    : pages.map((p, i) => (i === 0 ? { ...p, slug: "home" } : p));
+}
+
 async function loadPages(ctx: Ctx, siteId: string): Promise<SitePage[]> {
   const { rows } = await ctx.client.query(
     "SELECT slug, title, blocks, seo FROM site_pages WHERE site_id = $1 ORDER BY order_idx",
     [siteId]
   );
-  return rows.map((r) =>
+  const pages = rows.map((r) =>
     SitePage.parse({
       slug: r.slug,
       title: r.title,
@@ -77,10 +86,12 @@ async function loadPages(ctx: Ctx, siteId: string): Promise<SitePage[]> {
       seoDescription: r.seo?.description ?? "",
     })
   );
+  return normalizeHome(pages);
 }
 
 /** Replace the site's page set (the CMS working copy) with `pages`. */
-async function replacePages(ctx: Ctx, siteId: string, pages: SitePage[]): Promise<void> {
+async function replacePages(ctx: Ctx, siteId: string, rawPages: SitePage[]): Promise<void> {
+  const pages = normalizeHome(rawPages);
   const keep = pages.map((p) => p.slug);
   await ctx.client.query(
     "DELETE FROM site_pages WHERE site_id = $1 AND NOT (slug = ANY($2))",
@@ -138,13 +149,63 @@ async function buildRelease(ctx: Ctx, siteId: string): Promise<StepResult> {
   );
 
   const failures = checks.filter((c) => !c.pass);
+  const blocking = blockingFailures(checks);
+  const describe = (f: (typeof checks)[number]) => `${f.name}${f.page ? ` (${f.page})` : ""}: ${f.detail}`;
+
+  // Versioned test report artifact (spec §8/§10): the QA record of exactly
+  // what was validated on this release, kept alongside every other artifact.
+  const { rows: existingReport } = await ctx.client.query(
+    "SELECT id, current_version FROM artifacts WHERE run_id = $1 AND type = 'website_test_report'",
+    [ctx.runId]
+  );
+  const reportId = existingReport[0]?.id ?? uuidv7();
+  const reportVersion = (existingReport[0]?.current_version ?? 0) + 1;
+  if (!existingReport[0]) {
+    await ctx.client.query(
+      `INSERT INTO artifacts (id, tenant_id, project_id, run_id, type, title, current_version)
+       VALUES ($1,$2,$3,$4,'website_test_report',$5,0)`,
+      [reportId, ctx.tenantId, ctx.projectId, ctx.runId, `Site test report — ${site.name}`]
+    );
+  }
+  await ctx.client.query(
+    `INSERT INTO artifact_versions (id, tenant_id, artifact_id, version, content,
+       created_by_kind, created_by_agent, change_summary)
+     VALUES ($1,$2,$3,$4,$5,'agent','website.qa_deployment',$6)`,
+    [uuidv7(), ctx.tenantId, reportId, reportVersion, JSON.stringify({
+      releaseId, version, checks,
+      passed: checks.length - failures.length, failed: failures.length, blocking: blocking.length,
+    }), `v${version}: ${checks.length - failures.length}/${checks.length} checks passed, ${blocking.length} blocking failure(s)`]
+  );
+  await ctx.client.query("UPDATE artifacts SET current_version = $2 WHERE id = $1", [reportId, reportVersion]);
+
+  if (blocking.length) {
+    // A broken site must never reach the publish gate (spec §8). The preview
+    // stays inspectable; the run ends with the honest failure list.
+    await audit(ctx.client, {
+      tenantId: ctx.tenantId, actorAgent: "website.qa_deployment",
+      action: "site.release_failed_validation", entityType: "site_release", entityId: releaseId,
+      metadata: { version, blocking: blocking.length, failedChecks: failures.length },
+    });
+    return {
+      state: {
+        ...ctx.state, releaseId, version, published: false,
+        failedChecks: failures.length,
+        blockingChecks: blocking.map(describe),
+        testReportArtifactId: reportId,
+        previewPath: `/preview/${site.slug}/`,
+      },
+      complete: true,
+    };
+  }
+
   const approvalId = uuidv7();
   await ctx.client.query(
     `INSERT INTO approvals (id, tenant_id, run_id, kind, payload) VALUES ($1,$2,$3,'publish_site',$4)`,
     [approvalId, ctx.tenantId, ctx.runId, JSON.stringify({
       siteId, releaseId, version,
       previewPath: `/preview/${site.slug}/`,
-      warnings: failures.map((f) => `${f.name}${f.page ? ` (${f.page})` : ""}: ${f.detail}`),
+      warnings: failures.map(describe),
+      testReportArtifactId: reportId,
     })]
   );
   await audit(ctx.client, {
@@ -153,7 +214,7 @@ async function buildRelease(ctx: Ctx, siteId: string): Promise<StepResult> {
     metadata: { version, failedChecks: failures.length },
   });
   return {
-    state: { ...ctx.state, releaseId, version, failedChecks: failures.length },
+    state: { ...ctx.state, releaseId, version, failedChecks: failures.length, testReportArtifactId: reportId },
     wait: { kind: "approval", payload: { approvalId, kind: "publish_site" }, resumeStep: "publish_gate" },
   };
 }
@@ -364,7 +425,22 @@ export function buildWebsiteUpdateWorkflow(): WorkflowDefinition<WebsiteServices
             complete: true,
           };
         }
-        await replacePages(ctx, input.siteId, result.output.pages);
+        // Destructive-output guard: a patch that silently drops pages the
+        // user never asked to remove must not delete them — small models
+        // sometimes return only the page they edited. Removals are honored
+        // only when the instruction actually asks for one.
+        const wantsRemoval = /\b(remove|delete|drop|take (down|off))\b/i.test(input.instruction);
+        const returnedSlugs = new Set(result.output.pages.map((p) => p.slug));
+        const preserved = wantsRemoval ? [] : pages.filter((p) => !returnedSlugs.has(p.slug));
+        const mergedPages = [...result.output.pages, ...preserved];
+        if (preserved.length) {
+          await audit(ctx.client, {
+            tenantId: ctx.tenantId, actorAgent: websiteDeveloper.agentKey,
+            action: "site.patch_pages_preserved", entityType: "site", entityId: input.siteId,
+            metadata: { preserved: preserved.map((p) => p.slug), instruction: input.instruction },
+          });
+        }
+        await replacePages(ctx, input.siteId, mergedPages);
         await audit(ctx.client, {
           tenantId: ctx.tenantId, actorAgent: websiteDeveloper.agentKey,
           action: "site.pages_updated", entityType: "site", entityId: input.siteId,

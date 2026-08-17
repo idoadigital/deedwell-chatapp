@@ -20,6 +20,7 @@ const TYPE_LABEL: Record<string, string> = {
   review_report: "Review",
   compliance_report: "Checks",
   website_brief: "Brief",
+  website_test_report: "Test report",
 };
 
 export function ArtifactPanel({ org, detail }: { org: Organization; detail: RunDetail | null }) {
@@ -163,6 +164,9 @@ export function ArtifactPanel({ org, detail }: { org: Organization; detail: RunD
             )}
             {artifact.artifact.type === "compliance_report" && (
               <ChecksView content={selectedVersion.content} />
+            )}
+            {artifact.artifact.type === "website_test_report" && (
+              <TestReportView content={selectedVersion.content} />
             )}
             {artifact.artifact.type === "website_brief" && (
               <BriefView content={selectedVersion.content} />
@@ -421,6 +425,35 @@ function ChecksView({ content }: { content: Record<string, unknown> }) {
         <div key={i} className={`claim ${c.pass ? "ok" : "flagged"}`}>
           <span className="support">{c.pass ? "pass" : "attention"}</span>
           <div>{c.name}</div>
+          <div className="faint">{c.detail}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** Website QA record (spec §8): every check the release ran, with severity —
+ *  blocking failures are why an unpublishable build stayed unpublished. */
+function TestReportView({ content }: { content: Record<string, unknown> }) {
+  const checks = (content.checks ?? []) as Array<{
+    name: string; page: string | null; pass: boolean; detail: string; severity?: string;
+  }>;
+  const blocking = checks.filter((c) => !c.pass && c.severity === "blocking");
+  const advisory = checks.filter((c) => !c.pass && c.severity !== "blocking");
+  return (
+    <div className="prose">
+      <p style={{ marginTop: 0 }}>
+        <strong>{checks.filter((c) => c.pass).length}/{checks.length}</strong> checks passed
+        {blocking.length ? <> · <span className="pill red">{blocking.length} blocking</span></> : null}
+        {advisory.length ? <> · <span className="pill blue">{advisory.length} advisory</span></> : null}
+      </p>
+      {blocking.length > 0 && (
+        <p className="error-text">These failures prevented publishing — the release never reached the approval gate.</p>
+      )}
+      {[...blocking, ...advisory, ...checks.filter((c) => c.pass)].map((c, i) => (
+        <div key={i} className={`claim ${c.pass ? "ok" : "flagged"}`}>
+          <span className="support">{c.pass ? "pass" : c.severity === "blocking" ? "blocking" : "advisory"}</span>
+          <div>{c.name}{c.page ? <span className="faint"> — {c.page}</span> : null}</div>
           <div className="faint">{c.detail}</div>
         </div>
       ))}

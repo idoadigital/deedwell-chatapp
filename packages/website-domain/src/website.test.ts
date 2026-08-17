@@ -3,7 +3,7 @@ import type { SitePage } from "@deedwell/schemas";
 import { MockModelProvider } from "@deedwell/agent-runtime";
 import { SitePatchOutput } from "@deedwell/schemas";
 import { renderSite } from "./renderer.js";
-import { runSiteChecks } from "./checks.js";
+import { blockingFailures, runSiteChecks } from "./checks.js";
 
 const PAGES: SitePage[] = [
   {
@@ -100,6 +100,48 @@ describe("deterministic SEO/accessibility checks", () => {
     const files = renderSite({ siteName: "X", slug: "x", pages, theme: THEME });
     const checks = runSiteChecks(files, pages);
     expect(checks.find((c) => c.name === "Internal links resolve")?.pass).toBe(false);
+  });
+
+  it("broken links, placeholders, and missing routes are BLOCKING failures", () => {
+    const pages: SitePage[] = [
+      {
+        slug: "home", title: "Home", seoDescription: "d",
+        blocks: [
+          { kind: "cta", heading: "Go", buttonText: "Missing", href: "/no-such-page/" },
+          { kind: "text", heading: null, body: "[Placeholder: add your mission]" },
+        ],
+      },
+    ];
+    const files = renderSite({ siteName: "X", slug: "x", pages, theme: THEME });
+    const blocking = blockingFailures(runSiteChecks(files, pages));
+    expect(blocking.map((c) => c.name)).toContain("Internal links resolve");
+    expect(blocking.map((c) => c.name)).toContain("No placeholder content remaining");
+    // A page set claiming a page that was never rendered must block too.
+    const claimed = [...pages, { slug: "ghost", title: "Ghost", seoDescription: "d", blocks: [] as SitePage["blocks"] }];
+    const blocking2 = blockingFailures(runSiteChecks(files, claimed));
+    expect(blocking2.some((c) => c.name === "Page route rendered" && c.page === "/ghost/")).toBe(true);
+  });
+
+  it("normalizes model-written internal links to trailing-slash form", () => {
+    const pages: SitePage[] = [
+      { slug: "home", title: "Home", seoDescription: "d", blocks: [
+        { kind: "cta", heading: "Go", buttonText: "About", href: "/about-us" }, // no trailing slash
+      ] },
+      { slug: "about-us", title: "About", seoDescription: "d", blocks: [
+        { kind: "text", heading: null, body: "hello" },
+      ] },
+    ];
+    const files = renderSite({ siteName: "X", slug: "x", pages, theme: THEME });
+    expect(files.find((f) => f.path === "index.html")!.content).toContain('href="/about-us/"');
+    expect(blockingFailures(runSiteChecks(files, pages))).toHaveLength(0);
+  });
+
+  it("advisory failures (meta description) do not block", () => {
+    const files = renderSite({ siteName: "Test Org", slug: "test", pages: PAGES, theme: THEME });
+    const checks = runSiteChecks(files, PAGES).map((c) =>
+      c.name === "Meta description present" ? { ...c, pass: false } : c
+    );
+    expect(blockingFailures(checks)).toHaveLength(0);
   });
 });
 

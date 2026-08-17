@@ -35,5 +35,7 @@ export {
   buildGrantSliceWorkflow,
   GRANT_SLICE_WORKFLOW,
   type GrantServices,
+  type ResearchPageResult,
+  type ResearchService,
 } from "./workflow.js";
 export { extractDocumentText, stripHtml } from "./documents.js";

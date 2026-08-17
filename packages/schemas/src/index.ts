@@ -227,8 +227,25 @@ export const PassportField = z.object({
   section: z.string(),
   required: z.boolean(),
   hint: z.string().optional(),
+  /** Form input type for structured info requests (default: text). */
+  inputType: z.enum(["text", "textarea", "number", "date", "boolean", "choice"]).optional(),
+  choices: z.array(z.string()).optional(),
 });
 export type PassportField = z.infer<typeof PassportField>;
+
+/** One field of a structured information request shown to the user as a real
+ *  form (message metadata.infoRequest). */
+export const InfoRequestField = z.object({
+  key: z.string(),
+  label: z.string(),
+  inputType: z.enum(["text", "textarea", "number", "date", "boolean", "choice"]),
+  choices: z.array(z.string()).optional(),
+  help: z.string(),
+  reason: z.string(),
+  required: z.boolean(),
+  group: z.string(),
+});
+export type InfoRequestField = z.infer<typeof InfoRequestField>;
 
 // ---------------------------------------------------------------------------
 // Phase 3 — Eligibility engine (deterministic; the model never decides)
@@ -452,7 +469,9 @@ export const SitePage = z.object({
 });
 export type SitePage = z.infer<typeof SitePage>;
 
-export const SITE_PALETTES = ["forest", "ocean", "slate", "sunrise"] as const;
+export const SITE_PALETTES = [
+  "forest", "ocean", "slate", "sunrise", "plum", "meadow", "harvest", "midnight",
+] as const;
 
 export const SiteTheme = z.object({
   palette: z.enum(SITE_PALETTES),
@@ -489,13 +508,20 @@ export const SitePatchOutput = z.object({
 });
 export type SitePatchOutput = z.infer<typeof SitePatchOutput>;
 
+/** First-path segments the site router owns; never valid site slugs
+ *  (mirrored in apps/site-router — sites are served at <base>/<slug>/). */
+export const RESERVED_SITE_SLUGS = new Set([
+  "live", "preview", "forms", "healthz", "thanks", "api", "assets", "static",
+]);
+
 export const CreateWebsiteInput = z.object({
   siteName: z.string().min(2).max(120),
   slug: z
     .string()
     .min(3)
     .max(50)
-    .regex(/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/),
+    .regex(/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/)
+    .refine((s) => !RESERVED_SITE_SLUGS.has(s), { message: "This name is reserved" }),
   donateUrl: z.string().url().max(500).nullable().optional(),
 });
 
@@ -536,6 +562,8 @@ export type IntentOutput = z.infer<typeof IntentOutput>;
 
 export const PostMessageInput = z.object({
   body: z.string().min(1).max(4000),
+  /** IANA timezone of the sending client (e.g. "Europe/Berlin"). */
+  timezone: z.string().max(64).nullable().optional(),
   fileId: z.string().uuid().nullable().optional(),
   /** Client-generated idempotency key: resends with the same key are no-ops. */
   clientKey: z.string().max(64).nullable().optional(),

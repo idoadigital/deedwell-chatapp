@@ -36,7 +36,7 @@ export function ChatView({
   refresh: () => void;
   onOpenChannel: (channelId: string) => void;
   onOpenWork: () => void;
-  working?: { runId: string; label: string } | null;
+  working?: { runId: string; label: string; waiting?: boolean } | null;
   onCancelRun?: (runId: string) => void;
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -49,12 +49,27 @@ export function ChatView({
   const fileRef = useRef<HTMLInputElement>(null);
   const canPost = roleAtLeast(org.role, "member");
 
+  // Agent-initiated panel opening (spec §2): messages that arrive via the SSE
+  // refresh — not just direct send responses — can carry openWorkspace.
+  const lastSeenRef = useRef<string | null>(null);
+  useEffect(() => {
+    lastSeenRef.current = null; // channel switch: never auto-open on history
+  }, [channel.id]);
   useEffect(() => {
     let cancelled = false;
     api
       .listMessages(org.id, channel.id)
       .then(({ messages }) => {
-        if (!cancelled) setMessages(messages);
+        if (cancelled) return;
+        const prevSeen = lastSeenRef.current;
+        if (prevSeen !== null) {
+          const fresh = messages.filter(
+            (m) => m.created_at > prevSeen && m.author_kind === "agent" && m.metadata?.openWorkspace
+          );
+          if (fresh.length) onOpenWork();
+        }
+        lastSeenRef.current = messages.at(-1)?.created_at ?? null;
+        setMessages(messages);
       })
       .catch((err) => setError(err instanceof Error ? err.message : "Failed to load messages"));
     return () => {
@@ -178,10 +193,12 @@ export function ChatView({
         </button>
       )}
       {working && (
-        <div className="working-strip" aria-live="polite">
-          <span className="presence working" style={{ position: "static" }} aria-hidden="true" />
+        <div className={`working-strip${working.waiting ? " waiting" : ""}`} aria-live="polite">
+          {/* Pulse only while a backend step is genuinely running — a run
+              waiting on the user shows a static marker (spec §9). */}
+          <span className={`presence ${working.waiting ? "" : "working"}`} style={{ position: "static" }} aria-hidden="true" />
           {working.label}
-          {onCancelRun && (
+          {onCancelRun && !working.waiting && (
             <button className="ghost" style={{ minHeight: 0, padding: "2px 10px", marginLeft: "auto" }}
               onClick={() => onCancelRun(working.runId)}>
               Cancel
@@ -348,7 +365,7 @@ function Message({
         )}
 
         {meta.infoRequest && meta.infoRequest.length > 0 && (
-          <InfoQuickForm keys={meta.infoRequest} onSubmit={onQuickSend} />
+          <InfoQuickForm request={meta.infoRequest} onSubmit={onQuickSend} />
         )}
 
         {meta.approvalId && meta.approvalKind === "bid_decision" && (
@@ -383,31 +400,87 @@ function Message({
   );
 }
 
-function InfoQuickForm({ keys, onSubmit }: { keys: string[]; onSubmit: (body: string) => void }) {
+interface InfoField {
+  key: string;
+  label: string;
+  inputType: "text" | "textarea" | "number" | "date" | "boolean" | "choice";
+  choices?: string[];
+  help: string;
+  reason: string;
+  required: boolean;
+  group: string;
+}
+
+/** Structured information request (spec §6): typed inputs with guidance,
+ *  grouped, partial submission allowed — the run resumes as facts arrive. */
+function InfoQuickForm({ request, onSubmit }: {
+  request: Array<InfoField | string>;
+  onSubmit: (body: string) => void;
+}) {
   const [values, setValues] = useState<Record<string, string>>({});
   const [sent, setSent] = useState(false);
   if (sent) return null;
+  // Back-compat: pre-structured messages carried bare fact keys.
+  const fields: InfoField[] = request.map((f) =>
+    typeof f === "string"
+      ? { key: f, label: f.replace(/_/g, " "), inputType: "text", help: "", reason: "", required: true, group: "Details" }
+      : f
+  );
+  const groups = [...new Set(fields.map((f) => f.group))];
+  const filled = fields.filter((f) => values[f.key]?.trim());
+  const set = (key: string, value: string) => setValues((v) => ({ ...v, [key]: value }));
   return (
     <form
-      className="chat-card"
+      className="chat-card info-form"
       onSubmit={(e) => {
         e.preventDefault();
-        const lines = keys
-          .filter((k) => values[k]?.trim())
-          .map((k) => `${k}: ${values[k]!.trim()}`);
+        const lines = filled.map((f) => `${f.key}: ${values[f.key]!.trim()}`);
         if (lines.length) {
           onSubmit(lines.join("\n"));
           setSent(true);
         }
       }}
     >
-      {keys.map((k) => (
-        <div className="field" key={k} style={{ marginBottom: 8 }}>
-          <label htmlFor={`iq-${k}`}>{k.replace(/_/g, " ")}</label>
-          <input id={`iq-${k}`} value={values[k] ?? ""} onChange={(e) => setValues((v) => ({ ...v, [k]: e.target.value }))} />
+      {groups.map((group) => (
+        <div key={group}>
+          {groups.length > 1 && <div className="info-group">{group}</div>}
+          {fields.filter((f) => f.group === group).map((f) => (
+            <div className="field" key={f.key} style={{ marginBottom: 10 }}>
+              <label htmlFor={`iq-${f.key}`}>
+                {f.label}
+                {!f.required && <span className="faint"> (optional)</span>}
+              </label>
+              {f.inputType === "textarea" ? (
+                <textarea id={`iq-${f.key}`} rows={3} value={values[f.key] ?? ""}
+                  onChange={(e) => set(f.key, e.target.value)} />
+              ) : f.inputType === "choice" ? (
+                <select id={`iq-${f.key}`} value={values[f.key] ?? ""} onChange={(e) => set(f.key, e.target.value)}>
+                  <option value="">Choose…</option>
+                  {(f.choices ?? []).map((c) => <option key={c} value={c}>{c}</option>)}
+                </select>
+              ) : f.inputType === "boolean" ? (
+                <select id={`iq-${f.key}`} value={values[f.key] ?? ""} onChange={(e) => set(f.key, e.target.value)}>
+                  <option value="">Choose…</option>
+                  <option value="yes">Yes</option>
+                  <option value="no">No</option>
+                </select>
+              ) : (
+                <input id={`iq-${f.key}`} type={f.inputType === "number" ? "number" : f.inputType === "date" ? "date" : "text"}
+                  value={values[f.key] ?? ""} onChange={(e) => set(f.key, e.target.value)} />
+              )}
+              {f.help && <p className="faint mt" style={{ margin: "3px 0 0" }}>{f.help}</p>}
+            </div>
+          ))}
         </div>
       ))}
-      <button className="primary">Send answers</button>
+      <button className="primary" disabled={filled.length === 0}>
+        {filled.length && filled.length < fields.length
+          ? `Send ${filled.length} of ${fields.length} answers`
+          : "Send answers"}
+      </button>
+      <p className="faint mt" style={{ marginTop: 6 }}>
+        Partial answers are fine — the team resumes as facts arrive, and answers are saved as user-certified evidence.
+      </p>
     </form>
   );
 }

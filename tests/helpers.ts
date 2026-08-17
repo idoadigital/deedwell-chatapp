@@ -18,12 +18,14 @@ export interface TestEnv {
   close(): Promise<void>;
 }
 
-export async function createTestEnv(): Promise<TestEnv> {
+export async function createTestEnv(
+  depOverrides: Partial<Parameters<typeof createDeps>[0]> = {}
+): Promise<TestEnv> {
   const adminPool = createAdminPool();
   await migrate(adminPool);
   await adminPool.query(`TRUNCATE ${ALL_TABLES.join(", ")} CASCADE`);
   // Retries should be instant in tests.
-  const deps = await createDeps({ backoffMs: () => 0 });
+  const deps = await createDeps({ backoffMs: () => 0, ...depOverrides });
   const app = buildApp(deps);
   await app.ready();
   return {

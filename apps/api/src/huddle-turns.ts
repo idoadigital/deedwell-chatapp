@@ -201,14 +201,20 @@ export interface RoutingDecision {
   responseMode: "single_agent" | "primary_plus_followup" | "clarification" | "no_response";
 }
 
+// The moderator (Maya) is deliberately absent generic words like "help" and
+// "plan": she is already the low-confidence fallback, and generic words let
+// her tie-steal turns that belong to a specialist.
 const EXPERTISE: Record<string, string[]> = {
-  "core.executive_assistant": ["help", "plan", "coordinate", "status", "next", "team"],
+  "core.executive_assistant": ["status", "coordinate", "summary", "team"],
   "grant.program_planner": ["plan", "timeline", "task", "project", "manage", "deadline"],
   "grant.funding_strategist": ["funding", "strategy", "pursue", "bid", "worth", "fit"],
   "grant.opportunity_researcher": ["find", "search", "grant", "opportunity", "funder", "foundation"],
   "grant.eligibility_analyst": ["eligible", "eligibility", "qualify", "requirements", "criteria"],
   "grant.writer": ["write", "draft", "narrative", "section", "proposal", "statement"],
-  "grant.budget_specialist": ["budget", "cost", "money", "expense", "line item", "financial"],
+  "grant.budget_specialist": [
+    "budget", "cost", "price", "spend", "expense", "money", "financial", "finance",
+    "salary", "salaries", "line item", "indirect", "how much", "afford",
+  ],
   "grant.requirements_analyst": ["compliance", "requirement", "checklist", "attachment", "format"],
   "website.digital_strategist": ["website", "site", "audience", "brief", "goal", "sitemap"],
   "website.seo_accessibility_reviewer": ["design", "accessibility", "seo", "color", "visual", "layout"],
@@ -216,6 +222,12 @@ const EXPERTISE: Record<string, string[]> = {
   "website.copywriter": ["copy", "text", "tagline", "wording", "content", "headline"],
   "website.qa_deployment": ["deploy", "deployment", "publish", "release", "live", "rollback", "infrastructure"],
 };
+
+// Word-boundary prefix match: "budget" hits "budgets"/"budgeting" but "cost"
+// never hits inside an unrelated word.
+const EXPERTISE_PATTERNS: Array<[string, RegExp[]]> = Object.entries(EXPERTISE).map(
+  ([key, words]) => [key, words.map((w) => new RegExp(`\\b${w}`))]
+);
 
 export interface RoutingContext {
   participants: string[];       // agentKeys in this huddle
@@ -260,14 +272,18 @@ export function routeTurn(turnId: string, text: string, ctx: RoutingContext): Ro
     scores.set(key, (scores.get(key) ?? 0) + amount);
     reasons.push(reason);
   };
-  for (const [key, words] of Object.entries(EXPERTISE)) {
-    const hits = words.filter((w) => clean.includes(w)).length;
+  for (const [key, patterns] of EXPERTISE_PATTERNS) {
+    const hits = patterns.filter((p) => p.test(clean)).length;
     if (hits) bump(key, hits * 2, "EXPERTISE_MATCH");
   }
   if (ctx.taskOwnerAgent) bump(ctx.taskOwnerAgent, 3, "TASK_OWNER");
   if (ctx.recentSpeakers[0]) bump(ctx.recentSpeakers[0], 1.5, "CONVERSATION_CONTINUITY");
 
-  const ranked = [...scores.entries()].sort((a, b) => b[1] - a[1]);
+  // Ties go to the specialist, never the moderator/default (who answers on
+  // low confidence anyway).
+  const ranked = [...scores.entries()].sort(
+    (a, b) => b[1] - a[1] || Number(a[0] === ctx.defaultAgent) - Number(b[0] === ctx.defaultAgent)
+  );
   const top = ranked[0];
   if (!top || top[1] < 2) {
     // Low confidence → the channel persona / moderator answers.

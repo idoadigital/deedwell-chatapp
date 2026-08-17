@@ -243,7 +243,14 @@ describe("workspace conversations", () => {
     expect(msgs.some((m) => m.body.includes("I've selected"))).toBe(true);
     const ask = msgs.find((m) => m.metadata.infoRequest);
     expect(ask).toBeTruthy();
-    expect(ask!.metadata.infoRequest).toContain("entity_type");
+    // Structured info request (spec §6): typed fields with guidance, not bare keys.
+    const fields = ask!.metadata.infoRequest as Array<Record<string, unknown>>;
+    const entityField = fields.find((f) => f.key === "entity_type");
+    expect(entityField).toBeTruthy();
+    expect(entityField!.inputType).toBe("choice");
+    expect(Array.isArray(entityField!.choices)).toBe(true);
+    expect(String(entityField!.reason)).toContain("eligibility");
+    expect(String(entityField!.label)).toBe("Entity type");
 
     // The timeline shows the real steps the durable engine persisted, and the
     // waiting run surfaces its open questions as a prefillable intake form.

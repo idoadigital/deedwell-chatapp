@@ -101,6 +101,11 @@ export function registerWebsiteRoutes(app: FastifyInstance, ctx: AppContext): vo
     const result = await ctx.inOrg(req, async (client) => {
       const site = await client.query("SELECT id, project_id FROM sites WHERE id = $1", [siteId]);
       if (!site.rows[0]) throw new HttpError(404, "Site not found");
+      const { activeRunFor } = await import("./assistant.js");
+      const inFlight = await activeRunFor(client, site.rows[0].project_id, "website");
+      if (inFlight) {
+        throw new HttpError(409, `A website run is already active for this site (${inFlight.status})`);
+      }
       const runId = await ctx.deps.engine.start(client, {
         tenantId: req.orgId!,
         projectId: site.rows[0].project_id,

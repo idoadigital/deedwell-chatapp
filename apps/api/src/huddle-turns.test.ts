@@ -125,6 +125,25 @@ describe("orchestrator routing (spec §5–7, §18)", () => {
     expect(d.reasonCodes).toContain("LOW_CONFIDENCE");
   });
 
+  it("budget questions route to the budget specialist", () => {
+    for (const q of [
+      "who should i ask about budgets",
+      "can you help with the budget",
+      "how much money do we have left",
+      "what will this cost us",
+      "is there room in the budget for another staff position",
+    ]) {
+      const d = routeTurn("tb", q, ctx);
+      expect(d.primaryCandidateId, q).toBe("grant.budget_specialist");
+      expect(d.reasonCodes).toContain("EXPERTISE_MATCH");
+    }
+  });
+
+  it("a generic-word tie never lets the moderator steal a specialist turn", () => {
+    const d = routeTurn("tt", "give me a summary of the budget", ctx);
+    expect(d.primaryCandidateId).toBe("grant.budget_specialist");
+  });
+
   it("continuity nudges routing toward the recent speaker", () => {
     const d = routeTurn("t6", "can you keep going with that budget explanation", {
       ...ctx, recentSpeakers: ["grant.budget_specialist"],

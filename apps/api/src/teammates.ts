@@ -62,6 +62,6 @@ export const DEFAULT_CHANNELS: Array<{ key: string; name: string }> = [
 ];
 
 export const MAYA_WELCOME =
-  "Welcome to Deedwell. I'm Maya, your Executive Assistant. Your nonprofit team is already here. " +
-  "Tell me what you need help accomplishing, or select a teammate from the sidebar. " +
+  "Welcome to Deedwell. I'm Maya, your AI Executive Assistant, and your nonprofit's AI team is already here. " +
+  "Tell me what you need to accomplish, or pick a teammate from the sidebar. " +
   'Try: "Find grants for our youth program" or "Build a website for our organization."';

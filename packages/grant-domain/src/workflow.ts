@@ -16,10 +16,31 @@ import { renderExportMarkdown } from "./export.js";
 import { requiredFactKeys } from "./facts.js";
 import { scanForInjection } from "./injection.js";
 
+/** Result of really fetching one research page (spec §4). Implemented by
+ *  @deedwell/browser-research; structural here so this package stays free of
+ *  a Playwright dependency. */
+export interface ResearchPageResult {
+  url: string;
+  finalUrl: string;
+  title: string;
+  text: string;
+  links: string[];
+  accessedAt: string;
+  via: "browser" | "fetch";
+  status: "retrieved" | "failed" | "blocked";
+  error?: string;
+}
+
+export interface ResearchService {
+  fetchPage(url: string): Promise<ResearchPageResult>;
+}
+
 export interface GrantServices {
   provider: ModelProvider;
   gateway: ToolGateway;
   storage: StorageAdapter;
+  /** Absent → the research step records an honest skip, never fake sources. */
+  research?: ResearchService;
 }
 
 export const GRANT_SLICE_WORKFLOW = "grant-application-slice";

@@ -397,6 +397,22 @@ tr:last-child td { border-bottom: none; }
   background: var(--accent-tint); border: 1px solid #d9e9df; border-radius: 12px;
   padding: 8px 14px; font-size: 13.5px; color: var(--accent-strong); font-weight: 550;
 }
+/* Run waiting on the user: static marker, no motion — nothing is running. */
+.working-strip.waiting {
+  background: #fdf6e7; border-color: #eadfc2; color: #7a5d18;
+}
+.working-strip.waiting .presence { background: #c9a227; }
+/* Timeline entries and sources ease in as real events land via SSE. */
+.ws-event, .ws-source { animation: msg-in 180ms ease-out; }
+.ws-dot { transition: background-color 220ms ease; }
+.ws-badge { transition: transform 160ms ease; }
+.ws-tab.active .ws-badge { transform: scale(1.05); }
+/* Structured information request form (spec §6). */
+.info-form .info-group {
+  font-size: 11.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
+  color: var(--fg-faint); margin: 10px 0 6px;
+}
+.info-form select, .info-form textarea { width: 100%; }
 .jump-latest {
   position: absolute; bottom: 130px; right: 40px; z-index: 20;
   background: var(--surface); border: 1px solid var(--border); border-radius: 999px;

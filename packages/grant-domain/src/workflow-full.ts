@@ -65,7 +65,7 @@ async function recordModelUsage(ctx: Ctx, agentKey: string, tokens: number): Pro
 async function getOpportunity(ctx: Ctx, id: string) {
   const { rows } = await ctx.client.query(
     `SELECT id, title, funder, deadline::text AS deadline, funding_min, funding_max,
-            opportunity_number, file_id
+            opportunity_number, file_id, source_url
      FROM grant_opportunities WHERE id = $1`,
     [id]
   );
@@ -73,7 +73,7 @@ async function getOpportunity(ctx: Ctx, id: string) {
   return rows[0] as {
     id: string; title: string; funder: string; deadline: string | null;
     funding_min: string | null; funding_max: string | null;
-    opportunity_number: string | null; file_id: string | null;
+    opportunity_number: string | null; file_id: string | null; source_url: string | null;
   };
 }
 
@@ -84,6 +84,33 @@ async function latestApproval(ctx: Ctx, kind: string) {
     [ctx.runId, kind]
   );
   return rows[0] as { id: string; status: string } | undefined;
+}
+
+/** Candidate research URLs: the opportunity's own page plus links found in
+ *  the announcement text. Deduped, http(s) only, bounded. */
+export function collectResearchUrls(
+  sourceUrl: string | null,
+  documentText: string,
+  max: number
+): string[] {
+  // First-line SSRF filter: announcement text is untrusted, so internal
+  // hosts never even reach the fetcher (which guards again itself).
+  const isPublic = (raw: string): boolean => {
+    try {
+      const host = new URL(raw).hostname.toLowerCase();
+      if (host === "localhost" || host.endsWith(".local") || host.endsWith(".internal")) return false;
+      if (/^\d+\.\d+\.\d+\.\d+$/.test(host) || host.startsWith("[")) return false;
+      return true;
+    } catch { return false; }
+  };
+  const urls: string[] = [];
+  if (sourceUrl?.startsWith("http") && isPublic(sourceUrl)) urls.push(sourceUrl);
+  for (const match of documentText.matchAll(/https?:\/\/[^\s<>")\]]+/g)) {
+    const cleaned = match[0].replace(/[.,;:]+$/, "");
+    if (isPublic(cleaned) && !urls.includes(cleaned)) urls.push(cleaned);
+    if (urls.length >= max) break;
+  }
+  return urls.slice(0, max);
 }
 
 export function buildGrantFullWorkflow(): WorkflowDefinition<GrantServices> {
@@ -115,7 +142,73 @@ export function buildGrantFullWorkflow(): WorkflowDefinition<GrantServices> {
             entityId: input.opportunityId, metadata: { warnings },
           });
         }
-        return { state: { ...ctx.state, documentText: text }, next: "extract_requirements" };
+        return { state: { ...ctx.state, documentText: text }, next: "research_sources" };
+      },
+
+      // ------------------------------------------------------------------
+      // Stage 2 (spec §4-5): really read the opportunity's linked pages.
+      // Every page visited — or unreachable — becomes a research_sources row
+      // and a live timeline event. No fetcher configured → honest skip.
+      async research_sources(ctx): Promise<StepResult> {
+        const input = Input.parse(ctx.state.input);
+        const opportunity = await getOpportunity(ctx, input.opportunityId);
+        const documentText = z.string().parse(ctx.state.documentText);
+        const fetcher = ctx.services.research;
+
+        const candidates = collectResearchUrls(opportunity.source_url, documentText, 4);
+        const recordPageEvent = (title: string, status: string, url: string | null, error?: string) =>
+          ctx.client.query(
+            `INSERT INTO workspace_events (id, tenant_id, project_id, run_id, event_type, title, summary,
+               status, agent_key, metadata, error, completed_at)
+             VALUES ($1,$2,$3,$4,'research:page',$5,'',$6,'grant.opportunity_researcher',$7,$8,now())`,
+            [uuidv7(), ctx.tenantId, ctx.projectId, ctx.runId, title, status,
+             JSON.stringify({ url }), error ?? null]
+          );
+
+        if (!fetcher || !candidates.length) {
+          await ctx.client.query(
+            `INSERT INTO workspace_events (id, tenant_id, project_id, run_id, event_type, title, summary,
+               status, agent_key, completed_at)
+             VALUES ($1,$2,$3,$4,'research:skipped',$5,$6,'completed','grant.opportunity_researcher',now())`,
+            [uuidv7(), ctx.tenantId, ctx.projectId, ctx.runId,
+             "Web research skipped",
+             fetcher ? "The announcement contains no researchable links." : "No research fetcher is configured on this server (RESEARCH_FETCH=off)."]
+          );
+          return { state: { ...ctx.state, researchNotes: [] }, next: "extract_requirements" };
+        }
+
+        const notes: string[] = [];
+        for (const url of candidates) {
+          const page = await fetcher.fetchPage(url);
+          const host = ((): string => { try { return new URL(page.finalUrl || url).hostname; } catch { return url; } })();
+          await ctx.client.query(
+            `INSERT INTO research_sources (id, tenant_id, project_id, url, title, publisher,
+               source_type, reliability, fetch_status, excerpt)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+            [uuidv7(), ctx.tenantId, ctx.projectId, page.finalUrl || url,
+             page.title || `${host} (${page.status})`, host,
+             url === opportunity.source_url ? "OPPORTUNITY_PAGE" : "LINKED_PAGE",
+             page.status !== "retrieved" ? "UNVERIFIED" : host.endsWith(".gov") ? "SECONDARY_OFFICIAL" : "UNVERIFIED",
+             page.status, page.text.slice(0, 1200)]
+          );
+          await recordPageEvent(
+            page.status === "retrieved"
+              ? `Read ${host} — ${page.title || "untitled page"}`.slice(0, 200)
+              : `Could not read ${host}`,
+            page.status === "retrieved" ? "completed" : "failed",
+            page.finalUrl || url,
+            page.error
+          );
+          if (page.status === "retrieved" && page.text) {
+            notes.push(`${page.title || host} <${page.finalUrl || url}>: ${page.text.slice(0, 600)}`);
+          }
+        }
+        await audit(ctx.client, {
+          tenantId: ctx.tenantId, actorAgent: "grant.opportunity_researcher",
+          action: "research.pages_fetched", entityType: "grant_opportunity", entityId: input.opportunityId,
+          metadata: { attempted: candidates.length, retrieved: notes.length },
+        });
+        return { state: { ...ctx.state, researchNotes: notes.slice(0, 4) }, next: "extract_requirements" };
       },
 
       // ------------------------------------------------------------------
@@ -173,6 +266,8 @@ export function buildGrantFullWorkflow(): WorkflowDefinition<GrantServices> {
         const facts = await fetchFacts(ctx, eligibilityAnalyst);
         const evaluation = evaluateEligibility(rules, facts);
 
+        // Append-only by design (app role has no DELETE): each evaluation is
+        // a new row; readers take the latest per run as the current result.
         await ctx.client.query(
           `INSERT INTO eligibility_results (id, tenant_id, opportunity_id, run_id, overall, rule_findings, missing_facts)
            VALUES ($1,$2,$3,$4,$5,$6,$7)`,
@@ -233,13 +328,34 @@ export function buildGrantFullWorkflow(): WorkflowDefinition<GrantServices> {
            JSON.stringify(bid.dimensions), bid.total, bid.recommendation, bid.rationale]
         );
 
+        // Transparent fit assessment (spec §5 Stage 3): every entry below is
+        // derived from the actual eligibility findings and score dimensions —
+        // nothing is synthesized to pad the card.
+        const elig = ctx.state.eligibility as {
+          overall: string;
+          findings: Array<{ ruleKey: string; status: string; evidence?: string }>;
+          missingFacts: string[];
+        };
+        const fit = {
+          qualifies: elig.findings.filter((f) => f.status === "pass")
+            .map((f) => f.ruleKey.replace(/_/g, " ")),
+          disqualifiers: elig.findings.filter((f) => f.status === "fail")
+            .map((f) => `${f.ruleKey.replace(/_/g, " ")}${f.evidence ? ` — ${f.evidence}` : ""}`),
+          risks: bid.dimensions.filter((d) => d.score <= 2).map((d) => d.note),
+          missingEvidence: elig.missingFacts,
+          nextAction: bid.recommendation === "apply"
+            ? "Approve to start drafting."
+            : bid.recommendation === "needs_review"
+              ? "Review the risks and missing evidence before deciding."
+              : "The team recommends passing — see the disqualifiers and risks.",
+        };
         const approvalId = uuidv7();
         await ctx.client.query(
           `INSERT INTO approvals (id, tenant_id, run_id, kind, payload) VALUES ($1,$2,$3,'bid_decision',$4)`,
           [approvalId, ctx.tenantId, ctx.runId, JSON.stringify({
             bidId, recommendation: bid.recommendation, total: bid.total,
-            rationale: bid.rationale, dimensions: bid.dimensions,
-            warnings: bid.recommendation === "apply" ? [] : [bid.rationale],
+            rationale: bid.rationale, dimensions: bid.dimensions, fit,
+            warnings: [...fit.disqualifiers, ...fit.risks],
           })]
         );
         await audit(ctx.client, {
@@ -359,6 +475,9 @@ export function buildGrantFullWorkflow(): WorkflowDefinition<GrantServices> {
         );
         const facts = await fetchFacts(ctx, grantWriter);
         const usable = facts.filter((f) => f.status === "verified" || f.status === "user_certified");
+        // Real research context (spec §4): retrieved page excerpts, each tagged
+        // with its URL so drafted claims stay traceable to a source.
+        const researchNotes = z.array(z.string()).parse(ctx.state.researchNotes ?? []);
 
         const result = await runAgentTask<SectionDraftOutput>(
           ctx.services.provider, grantWriter,
@@ -366,6 +485,15 @@ export function buildGrantFullWorkflow(): WorkflowDefinition<GrantServices> {
           [
             { label: "requirements", content: JSON.stringify(sectionReqs) },
             { label: "org_facts", content: JSON.stringify(usable) },
+            ...(researchNotes.length
+              ? [{ label: "funder_research", content: researchNotes.join("\n---\n").slice(0, 6000) }]
+              : []),
+            // Redraft after a rejected export: the panel's actual notes reach
+            // the writer instead of blind re-generation.
+            ...(((ctx.state.review as { recommendations?: string[] } | undefined)?.recommendations?.length)
+              ? [{ label: "revision_recommendations",
+                  content: (ctx.state.review as { recommendations: string[] }).recommendations.join("\n").slice(0, 3000) }]
+              : []),
           ]
         );
         await recordModelUsage(ctx, grantWriter.agentKey, result.tokensEstimated);
@@ -497,19 +625,21 @@ export function buildGrantFullWorkflow(): WorkflowDefinition<GrantServices> {
         const applicationId = z.string().uuid().parse(ctx.state.applicationId);
         const requirements = z.array(ExtractedRequirement).parse(ctx.state.requirements);
         const sections = z.array(PlannedSection).parse(ctx.state.sections);
+        // Coverage the panel sees must reflect work that actually happened:
+        // lines addressed by drafted sections, budget lines (a budget was
+        // built two steps ago), and deadline lines (tracked on the
+        // opportunity). Formatting, attachment, and unmapped requirements
+        // stay UNCOVERED so the panel can flag them.
         const coveredLines = [
           ...new Set([
             ...sections.flatMap((s) => s.requirementLines),
-            // Non-narrative requirements are satisfied by system artifacts
-            // (budget, deadlines, formatting checks) rather than prose.
-            ...requirements
-              .filter((r) => r.kind !== "narrative" && r.kind !== "eligibility")
-              .map((r) => r.sourceLocation.line),
-            ...requirements
-              .filter((r) => r.kind === "eligibility")
-              .map((r) => r.sourceLocation.line),
+            ...requirements.filter((r) => r.kind === "budget").map((r) => r.sourceLocation.line),
+            ...requirements.filter((r) => r.kind === "deadline").map((r) => r.sourceLocation.line),
           ]),
         ];
+        const uncovered = requirements
+          .filter((r) => !coveredLines.includes(r.sourceLocation.line))
+          .map((r) => ({ line: r.sourceLocation.line, kind: r.kind, mandatory: r.mandatory, text: r.text.slice(0, 200) }));
         const flaggedClaims = z.number().parse(ctx.state.flaggedClaims ?? 0);
 
         const result = await runAgentTask<ReviewPanelOutput>(
@@ -517,7 +647,7 @@ export function buildGrantFullWorkflow(): WorkflowDefinition<GrantServices> {
           "Score this application against the funder's requirements from four reviewer perspectives.",
           [
             { label: "requirements", content: JSON.stringify(requirements) },
-            { label: "coverage", content: JSON.stringify({ coveredLines, flaggedClaims }) },
+            { label: "coverage", content: JSON.stringify({ coveredLines, uncovered, flaggedClaims }) },
           ]
         );
         await recordModelUsage(ctx, reviewerPanel.agentKey, result.tokensEstimated);
@@ -566,7 +696,23 @@ export function buildGrantFullWorkflow(): WorkflowDefinition<GrantServices> {
         const covered = new Set(sections.flatMap((s) => s.requirementLines));
         const uncovered = narrativeMandatory.filter((r) => !covered.has(r.sourceLocation.line));
 
+        // Attachments can't be produced by the team — the checklist names each
+        // one from the announcement so nothing is silently dropped (spec §5
+        // Stage 8). Files uploaded to the project count as provided.
+        const attachmentReqs = requirements.filter((r) => r.mandatory && r.kind === "attachment");
+        const uploadedFiles = await ctx.client.query(
+          "SELECT filename FROM files WHERE project_id = $1", [ctx.projectId]
+        );
+
         const checks = [
+          {
+            name: "Required attachments accounted for",
+            pass: attachmentReqs.length === 0 || uploadedFiles.rows.length > 1,
+            detail: attachmentReqs.length
+              ? `The announcement requires ${attachmentReqs.length} attachment(s): ${attachmentReqs
+                  .map((r) => r.text.slice(0, 80)).join(" | ")} — project has ${uploadedFiles.rows.length} uploaded file(s). Verify each before submitting.`
+              : "No mandatory attachments in the announcement",
+          },
           {
             name: "Mandatory narrative requirements mapped to sections",
             pass: uncovered.length === 0,

@@ -130,8 +130,8 @@ export function registerChatRoutes(app: FastifyInstance, ctx: AppContext): void 
       );
       if (!project.rows[0]) throw new HttpError(404, "Project not found");
       const run = await client.query(
-        `SELECT id, status, current_step, last_error FROM workflow_runs
-         WHERE project_id = $1 AND definition LIKE 'grant%' ORDER BY created_at DESC LIMIT 1`,
+        `SELECT id, status, current_step, last_error, definition FROM workflow_runs
+         WHERE project_id = $1 ORDER BY created_at DESC LIMIT 1`,
         [projectId]
       );
       const events = await client.query(
@@ -175,18 +175,22 @@ export function registerChatRoutes(app: FastifyInstance, ctx: AppContext): void 
           )
         : null;
       let missingFacts: string[] = [];
+      let waitContext = "eligibility";
       try {
-        missingFacts = (JSON.parse(waiting?.rows[0]?.payload ?? "{}") as { missingFacts?: string[] }).missingFacts ?? [];
+        const parsed = JSON.parse(waiting?.rows[0]?.payload ?? "{}") as { missingFacts?: string[]; context?: string };
+        missingFacts = parsed.missingFacts ?? [];
+        if (parsed.context) waitContext = parsed.context;
       } catch { /* none */ }
       const knownFacts = await client.query(
         `SELECT fact_key, value FROM org_facts WHERE status = 'user_certified'`
       );
       const { completionForRun } = await import("./workspace.js");
+      const { describeInfoRequest } = await import("./fact-fields.js");
       return {
         project: project.rows[0],
         run: run.rows[0] ?? null,
         completion: run.rows[0]
-          ? completionForRun(run.rows[0].current_step, run.rows[0].status)
+          ? completionForRun(run.rows[0].current_step, run.rows[0].status, run.rows[0].definition)
           : project.rows[0].pending_intent ? 2 : 5,
         events: events.rows,
         sources: sources.rows,
@@ -194,11 +198,10 @@ export function registerChatRoutes(app: FastifyInstance, ctx: AppContext): void 
         requirements: matrix.rows[0]?.content?.requirements ?? [],
         eligibility: eligibility.rows[0] ?? null,
         files: files.rows,
-        questions: missingFacts.map((key) => ({
-          key,
-          label: key.replace(/_/g, " "),
-          reasonNeeded: "The eligibility check found no certified value for this fact, and the announcement's rules depend on it.",
-          prefill: knownFacts.rows.find((f) => f.fact_key === key)?.value ?? null,
+        questions: describeInfoRequest(missingFacts, waitContext).map((field) => ({
+          ...field,
+          reasonNeeded: field.reason,
+          prefill: knownFacts.rows.find((f) => f.fact_key === field.key)?.value ?? null,
         })),
       };
     });
@@ -323,7 +326,7 @@ export function registerChatRoutes(app: FastifyInstance, ctx: AppContext): void 
     const input = PostMessageInput.parse(req.body);
     const messages = await ctx.inOrg(req, async (client) => {
       const channel = await client.query(
-        `SELECT c.id, c.key, c.name, c.kind, c.project_id, p.type AS project_type
+        `SELECT c.id, c.key, c.name, c.kind, c.project_id, c.agent_key, p.type AS project_type
          FROM channels c LEFT JOIN projects p ON p.id = c.project_id WHERE c.id = $1`,
         [channelId]
       );
@@ -341,7 +344,8 @@ export function registerChatRoutes(app: FastifyInstance, ctx: AppContext): void 
         input.clientKey ?? null,
         input.huddleId ?? null,
         null,
-        input.action ?? null
+        input.action ?? null,
+        input.timezone ?? null
       );
     });
     // Wake any live listeners (SSE) in this org.

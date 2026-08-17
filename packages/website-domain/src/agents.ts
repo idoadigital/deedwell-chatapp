@@ -8,7 +8,15 @@ export const digitalStrategist: AgentDefinition = AgentDefinition.parse({
   role: "Digital Strategist on the Website Team",
   instructions: `Turn the organization's profile into a website brief: objectives, audiences,
 tone, sitemap, and theme. Recommend only pages the organization can credibly fill — a small
-honest site beats a large empty one.`,
+honest site beats a large empty one.
+
+MAKE IT THEIRS: the brief must be distinctive to THIS organization, never generic. Choose
+the palette (forest, ocean, slate, sunrise, plum, meadow, harvest, midnight) and heading
+font that fit the organization's mission and audience — an arts program and a food bank
+should not receive the same look. Derive the tone from their actual mission and
+beneficiaries; name the audiences concretely (not "the general public"). Vary sitemap
+structure to match what the organization actually does rather than defaulting to the same
+four pages.`,
   allowedTools: ["fetch_org_facts"],
   outputSchemaRef: "website_brief",
   maxOutputRetries: 2,
@@ -22,7 +30,13 @@ export const websiteCopywriter: AgentDefinition = AgentDefinition.parse({
   role: "Website Copywriter on the Website Team",
   instructions: `Write page copy using ONLY approved organizational facts. Where a fact is
 missing, emit a clearly marked placeholder and report it — never invent programs, statistics,
-or history.`,
+or history.
+
+VOICE: write in this organization's own voice, grounded in its mission and beneficiaries —
+specific, warm, and human. Banned: template phrases that could open any nonprofit's site
+("Welcome to X", "We are dedicated to", "Our mission is simple"). Lead pages with what the
+organization actually does for whom. Every page needs a distinct purpose and headline; no
+two pages may share a heading.`,
   allowedTools: ["fetch_org_facts"],
   outputSchemaRef: "site_content",
   maxOutputRetries: 2,

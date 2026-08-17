@@ -39,8 +39,11 @@ export async function recordEvent(client: PoolClient, e: WorkspaceEventInput): P
 
 export async function recordSource(client: PoolClient, s: {
   tenantId: string; projectId: string; url?: string | null; title: string;
-  publisher?: string | null; sourceType?: string; reliability?: string;
-  fetchStatus?: string; fileId?: string | null; excerpt?: string;
+  publisher?: string | null;
+  /** Provenance is stated by the caller, never assumed: a failed fetch or a
+   *  third-party page must not be recorded as a retrieved primary source. */
+  sourceType: string; reliability: string; fetchStatus: string;
+  fileId?: string | null; excerpt?: string;
 }): Promise<string> {
   const id = uuidv7();
   await client.query(
@@ -48,8 +51,8 @@ export async function recordSource(client: PoolClient, s: {
        source_type, reliability, fetch_status, file_id, excerpt)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
     [id, s.tenantId, s.projectId, s.url ?? null, s.title, s.publisher ?? null,
-     s.sourceType ?? "OFFICIAL_ANNOUNCEMENT", s.reliability ?? "PRIMARY_OFFICIAL",
-     s.fetchStatus ?? "retrieved", s.fileId ?? null, (s.excerpt ?? "").slice(0, 1500)]
+     s.sourceType, s.reliability, s.fetchStatus,
+     s.fileId ?? null, (s.excerpt ?? "").slice(0, 1500)]
   );
   return id;
 }
@@ -79,26 +82,37 @@ export async function setWorkspace(
 // step transition persisted by the durable engine (survives restarts).
 // ---------------------------------------------------------------------------
 
-/** Honest descriptions of what each grant workflow step actually does. */
+/**
+ * Honest descriptions of what each workflow step does. Events are recorded
+ * when a step STARTS (status in_progress), so summaries are present-tense —
+ * a past-tense summary on a running step would claim work that hasn't
+ * happened yet.
+ */
 const STEP_EVENTS: Record<string, { title: string; summary: string; agent: string }> = {
+  // ---- grant-application-full ------------------------------------------
   parse_document: {
     title: "Parsing the announcement document",
-    summary: "Extracted the text of the funding announcement and scanned it for prompt-injection content.",
+    summary: "Extracting the text of the funding announcement and scanning it for prompt-injection content.",
     agent: "grant.requirements_analyst",
+  },
+  research_sources: {
+    title: "Researching the funder and program",
+    summary: "Reading the opportunity's linked pages and recording every source consulted, including pages that could not be reached.",
+    agent: "grant.opportunity_researcher",
   },
   extract_requirements: {
     title: "Extracting requirements",
-    summary: "Read the announcement and built the compliance matrix with every application requirement, each linked to its source line.",
+    summary: "Reading the announcement and building the compliance matrix with every application requirement, each linked to its source line.",
     agent: "grant.requirements_analyst",
   },
   eligibility_check: {
     title: "Checking eligibility",
-    summary: "Compared the announcement's eligibility rules against your organization's certified facts.",
+    summary: "Comparing the announcement's eligibility rules against your organization's certified facts.",
     agent: "grant.eligibility_analyst",
   },
   bid_no_bid: {
     title: "Scoring the bid assessment",
-    summary: "Scored fit across eligibility, alignment, capacity, and deadline to recommend pursue or pass.",
+    summary: "Scoring fit across eligibility, alignment, capacity, and deadline to recommend pursue or pass.",
     agent: "grant.funding_strategist",
   },
   bid_gate: {
@@ -108,32 +122,32 @@ const STEP_EVENTS: Record<string, { title: string; summary: string; agent: strin
   },
   plan_application: {
     title: "Planning the application",
-    summary: "Mapped every mandatory requirement to a planned section with owners.",
+    summary: "Mapping every mandatory requirement to a planned section.",
     agent: "grant.writer",
   },
   draft_sections: {
     title: "Drafting narrative sections",
-    summary: "Wrote each planned section from certified organizational facts; unsupported claims are flagged, not invented.",
+    summary: "Writing each planned section from certified organizational facts; unsupported claims are flagged, not invented.",
     agent: "grant.writer",
   },
   build_budget: {
     title: "Building the budget",
-    summary: "Produced the line-item budget with justifications.",
+    summary: "Producing the line-item budget with justifications.",
     agent: "grant.budget_specialist",
   },
   build_logic_model: {
     title: "Building the logic model",
-    summary: "Connected activities to outputs and outcomes for the evaluation section.",
+    summary: "Connecting activities to outputs and outcomes for the evaluation section.",
     agent: "grant.mel_specialist",
   },
   review_panel: {
     title: "Running the internal review panel",
-    summary: "A reviewer panel scored the draft against the announcement's evaluation criteria.",
+    summary: "A reviewer panel scores the draft against the announcement's requirements.",
     agent: "grant.reviewer_panel",
   },
   final_compliance: {
     title: "Running the final compliance check",
-    summary: "Verified mandatory requirements, claims support, budget math, and the deadline.",
+    summary: "Verifying mandatory requirements, claims support, budget math, and the deadline.",
     agent: "grant.compliance_reviewer",
   },
   final_gate: {
@@ -143,31 +157,82 @@ const STEP_EVENTS: Record<string, { title: string; summary: string; agent: strin
   },
   export_full: {
     title: "Exporting the application package",
-    summary: "Rendered the full application (markdown + budget CSV) into downloadable files.",
+    summary: "Rendering the full application (markdown + budget CSV) into downloadable files.",
     agent: "grant.writer",
+  },
+  // ---- website-build / website-update ----------------------------------
+  discovery: {
+    title: "Gathering what the website needs",
+    summary: "Checking which organizational facts are already on record and asking only for what's genuinely missing.",
+    agent: "website.digital_strategist",
+  },
+  intake_brief: {
+    title: "Drafting the website brief",
+    summary: "Writing the goals, audiences, sitemap, and visual direction for your approval.",
+    agent: "website.digital_strategist",
+  },
+  brief_gate: {
+    title: "Waiting for your brief approval",
+    summary: "Nothing gets built until you approve the plan.",
+    agent: "website.digital_strategist",
+  },
+  generate_content: {
+    title: "Writing the page content",
+    summary: "Drafting every page from your approved organizational facts; gaps become visible placeholders, not invented copy.",
+    agent: "website.copywriter",
+  },
+  apply_patch: {
+    title: "Applying your requested change",
+    summary: "Translating the request into a concrete page change — or reporting honestly that it can't be.",
+    agent: "website.developer",
+  },
+  build_release: {
+    title: "Building and testing the release",
+    summary: "Rendering every page, then checking routes, internal links, forms, headings, and remaining placeholders.",
+    agent: "website.qa_deployment",
+  },
+  publish_gate: {
+    title: "Waiting for your publish approval",
+    summary: "The preview is ready; the site goes live only after your approval.",
+    agent: "website.qa_deployment",
   },
 };
 
 /** Map workflow step to a coarse workspace phase for the Overview tab. */
 export function phaseForStep(step: string): string {
-  if (["parse_document", "extract_requirements"].includes(step)) return "Analyzing requirements";
+  if (["parse_document", "research_sources", "extract_requirements"].includes(step)) return "Analyzing requirements";
   if (["eligibility_check"].includes(step)) return "Checking eligibility";
   if (["bid_no_bid", "bid_gate"].includes(step)) return "Bid decision";
   if (["plan_application", "draft_sections", "build_budget", "build_logic_model"].includes(step)) return "Drafting";
   if (["review_panel", "final_compliance"].includes(step)) return "Internal review";
   if (["final_gate"].includes(step)) return "Ready for your review";
   if (["export_full"].includes(step)) return "Final package";
+  if (["discovery", "intake_brief"].includes(step)) return "Planning the website";
+  if (["brief_gate"].includes(step)) return "Waiting on the brief";
+  if (["generate_content", "apply_patch"].includes(step)) return "Writing pages";
+  if (["build_release"].includes(step)) return "Building and testing";
+  if (["publish_gate"].includes(step)) return "Ready to publish";
   return step.replace(/_/g, " ");
 }
 
-const STEP_ORDER = Object.keys(STEP_EVENTS);
+/** Real step order per workflow definition — completion is the fraction of
+ *  persisted engine steps actually passed, never a timer. */
+const DEFINITION_STEPS: Record<string, string[]> = {
+  "grant-application-full": [
+    "parse_document", "research_sources", "extract_requirements", "eligibility_check",
+    "bid_no_bid", "bid_gate", "plan_application", "draft_sections", "build_budget",
+    "build_logic_model", "review_panel", "final_compliance", "final_gate", "export_full",
+  ],
+  "website-build": ["discovery", "intake_brief", "brief_gate", "generate_content", "build_release", "publish_gate"],
+  "website-update": ["apply_patch", "build_release", "publish_gate"],
+};
 
-/** Requirement-derived completion: fraction of REAL persisted steps done. */
-export function completionForRun(currentStep: string, status: string): number {
+export function completionForRun(currentStep: string, status: string, definition = "grant-application-full"): number {
   if (status === "completed") return 100;
-  const idx = STEP_ORDER.indexOf(currentStep);
+  const order = DEFINITION_STEPS[definition] ?? [];
+  const idx = order.indexOf(currentStep);
   if (idx < 0) return 5;
-  return Math.min(95, Math.round(5 + (idx / STEP_ORDER.length) * 90));
+  return Math.min(95, Math.round(5 + (idx / order.length) * 90));
 }
 
 const inflightW = new Set<Promise<void>>();
@@ -200,7 +265,7 @@ async function stepEvent(
       "SELECT project_id, definition, last_error FROM workflow_runs WHERE id = $1",
       [event.runId]
     );
-    if (!run.rows[0] || !String(run.rows[0].definition).startsWith("grant")) return;
+    if (!run.rows[0]) return; // grant AND website runs both get a real timeline
     const projectId = run.rows[0].project_id;
 
     if (event.status === "failed") {

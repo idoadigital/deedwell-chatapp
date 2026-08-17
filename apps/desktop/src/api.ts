@@ -197,6 +197,7 @@ export const sendMessage = (
   call<{ messages: ChatMessage[] }>("POST", `/v1/orgs/${orgId}/channels/${channelId}/messages`, {
     body, fileId: fileId ?? null, clientKey: clientKey ?? null, huddleId: huddleId ?? null,
     action: action ?? null,
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone ?? null,
   });
 
 export const getGrantWorkspace = (orgId: string, projectId: string) =>

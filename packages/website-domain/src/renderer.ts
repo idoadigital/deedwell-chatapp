@@ -30,10 +30,18 @@ export function esc(value: string): string {
     .replace(/'/g, "&#39;");
 }
 
-/** hrefs are restricted to internal paths or http(s) — javascript: etc. are dropped. */
+/** hrefs are restricted to internal paths or http(s) — javascript: etc. are
+ *  dropped. Internal directory paths are normalized to a trailing slash so
+ *  model-written links like "/about-us" resolve to the real "/about-us/". */
 function safeHref(href: string): string {
   const trimmed = href.trim();
-  if (trimmed.startsWith("/") && !trimmed.startsWith("//")) return esc(trimmed);
+  if (trimmed.startsWith("/") && !trimmed.startsWith("//")) {
+    const needsSlash =
+      trimmed !== "/" && !trimmed.endsWith("/") &&
+      !trimmed.includes("#") && !trimmed.startsWith("/forms/") &&
+      !/\.[a-z0-9]+$/i.test(trimmed);
+    return esc(needsSlash ? `${trimmed}/` : trimmed);
+  }
   if (/^https?:\/\//i.test(trimmed)) return esc(trimmed);
   return "#";
 }
@@ -44,6 +52,10 @@ const PALETTES: Record<SiteTheme["palette"], { bg: string; surface: string; text
   ocean: { bg: "#f3f7fa", surface: "#ffffff", text: "#122a3a", muted: "#3d5e75", accent: "#0b5a8a", accentText: "#ffffff" },
   slate: { bg: "#f5f6f8", surface: "#ffffff", text: "#1f2430", muted: "#4a5266", accent: "#333d55", accentText: "#ffffff" },
   sunrise: { bg: "#fdf7f2", surface: "#ffffff", text: "#3a2214", muted: "#7a4a2c", accent: "#a04716", accentText: "#ffffff" },
+  plum: { bg: "#f8f5fa", surface: "#ffffff", text: "#2a1a30", muted: "#5d4066", accent: "#6d2b84", accentText: "#ffffff" },
+  meadow: { bg: "#f4f8f1", surface: "#ffffff", text: "#1f2e16", muted: "#49603c", accent: "#3e6b1f", accentText: "#ffffff" },
+  harvest: { bg: "#faf6ee", surface: "#ffffff", text: "#33270f", muted: "#6b5527", accent: "#7a5410", accentText: "#ffffff" },
+  midnight: { bg: "#0f141c", surface: "#1a2130", text: "#e8ecf4", muted: "#a9b4c8", accent: "#7db3f0", accentText: "#0b1220" },
 };
 
 function css(theme: SiteTheme): string {

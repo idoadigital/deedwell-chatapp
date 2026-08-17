@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Deedwell demo stack: API (:3001) + Site Router (:8788) + workspace app (:4173).
 # Put OPENAI_API_KEY=sk-... in /root/deedwell/.env to switch the AI team from
-# the rule-based mock to real language understanding (restart after editing).
+# the rule-based mock to real language understanding (restart after editing .env;
+# TS source changes hot-reload via tsx watch — no restart needed).
 set -euo pipefail
 cd /root/deedwell
 [ -f .env ] && set -a && source .env && set +a
@@ -11,6 +12,7 @@ export APP_DB_PASSWORD=${APP_DB_PASSWORD:-test_app_password}
 export DATABASE_APP_URL=${DATABASE_APP_URL:-postgres://deedwell_app:${APP_DB_PASSWORD}@localhost:55432/deedwell_demo}
 export DATA_DIR=${DATA_DIR:-/root/deedwell/.data-demo}
 export GRANT_SOURCE=${GRANT_SOURCE:-grants_gov}
+export RESEARCH_FETCH=${RESEARCH_FETCH:-browser}
 export LOG_LEVEL=${LOG_LEVEL:-warn}
 if [ -n "${OPENAI_API_KEY:-}" ] && [ "${OPENAI_API_KEY}" != "paste-your-key-here" ]; then
   export MODEL_PROVIDER=${MODEL_PROVIDER:-openai}
@@ -28,8 +30,8 @@ ss -tlnp 2>/dev/null | grep -E ':(3001|4173|8788)' | grep -oP 'pid=\K[0-9]+' | s
 sleep 1
 
 CORS_ORIGINS="http://178.104.188.229:4173,http://localhost:4173,http://localhost:5173,tauri://localhost" \
-  PORT=3001 nohup node_modules/.bin/tsx apps/api/src/main.ts > .demo-api.log 2>&1 &
-SITE_ROUTER_PORT=8788 nohup node_modules/.bin/tsx apps/site-router/src/main.ts > .demo-router.log 2>&1 &
+  PORT=3001 nohup node_modules/.bin/tsx watch --clear-screen=false apps/api/src/main.ts > .demo-api.log 2>&1 &
+SITE_ROUTER_PORT=8788 nohup node_modules/.bin/tsx watch --clear-screen=false apps/site-router/src/main.ts > .demo-router.log 2>&1 &
 (cd apps/desktop && nohup node_modules/.bin/vite preview --host 0.0.0.0 --port 4173 > ../../.demo-app.log 2>&1 &)
 sleep 4
 echo "API:    $(curl -s localhost:3001/healthz || echo DOWN)"

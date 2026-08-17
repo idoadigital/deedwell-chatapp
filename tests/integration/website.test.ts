@@ -109,8 +109,9 @@ describe("website build → preview → publish", () => {
 
     expect((await routerGet("/preview/riverbend/about/")).statusCode).toBe(200);
     expect((await routerGet("/preview/riverbend/sitemap.xml")).statusCode).toBe(200);
-    // Not published yet: the live address must not exist.
+    // Not published yet: the live address must not exist (either form).
     expect((await routerGet("/live/riverbend/")).statusCode).toBe(404);
+    expect((await routerGet("/riverbend/")).statusCode).toBe(404);
   });
 
   it("host-based routing resolves preview and live subdomains", async () => {
@@ -136,6 +137,19 @@ describe("website build → preview → publish", () => {
     const live = await routerGet("/live/riverbend/");
     expect(live.statusCode).toBe(200);
     expect(live.body).toContain("Riverbend Youth Alliance");
+
+    // Bare root form — the production address (sites.deedwell.org/<slug>/).
+    const bare = await routerGet("/riverbend/");
+    expect(bare.statusCode).toBe(200);
+    expect(bare.body).toContain("Riverbend Youth Alliance");
+    expect((await routerGet("/riverbend/about/")).statusCode).toBe(200);
+    // Missing trailing slash redirects so relative links resolve in-site.
+    const redirect = await routerGet("/riverbend");
+    expect(redirect.statusCode).toBe(308);
+    expect(redirect.headers.location).toBe("/riverbend/");
+    // Reserved segments and unknown slugs still 404 cleanly.
+    expect((await routerGet("/forms/")).statusCode).toBe(404);
+    expect((await routerGet("/no-such-site/")).statusCode).toBe(404);
 
     const detail = await api(env.app, "GET", `/v1/orgs/${s.orgId}/sites/${siteId}`, { token: s.token });
     expect(detail.body.site.status).toBe("published");

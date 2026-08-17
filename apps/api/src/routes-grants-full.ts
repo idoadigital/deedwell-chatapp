@@ -139,6 +139,11 @@ export function registerGrantFullRoutes(app: FastifyInstance, ctx: AppContext): 
         "UPDATE grant_opportunities SET file_id = $2 WHERE id = $1",
         [input.opportunityId, input.fileId]
       );
+      const { activeRunFor } = await import("./assistant.js");
+      const running = await activeRunFor(client, projectId, "grant");
+      if (running) {
+        throw new HttpError(409, `A grant application run is already active for this project (${running.status})`);
+      }
       const runId = await ctx.deps.engine.start(client, {
         tenantId: req.orgId!,
         projectId,

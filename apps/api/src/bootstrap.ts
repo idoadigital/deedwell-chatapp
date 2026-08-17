@@ -42,6 +42,7 @@ export async function createDeps(overrides: Partial<{
   appPool: Pool;
   storage: StorageAdapter;
   provider: ModelProvider;
+  research: GrantServices["research"];
   backoffMs: (attempt: number) => number;
 }> = {}): Promise<Deps> {
   const adminPool = overrides.adminPool ?? createAdminPool();
@@ -52,7 +53,19 @@ export async function createDeps(overrides: Partial<{
   const gateway = new ToolGateway();
   registerGrantTools(gateway);
 
-  const services: GrantServices = { provider, gateway, storage };
+  // Web research (spec §4): RESEARCH_FETCH=browser|fetch|off. Off (the
+  // default for tests/CI) makes the research step record an honest skip —
+  // never simulated sources.
+  const researchMode = process.env.RESEARCH_FETCH ?? "off";
+  const research = "research" in overrides
+    ? overrides.research
+    : researchMode === "off"
+      ? undefined
+      : (await import("@deedwell/browser-research")).createBrowserResearch(
+          researchMode === "fetch" ? "fetch" : "browser"
+        );
+
+  const services: GrantServices = { provider, gateway, storage, research };
   const engine = new PgWorkflowEngine<GrantServices>(
     adminPool,
     appPool,

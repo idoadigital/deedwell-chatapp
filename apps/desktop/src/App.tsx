@@ -151,10 +151,13 @@ export default function App() {
     return () => { cancelled = true; };
   }, [sidePanel, org, activeRuns[0]?.id, activeRuns[0]?.updated_at, refreshTick]);
 
-  // The workspace panel opens automatically for grant application channels
-  // (workspace spec §2) — the conversation stays on the left.
+  // The workspace panel opens automatically for project channels — grant
+  // applications AND website builds (workspace spec §2); the conversation
+  // stays on the left.
   useEffect(() => {
-    setSidePanel(active?.project_type === "grant_application" ? "work" : null);
+    setSidePanel(
+      active?.project_type === "grant_application" || active?.project_type === "website" ? "work" : null
+    );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeId]);
 
@@ -219,6 +222,7 @@ export default function App() {
   const pendingCount = approvals.filter((a) => a.status === "pending").length;
   const STEP_LABELS: Record<string, string> = {
     parse_document: "Naomi is reading the announcement…",
+    research_sources: "David is reading the funder's linked pages…",
     extract_requirements: "Naomi is extracting the requirements…",
     eligibility_check: "Grace is verifying eligibility…",
     bid_no_bid: "Amara is checking funding fit…",
@@ -236,9 +240,18 @@ export default function App() {
     build_release: "James is building and testing the preview…",
   };
   const workingRun = activeRuns.find((r) => ["pending", "running"].includes(r.status));
+  const waitingRun = activeRuns.find((r) => ["waiting_for_info", "waiting_approval"].includes(r.status));
   const working = workingRun
-    ? { runId: workingRun.id, label: STEP_LABELS[workingRun.current_step] ?? "The team is working…" }
-    : null;
+    ? { runId: workingRun.id, label: STEP_LABELS[workingRun.current_step] ?? "The team is working…", waiting: false }
+    : waitingRun
+      ? {
+          runId: waitingRun.id,
+          label: waitingRun.status === "waiting_for_info"
+            ? "The team is waiting on your answers — see the form above"
+            : "Waiting for your approval — nothing proceeds without it",
+          waiting: true,
+        }
+      : null;
   const statusLine = activeRuns[0]
     ? activeRuns[0].definition.startsWith("website")
       ? latestRunStatus === "completed" ? "Website up to date" : "Website work in progress"
@@ -459,6 +472,7 @@ export default function App() {
                     <strong style={{ fontSize: 13 }}>
                       {sidePanel === "site" ? "Live website"
                         : active.project_type === "grant_application" ? "Application workspace"
+                        : active.project_type === "website" ? "Website workspace"
                         : "Work & artifacts"}
                     </strong>
 
@@ -473,11 +487,12 @@ export default function App() {
                     </button>
                   </div>
                   {sidePanel === "work" ? (
-                    active.project_type === "grant_application" && active.project_id ? (
+                    active.project_id ? (
                       <GrantWorkspacePanel
                         org={org} projectId={active.project_id} channelId={active.id}
                         refreshTick={refreshTick} refresh={refresh}
                         runDetail={runDetail} teammates={mateMap}
+                        projectType={active.project_type ?? "grant_application"}
                       />
                     ) : (
                       <ArtifactPanel org={org} detail={runDetail} />

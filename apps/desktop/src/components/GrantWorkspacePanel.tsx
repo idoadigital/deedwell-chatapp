@@ -26,7 +26,7 @@ const STATUS_LABEL: Record<string, string> = {
 };
 
 export function GrantWorkspacePanel({
-  org, projectId, channelId, refreshTick, refresh, runDetail, teammates,
+  org, projectId, channelId, refreshTick, refresh, runDetail, teammates, projectType = "grant_application",
 }: {
   org: Organization;
   projectId: string;
@@ -35,6 +35,7 @@ export function GrantWorkspacePanel({
   refresh: () => void;
   runDetail: RunDetail | null;
   teammates: Map<string, TeammateInfo>;
+  projectType?: string;
 }) {
   const [ws, setWs] = useState<GrantWorkspace | null>(null);
   const [tab, setTab] = useState<Tab>("overview");
@@ -56,14 +57,19 @@ export function GrantWorkspacePanel({
   if (error) return <p className="error-text" style={{ padding: 16 }}>{error}</p>;
   if (!ws) return <p className="faint" style={{ padding: 16 }}>Loading workspace…</p>;
 
+  const isGrant = projectType === "grant_application";
   const tabs: Array<{ key: Tab; label: string; badge?: number }> = [
     { key: "overview", label: "Overview" },
     { key: "activity", label: "Activity", badge: ws.events.length },
-    { key: "research", label: "Research", badge: ws.sources.length },
-    { key: "requirements", label: "Requirements", badge: ws.requirements.length },
+    // Research and the requirements matrix are grant-workflow records;
+    // website projects surface their QA in the test-report artifact instead.
+    ...(isGrant ? [
+      { key: "research" as Tab, label: "Research", badge: ws.sources.length },
+      { key: "requirements" as Tab, label: "Requirements", badge: ws.requirements.length },
+    ] : []),
     { key: "questions", label: "Questions", badge: ws.questions.length },
     { key: "documents", label: "Documents", badge: ws.files.length },
-    { key: "application", label: "Application", badge: ws.artifacts.length },
+    { key: "application", label: isGrant ? "Application" : "Artifacts", badge: ws.artifacts.length },
   ];
 
   return (
@@ -167,6 +173,14 @@ function Activity({ ws, teammates }: { ws: GrantWorkspace; teammates: Map<string
               </span>
             </div>
             {e.summary && <p className="ws-event-sum">{e.summary}</p>}
+            {(e.metadata as { url?: string } | null)?.url && (
+              <p className="faint" style={{ margin: "2px 0 0" }}>
+                <a href={(e.metadata as { url: string }).url}
+                  onClick={(ev) => { ev.preventDefault(); void openExternal((e.metadata as { url: string }).url); }}>
+                  {(e.metadata as { url: string }).url.slice(0, 80)} ↗
+                </a>
+              </p>
+            )}
             {e.error && <p className="error-text">{e.error}</p>}
           </div>
         </li>
@@ -244,16 +258,36 @@ function Questions({ ws, onSubmit }: { ws: GrantWorkspace; onSubmit: (lines: str
       try { await onSubmit(lines.join("\n")); setSent(true); } finally { setBusy(false); }
     }}>
       <p className="faint" style={{ marginBottom: 10 }}>
-        These are the only facts the eligibility check could not verify. Known values are prefilled — confirm or edit.
+        These are the only facts the team could not verify. Known values are prefilled — confirm or edit. Partial answers are fine.
       </p>
-      {ws.questions.map((q) => (
-        <div className="field" key={q.key} style={{ marginBottom: 10 }}>
-          <label htmlFor={`wsq-${q.key}`}>{q.label}</label>
-          <input id={`wsq-${q.key}`} defaultValue={q.prefill ?? ""}
-            onChange={(e) => setValues((v) => ({ ...v, [q.key]: e.target.value }))} />
-          <p className="faint" style={{ marginTop: 2 }}>{q.reasonNeeded}</p>
-        </div>
-      ))}
+      {ws.questions.map((q) => {
+        const set = (value: string) => setValues((v) => ({ ...v, [q.key]: value }));
+        return (
+          <div className="field" key={q.key} style={{ marginBottom: 10 }}>
+            <label htmlFor={`wsq-${q.key}`}>{q.label}</label>
+            {q.inputType === "textarea" ? (
+              <textarea id={`wsq-${q.key}`} rows={3} defaultValue={q.prefill ?? ""} onChange={(e) => set(e.target.value)} />
+            ) : q.inputType === "choice" ? (
+              <select id={`wsq-${q.key}`} defaultValue={q.prefill ?? ""} onChange={(e) => set(e.target.value)}>
+                <option value="">Choose…</option>
+                {(q.choices ?? []).map((c) => <option key={c} value={c}>{c}</option>)}
+              </select>
+            ) : q.inputType === "boolean" ? (
+              <select id={`wsq-${q.key}`} defaultValue={q.prefill ?? ""} onChange={(e) => set(e.target.value)}>
+                <option value="">Choose…</option>
+                <option value="yes">Yes</option>
+                <option value="no">No</option>
+              </select>
+            ) : (
+              <input id={`wsq-${q.key}`}
+                type={q.inputType === "number" ? "number" : q.inputType === "date" ? "date" : "text"}
+                defaultValue={q.prefill ?? ""} onChange={(e) => set(e.target.value)} />
+            )}
+            {q.help && <p className="faint" style={{ marginTop: 2 }}>{q.help}</p>}
+            <p className="faint" style={{ marginTop: 2 }}>{q.reasonNeeded}</p>
+          </div>
+        );
+      })}
       <button className="primary" disabled={busy}>Send answers</button>
     </form>
   );

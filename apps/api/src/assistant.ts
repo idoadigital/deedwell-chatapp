@@ -2,12 +2,13 @@ import type { PoolClient } from "pg";
 import { createHash } from "node:crypto";
 import { audit, tenantFileKey, uuidv7, withContext } from "@deedwell/database";
 import { runAgentTask } from "@deedwell/agent-runtime";
-import { AgentDefinition, IntentOutput, type GrantActionRef, type OrgFact } from "@deedwell/schemas";
+import { AgentDefinition, IntentOutput, RESERVED_SITE_SLUGS, type GrantActionRef, type OrgFact } from "@deedwell/schemas";
 import { GRANT_FULL_WORKFLOW } from "@deedwell/grant-domain";
 import { WEBSITE_BUILD_WORKFLOW, WEBSITE_UPDATE_WORKFLOW } from "@deedwell/website-domain";
 import type { Deps } from "./bootstrap.js";
 import { recordEvent, recordSource, setWorkspace } from "./workspace.js";
-import { DEFAULT_CHANNELS, MAYA_WELCOME, TEAMMATES } from "./teammates.js";
+import { DEFAULT_CHANNELS, MAYA_WELCOME, TEAMMATES, teammateByKey } from "./teammates.js";
+import { describeInfoRequest } from "./fact-fields.js";
 
 /**
  * The Executive Assistant: conversational entry point (BRD §4.1). It maps a
@@ -21,11 +22,57 @@ export const executiveAssistant: AgentDefinition = AgentDefinition.parse({
   displayName: "Maya — Executive Assistant",
   team: "core",
   role: "Executive Assistant: conversational entry point, routes work to the right team",
-  instructions: `You are Maya, the Executive Assistant of the user's AI team at Deedwell,
-a workspace for nonprofit organizations. Read the user's message and the workspace context,
-then choose exactly one action. Never invent search results, approvals, or organizational
-facts. When the team is waiting for information, map the user's reply onto the requested
-fact keys. Prefer "clarify" over guessing when a request is ambiguous or destructive.
+  instructions: `ROLE: You are Maya, the Executive Assistant of the user's AI team at
+Deedwell, a workspace for nonprofit organizations. Read the user's message and the
+workspace context, then choose exactly one action. Execution is deterministic server
+code — your job is understanding, routing, and clear communication. When the team is
+waiting for information, map the user's reply onto the requested fact keys.
+
+IDENTITY: context.speaker is who YOU are in this conversation — in teammate DMs that
+is another teammate, not Maya, and every word you write is in that teammate's voice.
+context.teammates lists the whole AI team by name and role. When asked your name or
+who you are, use "answer" with context.speaker's exact name and role, identified as an
+AI teammate. You DO have a name — never say otherwise. When asked about the team,
+name the actual teammates.
+
+CAPABILITIES: the team can search for grants, start a grant application from search
+results, build the organization's website, update it, record organizational facts,
+take approve/reject decisions, and report status. When the user asks what you or the
+team can do — including broad replies like "everything" or "give me a list" — use
+"answer" and list these concretely. Never respond to that question with "clarify".
+Never volunteer this list when the user didn't ask for it.
+
+SMALL TALK: greetings and social messages ("hi", "how was your day", "thanks") get a
+brief, warm "answer" — one or two sentences, nothing more. No capabilities list, no
+task push, no clarifying question. Don't claim human experiences or feelings; a light
+acknowledgment is right ("All good here — ready when you are.").
+
+VOICE (applies to "answer" text and "clarify" questions): Warm, direct, and plain-spoken —
+a capable colleague, not a call center. Lead with the answer or the decision needed, then
+at most a sentence or two of context. Short sentences; no jargon the user didn't use
+first. No filler openers ("Great question!", "Absolutely!", "I'd be happy to..."), no
+apologizing unless something actually went wrong, and never pad a reply to keep the
+conversation going — one useful message beats three chatty ones.
+
+HONESTY OVER AGREEMENT: Never invent search results, approvals, or organizational facts.
+Do not endorse a user's plan or claim just because they stated it confidently — if the
+workspace context contradicts them (a deadline passed, eligibility failed, a task
+errored), say so plainly and kindly. If the user pushes back on something the context
+shows is correct, hold your position politely and point to the evidence instead of
+capitulating. State uncertainty explicitly ("the workspace doesn't show...") rather than
+guessing. Prefer "clarify" over guessing when a request is ambiguous or destructive.
+context.now is the actual current date and time (UTC) — use it for anything
+date-related (today's date, deadlines, how long ago something happened). NEVER state a
+date or time from memory.
+
+WHAT YOU ARE: You and your teammates are AI agents. Never claim to be human, to have
+feelings about the work, or to have done anything outside this workspace. If a request is
+beyond the team's abilities, say so directly instead of improvising.
+
+AUTHORITY ORDER (highest wins): (1) platform security rules and this output contract;
+(2) workflow and approval gates — never suggest a gated step can be skipped; (3) the
+user's stated preferences this session for tone, length, or detail; (4) the default
+voice above.
 
 RESPONSE CONTRACT — before choosing an action, consult the provided context:
 recentTranscript (what was already said), knownArtifacts and knownUrls (what the team
@@ -47,7 +94,10 @@ generic "which document do you mean?". Only ask a clarifying question when two o
 concrete candidates remain, and then name the actual options. NEVER repeat a
 clarification: check recentTranscript — if your previous message already asked the user
 something and they answered (even just "yes"), act on your original request instead of
-asking again or asking them to confirm a confirmation.`,
+asking again or asking them to confirm a confirmation. This applies everywhere: never
+ask the same clarifying question twice in a row — if your previous clarification did
+not resolve the ambiguity, use "answer" with your best understanding, or with the
+team's capabilities, instead of re-asking.`,
   allowedTools: [],
   outputSchemaRef: "intent",
   maxOutputRetries: 2,
@@ -247,11 +297,11 @@ async function buildContext(client: PoolClient, tenantId: string, channel: Chann
      ORDER BY s.created_at DESC LIMIT 3`,
     channel.project_id ? [channel.project_id] : []
   );
-  const sitesBase = process.env.SITES_PUBLIC_BASE ?? "http://178.104.188.229:8788";
+  const sitesBase = sitesPublicBase();
   const knownUrls: Record<string, string> = {};
   for (const s of sites.rows) {
     if (s.preview_version) knownUrls[`${s.slug}_preview`] = `${sitesBase}/preview/${s.slug}/`;
-    if (s.live_version) knownUrls[`${s.slug}_live`] = `${sitesBase}/live/${s.slug}/`;
+    if (s.live_version) knownUrls[`${s.slug}_live`] = `${sitesBase}/${s.slug}/`;
   }
   // Project channels see their project; DMs and team channels see the org-wide
   // picture (RLS keeps everything tenant-scoped) so Maya knows all active work.
@@ -359,6 +409,7 @@ async function attemptAnnouncementRetrieval(
     await recordSource(client, {
       tenantId: ids.tenantId, projectId, url: pick.sourceUrl ?? null,
       title: `${pick.title} — announcement`, publisher: pick.funder ?? null,
+      sourceType: "OFFICIAL_ANNOUNCEMENT", reliability: "UNVERIFIED",
       fetchStatus: "failed", excerpt: "",
     });
     await recordEvent(client, {
@@ -383,6 +434,8 @@ async function attemptAnnouncementRetrieval(
   const sourceId = await recordSource(client, {
     tenantId: ids.tenantId, projectId, url: pick.sourceUrl ?? null,
     title: fetched.title, publisher: pick.funder ?? null, fileId: fid,
+    sourceType: "OFFICIAL_ANNOUNCEMENT", reliability: "PRIMARY_OFFICIAL",
+    fetchStatus: "retrieved",
     excerpt: fetched.text.slice(0, 800),
   });
   await recordEvent(client, {
@@ -448,7 +501,8 @@ export async function handleUserMessage(
   clientKey?: string | null,
   huddleId?: string | null,
   personaOverride?: string | null,
-  action?: GrantActionRef | null
+  action?: GrantActionRef | null,
+  clientTimezone?: string | null
 ): Promise<Array<Record<string, unknown>>> {
   if (clientKey) {
     const dup = await client.query(
@@ -478,6 +532,19 @@ export async function handleUserMessage(
     },
   }));
 
+  // The user's timezone: taken from the client when sent (and remembered),
+  // otherwise the last known value — voice huddle turns carry no payload.
+  let timezone = validTimezone(clientTimezone);
+  if (timezone) {
+    await client.query(
+      "UPDATE users SET timezone = $2 WHERE id = $1 AND timezone IS DISTINCT FROM $2",
+      [ids.userId, timezone]
+    );
+  } else {
+    const stored = await client.query("SELECT timezone FROM users WHERE id = $1", [ids.userId]);
+    timezone = validTimezone(stored.rows[0]?.timezone);
+  }
+
   const contextStart = Date.now();
   const context = await buildContext(client, ids.tenantId, channel, body);
   if (fileId) context.lastUploadedFileId = fileId;
@@ -496,7 +563,7 @@ export async function handleUserMessage(
     const pending = context.pendingIntent as unknown as PendingApplication;
     const runId = await startPendingRun(deps, client, ids, pending, fileId, "file_upload");
     await say(
-      `Got it — that's the announcement for "${pending.grantTitle}"${pending.opportunityNumber ? ` (${pending.opportunityNumber})` : ""}. Your application was already saved, so I'm resuming right where we left off: parsing the announcement, extracting requirements, and checking eligibility. No need to repeat anything.`,
+      `Got it — that's the announcement for "${pending.grantTitle}"${pending.opportunityNumber ? ` (${pending.opportunityNumber})` : ""}. Your application was already saved, so I'm resuming where we left off: parsing the announcement, extracting requirements, and checking eligibility.`,
       { runId, openWorkspace: true, ...(pending.channelId && pending.channelId !== channel.id ? { goToChannelId: pending.channelId } : {}) },
       executiveAssistant.agentKey
     );
@@ -536,20 +603,20 @@ export async function handleUserMessage(
       if (fid) {
         const runId = await startPendingRun(deps, client, ids, pending, fid, "user_retry_command");
         await say(
-          `Done — I retrieved the funding announcement for "${pending.grantTitle}"${pending.opportunityNumber ? ` (${pending.opportunityNumber})` : ""} from ${sourceLabel(deps)} just now and stored it in the workspace. Resuming your application: parsing the announcement, extracting requirements, and checking eligibility.`,
+          `Done — I retrieved the funding announcement for "${pending.grantTitle}"${pending.opportunityNumber ? ` (${pending.opportunityNumber})` : ""} from ${sourceLabel(deps)} and stored it in the workspace. Resuming your application: parsing the announcement, extracting requirements, and checking eligibility.`,
           { runId, openWorkspace: true, ...(pending.channelId && pending.channelId !== channel.id ? { goToChannelId: pending.channelId } : {}) },
           executiveAssistant.agentKey
         );
       } else {
         await say(
-          `I tried again just now and ${sourceLabel(deps)} still didn't return usable announcement text for "${pending.grantTitle}"${pending.opportunityNumber ? ` (${pending.opportunityNumber})` : ""}. ${pending.sourceUrl ? `Open ${pending.sourceUrl}, download the funding announcement (PDF, Word, HTML, or text), and upload it here.` : "Download the funding announcement from the funder and upload it here."} Your application stays saved and resumes the moment the document arrives.`
+          `I tried again and ${sourceLabel(deps)} still didn't return usable announcement text for "${pending.grantTitle}"${pending.opportunityNumber ? ` (${pending.opportunityNumber})` : ""}. ${pending.sourceUrl ? `Open ${pending.sourceUrl}, download the funding announcement (PDF, Word, HTML, or text), and upload it here.` : "Download the funding announcement from the funder and upload it here."} Your application stays saved and resumes the moment the document arrives.`
         );
       }
       return out;
     }
     if (asksWhere) {
       await say(
-        `You mean the announcement for "${pending.grantTitle}"${pending.opportunityNumber ? `, opportunity ${pending.opportunityNumber}` : ""} — the document I asked you to upload. ${pending.sourceUrl ? `Open the details link (${pending.sourceUrl}) and look for the funding announcement, related documents, or application package section.` : "Check the funder's opportunity page for the funding announcement section."} Download it in any format (PDF, Word, HTML, text) and upload it here — or say "try again" and I'll re-attempt the retrieval myself. Your application selection is already saved.`
+        `That's the announcement for "${pending.grantTitle}"${pending.opportunityNumber ? `, opportunity ${pending.opportunityNumber}` : ""} — the document I asked you to upload. ${pending.sourceUrl ? `Open the details link (${pending.sourceUrl}) and look for the funding announcement or application package section.` : "Check the funder's opportunity page for the funding announcement section."} Any format works (PDF, Word, HTML, text) — or say "try again" and I'll re-attempt the retrieval myself. Your application selection is already saved.`
       );
       return out;
     }
@@ -566,12 +633,21 @@ export async function handleUserMessage(
       reasonCodes: ["UI_STRUCTURED_EVENT"],
     }));
   } else try {
+    // Identity travels with the context: who is speaking in this channel, and
+    // the full roster, so agents can answer for themselves and the team.
+    const mate = teammateByKey.get(persona);
+    const speaker = mate ? { name: mate.name, role: mate.role } : { name: "Maya", role: "Executive Assistant" };
     const result = await runAgentTask<IntentOutput>(
       deps.provider, executiveAssistant,
-      "Choose the single best action for the user's message.",
+      `Choose the single best action for the user's message. You are speaking as ${speaker.name}, the ${speaker.role} — any "answer" text is in ${speaker.name}'s voice.`,
       [
         { label: "user_message", content: body },
-        { label: "context", content: JSON.stringify(context) },
+        { label: "context", content: JSON.stringify({
+          ...context,
+          now: formatNow(timezone),
+          speaker,
+          teammates: TEAMMATES.map((t) => ({ name: t.name, role: t.role, team: t.team })),
+        }) },
       ]
     );
     intent = result.output;
@@ -589,6 +665,15 @@ export async function handleUserMessage(
       `I hit a problem understanding that (${err instanceof Error ? err.message.slice(0, 120) : "routing error"}). Could you rephrase?`
     );
     return out;
+  }
+
+  // Repeat-clarify guard: the model must never ask the same question twice in
+  // a row (instructions say so, but this makes it structural, not hoped-for).
+  if (intent.action === "clarify" && isRepeatQuestion(intent.question, context.lastAssistantRequest)) {
+    console.log(JSON.stringify({
+      at: "REPEAT_CLARIFY_BLOCKED", channelId: channel.id, question: intent.question.slice(0, 120),
+    }));
+    intent = { action: "answer", text: CAPABILITIES_ANSWER };
   }
 
   switch (intent.action) {
@@ -611,7 +696,7 @@ export async function handleUserMessage(
           closeDate: r.closeDate, sourceUrl: r.sourceUrl, externalId: r.externalId,
         }));
         await say(
-          `Here's what ${sourceLabel(deps)} has for "${intent.keyword}" — eligibility still needs to be verified against your organization before any of these is a recommendation. Press Apply (or say "apply for #N") and I'll retrieve the announcement, build the requirements matrix, and check eligibility:`,
+          `Here's what ${sourceLabel(deps)} has for "${intent.keyword}". These aren't recommendations yet — eligibility still needs verifying against your organization. Press Apply (or say "apply for #N") and I'll retrieve the announcement, build the requirements matrix, and check eligibility:`,
           { searchResults: list },
           channel.agent_key === "grant.funding_strategist" ? channel.agent_key : "grant.opportunity_researcher"
         );
@@ -633,6 +718,18 @@ export async function handleUserMessage(
       if (!pick) {
         await say(`I don't see a result #${intent.resultIndex} in this conversation's recent search. Run a search first ("find grants for …").`);
         break;
+      }
+      // Duplicate guard: a second "apply" in a project channel with a live
+      // grant run points at the existing work instead of forking it.
+      if (channel.project_id) {
+        const running = await activeRunFor(client, channel.project_id, "grant");
+        if (running) {
+          await say(
+            `A grant application is already in progress in this project (${running.status.replace(/_/g, " ")}). I won't start a second one — follow the existing work in the workspace panel.`,
+            { runId: running.id, openWorkspace: true }
+          );
+          break;
+        }
       }
       // The project lives in its own channel (spec §7): reuse this one if it's
       // a project channel, otherwise create #<grant-name> and bring the team in.
@@ -689,7 +786,7 @@ export async function handleUserMessage(
           at: "PENDING_INTENT_SAVED", projectId, opportunityId,
           blockedBy: "MISSING_ANNOUNCEMENT_DOCUMENT", title: pick.title,
         }));
-        const ask = `I've saved "${pick.title}"${pick.number ? ` (opportunity ${pick.number})` : ""} as your active application. I could not retrieve the full announcement automatically${pick.externalId ? "" : " (no machine-readable source id was available)"}. ${pick.sourceUrl?.startsWith("http") ? `Open the details link (${pick.sourceUrl}), download the funding announcement (PDF, Word, HTML, or text all work), and upload it here.` : "Download the funding announcement from the funder and upload it here — PDF, Word, HTML, or text all work."} The moment it arrives I'll continue automatically — you won't need to select the grant again.`;
+        const ask = `I've saved "${pick.title}"${pick.number ? ` (opportunity ${pick.number})` : ""} as your active application. I couldn't retrieve the full announcement automatically${pick.externalId ? "" : " (no machine-readable source id was available)"}. ${pick.sourceUrl?.startsWith("http") ? `Open the details link (${pick.sourceUrl}), download the funding announcement (PDF, Word, HTML, or text all work), and upload it here.` : "Download the funding announcement from the funder and upload it here — PDF, Word, HTML, or text all work."} The moment it arrives I'll continue automatically.`;
         if (createdChannelName) {
           await insertMessage(client, {
             tenantId: ids.tenantId, channelId: targetChannelId, authorKind: "agent",
@@ -720,7 +817,7 @@ export async function handleUserMessage(
         agentKey: "grant.requirements_analyst",
       });
       const auto = !context.lastUploadedFileId;
-      const kickoff = `I've selected "${pick.title}"${pick.number ? `, opportunity ${pick.number}` : ""}.${auto ? " I retrieved the funding announcement automatically and stored it in the workspace." : ""} The team is now parsing it, extracting every requirement into the compliance matrix, and checking eligibility against your organization's certified facts. Follow the live timeline in the workspace panel — I'll come back to you at the go/no-go decision.`;
+      const kickoff = `I've selected "${pick.title}"${pick.number ? `, opportunity ${pick.number}` : ""}.${auto ? " I retrieved the funding announcement automatically and stored it in the workspace." : ""} The team is parsing it, extracting every requirement into the compliance matrix, and checking eligibility against your certified facts. The live timeline is in the workspace panel — I'll come back to you at the go/no-go decision.`;
       if (createdChannelName) {
         await insertMessage(client, {
           tenantId: ids.tenantId, channelId: targetChannelId, authorKind: "agent",
@@ -734,6 +831,16 @@ export async function handleUserMessage(
     }
 
     case "build_website": {
+      if (channel.project_id) {
+        const running = await activeRunFor(client, channel.project_id, "website");
+        if (running) {
+          await say(
+            `The Website Team already has a ${running.definition.replace(/-/g, " ")} in progress (${running.status.replace(/_/g, " ")}). I won't start a second one.`,
+            { runId: running.id, openWorkspace: true }
+          );
+          break;
+        }
+      }
       let projectId = channel.project_id;
       let siteChannelName: string | null = null;
       let siteChannelId = channel.id;
@@ -749,8 +856,9 @@ export async function handleUserMessage(
       const baseSlug: string = orgSlugRow.rows[0].slug;
       const siteName: string = intent.siteName ?? orgSlugRow.rows[0].name;
       const siteId = uuidv7();
-      let slug = baseSlug;
+      let slug = `${baseSlug}-${siteId.slice(0, 4)}`;
       for (const candidate of [baseSlug, `${baseSlug}-site`, `${baseSlug}-${siteId.slice(0, 4)}`]) {
+        if (RESERVED_SITE_SLUGS.has(candidate)) continue; // router-owned path segments
         const taken = await client.query("SELECT 1 FROM sites WHERE slug = $1", [candidate]);
         if (!taken.rows[0]) { slug = candidate; break; }
       }
@@ -763,7 +871,7 @@ export async function handleUserMessage(
         tenantId: ids.tenantId, projectId, definition: WEBSITE_BUILD_WORKFLOW, createdBy: ids.userId,
         input: { siteId, siteName, donateUrl: null },
       });
-      const kickoff = `The Website Team is on it — Ava is drafting the brief and Emma will write the pages from your approved organizational facts. Your address will be ${slug}.deedwell.app; you'll get a preview to approve before anything goes live.`;
+      const kickoff = `Website build started. Ava is drafting the brief and Emma will write the pages from your approved organizational facts. Your address will be ${sitesPublicBase()}/${slug}/ — you'll approve a preview before anything goes live.`;
       if (siteChannelName) {
         await insertMessage(client, {
           tenantId: ids.tenantId, channelId: siteChannelId, authorKind: "agent",
@@ -785,12 +893,20 @@ export async function handleUserMessage(
         await say(`There's no website yet — say "build our website" and the team will create one first.`);
         break;
       }
+      const inFlight = await activeRunFor(client, site.rows[0].project_id, "website");
+      if (inFlight) {
+        await say(
+          `The Website Team is still working on the previous request (${inFlight.status.replace(/_/g, " ")}). Send this change again once that finishes — I won't queue conflicting edits.`,
+          { runId: inFlight.id }
+        );
+        break;
+      }
       const runId = await deps.engine.start(client, {
         tenantId: ids.tenantId, projectId: site.rows[0].project_id,
         definition: WEBSITE_UPDATE_WORKFLOW, createdBy: ids.userId,
         input: { siteId: site.rows[0].id, instruction: intent.instruction },
       });
-      await say(`Passing that to Kenji on the Website Team. If he can translate it into a change, you'll get a new preview here to approve; if not, he'll say so honestly.`, { runId });
+      await say(`Passing that to Noah on the Website Team. If the request translates into a change, you'll get a new preview here to approve; if not, you'll get the reason.`, { runId });
       break;
     }
 
@@ -872,6 +988,76 @@ export async function handleUserMessage(
   return out;
 }
 
+/** Duplicate-run guard (spec §7): the same action triggered twice must not
+ *  start a second concurrent workflow on the same project. */
+export async function activeRunFor(
+  client: PoolClient,
+  projectId: string,
+  definitionPrefix: string
+): Promise<{ id: string; status: string; definition: string } | null> {
+  const { rows } = await client.query(
+    `SELECT id, status, definition FROM workflow_runs
+     WHERE project_id = $1 AND definition LIKE $2 || '%'
+       AND status IN ('pending','running','waiting_for_info','waiting_approval')
+     ORDER BY created_at DESC LIMIT 1`,
+    [projectId, definitionPrefix]
+  );
+  return rows[0] ?? null;
+}
+
+function validTimezone(tz: string | null | undefined): string | null {
+  if (!tz) return null;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: tz });
+    return tz;
+  } catch {
+    return null;
+  }
+}
+
+function formatNow(timezone: string | null): string {
+  const d = new Date();
+  if (timezone) {
+    return `${d.toLocaleString("en-US", {
+      timeZone: timezone, weekday: "long", year: "numeric", month: "long",
+      day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false,
+    })} (${timezone})`;
+  }
+  return `${d.toISOString()} (${d.toLocaleDateString("en-US", { weekday: "long", timeZone: "UTC" })}, UTC)`;
+}
+
+const CAPABILITIES_ANSWER =
+  `Here's what the team can do:\n` +
+  `• Find grants — "find grants for our youth program"\n` +
+  `• Apply for one — press Apply on a result or say "apply for #2"; the team retrieves the announcement, builds the requirements matrix, and checks eligibility\n` +
+  `• Build your website — "build our website"; you approve the brief and the preview before anything goes live\n` +
+  `• Update the website — describe the change and Noah will patch it\n` +
+  `• Record organizational facts the team asks for, and take your approve/reject decisions\n` +
+  `Say "status" anytime to see what's in flight.`;
+
+/**
+ * A clarifying question that (nearly) restates the previous agent message
+ * already failed once — re-asking cannot succeed. Token-overlap match, not
+ * equality, because the model rephrases ("actions" → "areas").
+ */
+function isRepeatQuestion(question: string, lastAgentMessage: string | null): boolean {
+  if (!lastAgentMessage) return false;
+  const tokens = (s: string) =>
+    new Set(s.toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter((w) => w.length > 2));
+  const asked = tokens(question);
+  const previous = tokens(lastAgentMessage);
+  if (!asked.size || !previous.size) return false;
+  let shared = 0;
+  for (const w of asked) if (previous.has(w)) shared++;
+  return shared / asked.size >= 0.8;
+}
+
+/** Public base for tenant sites (e.g. https://sites.deedwell.org). Published
+ *  sites are served at <base>/<slug>/, previews at <base>/preview/<slug>/. */
+function sitesPublicBase(): string {
+  return process.env.SITES_PUBLIC_BASE ?? "http://178.104.188.229:8788";
+}
+
 function sourceLabel(deps: Deps): string {
   return deps.grantSource.name === "grants_gov" ? "Grants.gov" : `the ${deps.grantSource.name} source`;
 }
@@ -928,16 +1114,18 @@ async function bridgeMessage(
     let metadata: Record<string, unknown> = { runId: event.runId };
 
     if (event.status === "waiting_for_info") {
-      const missing = ((): string[] => {
+      const { missing, context } = ((): { missing: string[]; context: string } => {
         try {
           const w = state.waiting as { payload?: string };
-          return (JSON.parse(w?.payload ?? "{}") as { missingFacts?: string[] }).missingFacts ?? [];
-        } catch { return []; }
+          const parsed = JSON.parse(w?.payload ?? "{}") as { missingFacts?: string[]; context?: string };
+          return { missing: parsed.missingFacts ?? [], context: parsed.context ?? "eligibility" };
+        } catch { return { missing: [], context: "eligibility" }; }
       })();
-      body = `Before we go further I need a few organizational facts:\n${missing
-        .map((k) => `• ${k.replace(/_/g, " ")}`)
-        .join("\n")}\nReply here like: ${missing[0] ?? "annual_budget"}: <value> — one per line. Your answers are recorded as user-certified evidence.`;
-      metadata = { ...metadata, infoRequest: missing };
+      const fields = describeInfoRequest(missing, context);
+      body = `Before we go further I need a few organizational facts:\n${fields
+        .map((f) => `• ${f.label}${f.help ? ` (${f.help})` : ""}`)
+        .join("\n")}\nFill in the form below — partial answers are fine, the work resumes as facts arrive. Your answers are recorded as user-certified evidence.`;
+      metadata = { ...metadata, infoRequest: fields };
     } else if (event.status === "waiting_approval") {
       const approval = await client.query(
         `SELECT id, kind, payload FROM approvals WHERE run_id = $1 AND status = 'pending'
@@ -952,7 +1140,7 @@ async function bridgeMessage(
         : kind === "website_brief" ? "website.digital_strategist"
         : kind === "final_export" ? "grant.reviewer_panel" : "grant.writer";
       body = kind === "website_brief"
-        ? `I've put the website brief together — goals, audiences, sitemap, and visual direction. Open it in the artifact panel, then say "approve" to start the build or "pass" and tell me what to change. Nothing gets built until you're happy with the plan.`
+        ? `The website brief is ready — goals, audiences, sitemap, and visual direction. Open it in the artifact panel, then say "approve" to start the build, or tell me what to change. Nothing gets built until you approve the plan.`
         : kind === "bid_decision"
         ? `Bid assessment ready: ${String(payload.recommendation ?? "").replace(/_/g, " ")} (${payload.total}/100). ${payload.rationale ?? ""}\nSay "approve" to pursue it or "reject" to pass.`
         : kind === "publish_site"
@@ -960,17 +1148,24 @@ async function bridgeMessage(
           : `The application passed internal review${payload.reviewScore ? ` (panel score ${payload.reviewScore})` : ""} and is ready to export. Say "approve" to export or "reject" to send it back for redrafting.`;
       metadata = { ...metadata, approvalId: approval.rows[0].id, approvalKind: kind, approvalPayload: payload };
     } else if (event.status === "completed") {
-      body = state.exported
-        ? `Done — the application package is exported. Open the artifact panel to download it (markdown + budget CSV). Remember: a strong application improves your odds; funding is never guaranteed.`
+      const blockingChecks = state.blockingChecks as string[] | undefined;
+      body = blockingChecks?.length
+        ? `The build finished but validation FAILED — the site was not published and won't be until these are fixed:\n${blockingChecks
+            .slice(0, 6).map((c) => `• ${c}`).join("\n")}${blockingChecks.length > 6 ? `\n…and ${blockingChecks.length - 6} more (full test report in the artifact panel).` : ""}\nThe preview shows the current broken state. Tell me what to change, or fix the missing facts and rebuild.`
+        : state.exported
+        ? `Done — the application package is exported. Open the artifact panel to download it (markdown + budget CSV). A strong application improves your odds; funding is never guaranteed.`
         : state.published === true
-          ? `The website is live. 🎉`
+          ? `The website is live.`
           : state.published === false
             ? `Noted — the release stays unpublished. Ask me for changes anytime.`
             : state.applied === false
               ? `The Website Team couldn't translate that request: ${state.reason ?? "no reason given"}.`
               : state.outcome === "not_pursued"
-                ? `We're passing on this opportunity — it's recorded as not pursued so the effort goes where it counts.`
+                ? `We're passing on this opportunity — it's recorded as not pursued.`
                 : `That workflow finished.`;
+      if (blockingChecks?.length) {
+        metadata = { ...metadata, openWorkspace: true, artifactId: state.testReportArtifactId ?? null };
+      }
     } else if (event.status === "failed") {
       body = `Something went wrong and the team stopped after several attempts: ${run.rows[0].last_error ?? "unknown error"}. The run is preserved and can be resumed once the cause is fixed.`;
     } else if (event.status === "suspended_budget") {
@@ -985,7 +1180,7 @@ async function bridgeMessage(
       if (event.status === "waiting_approval") {
         // A built preview is a generated link the agent must remember even
         // before publishing.
-        const sitesBaseW = process.env.SITES_PUBLIC_BASE ?? "http://178.104.188.229:8788";
+        const sitesBaseW = sitesPublicBase();
         const siteW = await client.query(
           "SELECT slug, preview_release_id FROM sites WHERE project_id = $1 LIMIT 1",
           [projectId]
@@ -999,14 +1194,14 @@ async function bridgeMessage(
           urls: urlsW,
         });
       } else if (event.status === "completed") {
-        const sitesBase = process.env.SITES_PUBLIC_BASE ?? "http://178.104.188.229:8788";
+        const sitesBase = sitesPublicBase();
         const site = await client.query(
           "SELECT slug, active_release_id, preview_release_id FROM sites WHERE project_id = $1 LIMIT 1",
           [projectId]
         );
         const urls: Record<string, string> = {};
         if (site.rows[0]?.preview_release_id) urls[`${site.rows[0].slug}_preview`] = `${sitesBase}/preview/${site.rows[0].slug}/`;
-        if (site.rows[0]?.active_release_id) urls[`${site.rows[0].slug}_live`] = `${sitesBase}/live/${site.rows[0].slug}/`;
+        if (site.rows[0]?.active_release_id) urls[`${site.rows[0].slug}_live`] = `${sitesBase}/${site.rows[0].slug}/`;
         await updateProjectMemory(client, event.tenantId, projectId, {
           decision: state.published === true ? `Website published${state2.version ? ` (v${state2.version})` : ""}`
             : state.exported ? "Application package exported after final approval"

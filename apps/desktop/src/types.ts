@@ -301,7 +301,12 @@ export interface ChatMessage {
     approvalId?: string;
     approvalKind?: string;
     approvalPayload?: Record<string, unknown>;
-    infoRequest?: string[];
+    /** Structured info-request fields (older messages carried bare keys). */
+    infoRequest?: Array<string | {
+      key: string; label: string;
+      inputType: "text" | "textarea" | "number" | "date" | "boolean" | "choice";
+      choices?: string[]; help: string; reason: string; required: boolean; group: string;
+    }>;
     runId?: string;
     siteId?: string;
     fileId?: string;
@@ -337,6 +342,8 @@ export interface ResearchSource {
 
 export interface WorkspaceQuestion {
   key: string; label: string; reasonNeeded: string; prefill: string | null;
+  inputType?: "text" | "textarea" | "number" | "date" | "boolean" | "choice";
+  choices?: string[]; help?: string; required?: boolean; group?: string;
 }
 
 export interface GrantWorkspace {

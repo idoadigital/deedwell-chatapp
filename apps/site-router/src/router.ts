@@ -13,8 +13,9 @@ import { summarize } from "@deedwell/observability";
  * - unknown hosts/slugs get a safe 404, never an error dump
  *
  * Host forms: <slug>.preview.<base> (preview release) and <slug>.<base>
- * (published release). Path forms /preview/:slug/* and /live/:slug/* serve
- * the same content for dev and tests.
+ * (published release). Path forms: /<slug>/* serves the published release
+ * (the production form behind e.g. sites.deedwell.org); /preview/:slug/* the
+ * preview; /live/:slug/* is kept as an alias for previously stored links.
  */
 
 export interface SiteRouterDeps {
@@ -177,11 +178,26 @@ export function buildSiteRouter(deps: SiteRouterDeps): FastifyInstance {
     return reply.redirect(303, "/thanks/");
   });
 
-  // Host-based routing for any other GET (production path behind Caddy).
+  // First-path segments the router owns; never valid site slugs. Kept in
+  // sync with RESERVED_SITE_SLUGS in @deedwell/schemas (enforced at creation).
+  const RESERVED_ROOT_SEGMENTS = new Set(["live", "preview", "forms", "healthz", "thanks"]);
+
+  // Any other GET: host-based routing when the Host matches the base domain,
+  // otherwise the bare path form /<slug>/* serving the published release.
   app.get("/*", async (req, reply) => {
+    const rest = ((req.params as { "*": string })["*"] ?? "").replace(/^\/+/, "");
     const target = hostToTarget(String(req.headers.host ?? ""));
-    if (!target) return reply.status(404).type("text/html; charset=utf-8").send(NOT_FOUND_PAGE);
-    return serve(reply, target.slug, target.mode, (req.params as { "*": string })["*"] ?? "");
+    if (target) return serve(reply, target.slug, target.mode, rest);
+    const [slug, ...restParts] = rest.split("/");
+    if (!slug || RESERVED_ROOT_SEGMENTS.has(slug)) {
+      return reply.status(404).type("text/html; charset=utf-8").send(NOT_FOUND_PAGE);
+    }
+    // Directory URLs get the trailing slash, so the page's relative links
+    // resolve inside the site instead of at the router root.
+    if (!rest.endsWith("/") && !/\.[a-z0-9]+$/i.test(rest)) {
+      return reply.redirect(308, `/${rest}/`);
+    }
+    return serve(reply, slug, "live", restParts.join("/"));
   });
 
   return app;
