@@ -296,6 +296,11 @@ export interface ChatMessage {
     searchResults?: Array<{
       index: number; title: string; funder?: string; number?: string;
       closeDate?: string | null; sourceUrl?: string; externalId?: string;
+      /** The platform's own verified assessment — never computed client-side. */
+      recommendation?: "Apply" | "Monitor" | "Closed" | "Not Eligible" | string;
+      matchScore?: "High" | "Medium" | "Low" | "Unknown" | string;
+      matchReason?: string;
+      programArea?: string;
     }>;
     openWorkspace?: boolean;
     pendingUpload?: boolean;

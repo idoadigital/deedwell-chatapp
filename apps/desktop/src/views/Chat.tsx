@@ -13,6 +13,14 @@ export function agentColor(key: string): string {
   return `hsl(${hue} 40% 45%)`;
 }
 
+function matchPill(score: string): string {
+  const s = score.toLowerCase();
+  return s === "high" ? "green" : s === "medium" ? "amber" : s === "low" ? "red" : "gray";
+}
+function recPill(rec: string): string {
+  return rec === "Apply" ? "green" : rec === "Monitor" ? "amber" : rec === "Closed" ? "gray" : "red";
+}
+
 export function splitAgent(teammates: Map<string, TeammateInfo>, agentKey: string | null) {
   if (!agentKey) return { name: "Deedwell", role: "" };
   const mate = teammates.get(agentKey);
@@ -343,35 +351,45 @@ function Message({
         <div className="m-text">{meta.fileId ? <><Icon name="file-text" size={13} /> {m.body}</> : m.body}</div>
 
         {meta.searchResults && (
-          <div className="chat-card">
-            {meta.searchResults.map((r) => (
-              <div key={r.index} className="row" style={{ padding: "6px 0", borderBottom: "1px solid var(--border-soft)" }}>
-                <span className="pill blue">#{r.index}</span>
-                <div style={{ minWidth: 0, flex: 1 }}>
-                  <div style={{ fontWeight: 600, fontSize: 13 }}>{r.title}</div>
+          <div className="opp-list">
+            {meta.searchResults.map((r) => {
+              const canApply = !r.recommendation || r.recommendation === "Apply";
+              return (
+                <div key={r.index} className="opp-card">
+                  <div className="opp-card-top">
+                    <span className="pill blue">#{r.index}</span>
+                    {r.matchScore && <span className={`pill ${matchPill(r.matchScore)}`}>{r.matchScore} match</span>}
+                    {r.recommendation && <span className={`pill ${recPill(r.recommendation)}`}>{r.recommendation}</span>}
+                    {r.programArea && <span className="faint" style={{ marginLeft: "auto" }}>{r.programArea}</span>}
+                  </div>
+                  <div className="opp-card-title">{r.title}</div>
                   <div className="faint">
                     {r.funder}{r.number ? ` · ${r.number}` : ""}{r.closeDate ? ` · closes ${r.closeDate}` : ""}
+                  </div>
+                  {r.matchReason && <div className="opp-card-reason">{r.matchReason}</div>}
+                  <div className="opp-card-actions">
                     {r.sourceUrl?.startsWith("http") && (
-                      <> · <a href={r.sourceUrl} onClick={(e) => { e.preventDefault(); void openExternal(r.sourceUrl!); }}>details ↗</a></>
+                      <button className="ghost" onClick={() => void openExternal(r.sourceUrl!)}>Details ↗</button>
                     )}
+                    <button className={canApply ? "primary" : "ghost"} disabled={appliedIndex !== null || !canApply}
+                      title={canApply ? undefined : `Not currently recommended (${r.recommendation}) — the platform verified this against the funder's own site`}
+                      onClick={() => {
+                        // Structured event with the exact grant — the chat shows
+                        // "Apply for #N" but the server never re-derives it (§11).
+                        setAppliedIndex(r.index);
+                        onQuickSend(`Apply for #${r.index} — ${r.title}`, {
+                          type: "start_grant_application", index: r.index, title: r.title,
+                          number: r.number ?? null, funder: r.funder ?? null,
+                          closeDate: r.closeDate ?? null, sourceUrl: r.sourceUrl ?? null,
+                          externalId: r.externalId ?? null,
+                        });
+                      }}>
+                      {appliedIndex === r.index ? "Applying…" : canApply ? "Apply" : r.recommendation}
+                    </button>
                   </div>
                 </div>
-                <button className="ghost" disabled={appliedIndex !== null}
-                  onClick={() => {
-                    // Structured event with the exact grant — the chat shows
-                    // "Apply for #N" but the server never re-derives it (§11).
-                    setAppliedIndex(r.index);
-                    onQuickSend(`Apply for #${r.index} — ${r.title}`, {
-                      type: "start_grant_application", index: r.index, title: r.title,
-                      number: r.number ?? null, funder: r.funder ?? null,
-                      closeDate: r.closeDate ?? null, sourceUrl: r.sourceUrl ?? null,
-                      externalId: r.externalId ?? null,
-                    });
-                  }}>
-                  {appliedIndex === r.index ? "Applying…" : "Apply"}
-                </button>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
 

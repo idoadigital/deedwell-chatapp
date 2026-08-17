@@ -164,15 +164,22 @@ describe("external grant platform integration", () => {
       message: "Here are the opportunities.",
       intent: { capability: "show_opportunities", label: "Opportunities", backend: "conversation API", task_type: null, routing_method: "deterministic" },
       data: { opportunities: [
-        { funder: "The Waterloo Foundation", program_name: "Education Small Grants", recommendation: "Apply", deadline_text: "Rolling", official_url: "https://example.org/grant" },
-        { funder: "AFNet", program_name: "Flexible Grant", recommendation: "Do not apply" },
+        { funder: "The Waterloo Foundation", program_name: "Education Small Grants", recommendation: "Apply",
+          deadline_text: "Rolling", official_url: "https://example.org/grant", mission_fit_score: "High",
+          recommendation_reason: "Directly funds education programs matching the org's mission.", program_area: "Education" },
+        { funder: "AFNet", program_name: "Flexible Grant", recommendation: "Closed", mission_fit_score: "Low" },
       ] },
     });
     const res = await api(env.app, "POST", `/v1/orgs/${orgId}/channels/${davidDm}/messages`, {
       token, body: { body: "Show me the opportunities" } });
     const agentMsg = res.body.messages.find((m: any) => m.author_kind === "agent");
     expect(agentMsg.metadata.searchResults).toHaveLength(2);
-    expect(agentMsg.metadata.searchResults[0]).toMatchObject({ index: 1, title: "Education Small Grants", funder: "The Waterloo Foundation" });
+    expect(agentMsg.metadata.searchResults[0]).toMatchObject({
+      index: 1, title: "Education Small Grants", funder: "The Waterloo Foundation",
+      recommendation: "Apply", matchScore: "High", programArea: "Education",
+      matchReason: "Directly funds education programs matching the org's mission.",
+    });
+    expect(agentMsg.metadata.searchResults[1]).toMatchObject({ recommendation: "Closed", matchScore: "Low" });
   });
 
   it("apply → durable handoff: project channel bound to the platform application", async () => {

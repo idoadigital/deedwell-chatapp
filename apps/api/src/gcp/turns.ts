@@ -135,6 +135,11 @@ export async function handleGcpTurn(
       number: null,
       closeDate: o.deadline_text ? String(o.deadline_text) : (o.deadline_date ? String(o.deadline_date) : null),
       sourceUrl: o.official_url ? String(o.official_url) : (o.source_url ? String(o.source_url) : undefined),
+      // The platform's own verified assessment — never re-derived here.
+      recommendation: o.recommendation ? String(o.recommendation) : undefined,
+      matchScore: o.mission_fit_score ? String(o.mission_fit_score) : undefined,
+      matchReason: o.recommendation_reason ? String(o.recommendation_reason) : undefined,
+      programArea: o.program_area ? String(o.program_area) : undefined,
     }));
   }
 
