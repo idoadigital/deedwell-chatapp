@@ -136,12 +136,26 @@ async function pollChannel(deps: Deps, row: WatchRow): Promise<void> {
         : a.status === "completed"
         ? `${phrases.done}${retryNote}.${summary}`.trim()
         : `${phrases.failed}: ${String(a.task.failure_message ?? a.task.failure_code ?? "the platform reported a failure")}. Nothing else in the workspace is affected — you can ask me to try again.`;
+      // Packaging completions carry the real, downloadable files with them —
+      // fetched fresh from the platform, never invented client-side.
+      let deliverables: Array<Record<string, unknown>> | undefined;
+      if (a.status === "completed" && a.taskType === "document_generation" && row.gcp_application_id) {
+        try {
+          const out = await platform.deliverables(row.gcp_application_id, ids);
+          const list = (out.deliverables ?? []) as Array<Record<string, unknown>>;
+          deliverables = list.map((d) => ({
+            id: d.deliverable_id, type: d.deliverable_type, format: d.format,
+            status: d.status, sizeBytes: d.size_bytes, version: d.version,
+          }));
+        } catch { /* the Package tab still lists them on next open */ }
+      }
       await insertMessage(client, {
         tenantId: row.tenant_id, channelId: row.channel_id, authorKind: "agent",
         authorAgent: author, body,
         metadata: {
           gcpTaskId: a.taskId, gcpTaskType: a.taskType, gcpTaskStatus: a.status,
           ...(row.gcp_application_id ? { openWorkspace: true } : {}),
+          ...(deliverables?.length ? { deliverables } : {}),
         },
       });
     }

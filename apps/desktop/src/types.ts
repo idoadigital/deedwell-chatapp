@@ -323,6 +323,12 @@ export interface ChatMessage {
     gcpTasks?: Array<{ task_id: string; task_type: string; status: string }>;
     /** Bridge milestone for a finished platform task (clears the indicator). */
     gcpTaskId?: string;
+    gcpTaskType?: string;
+    /** Real, freshly generated files attached to a packaging completion message. */
+    deliverables?: Array<{
+      id: string; type: string; format: string; status: string;
+      sizeBytes: number | null; version: number | null;
+    }>;
   };
   created_at: string;
 }

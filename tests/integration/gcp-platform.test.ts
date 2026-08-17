@@ -288,6 +288,24 @@ describe("external grant platform integration", () => {
     expect(announcements[0].body).toContain("Requirements analysis finished");
   });
 
+  it("packaging completion carries the real deliverables, so chat can render a document card", async () => {
+    const ch = await api(env.app, "GET", `/v1/orgs/${orgId}/channels`, { token });
+    const projectChannel = ch.body.channels.find((c: any) => c.kind === "project" && c.project_type === "grant_application");
+    scripted.setActivity([{ task_id: "pkg-1111", task_type: "document_generation",
+      status: "running", created_at: new Date().toISOString() }], 1);
+    await bridgePoll(env.deps);
+    scripted.setActivity([{ task_id: "pkg-1111", task_type: "document_generation",
+      status: "completed", created_at: new Date().toISOString(), result_summary: "Package assembled.", attempts: 1 }], 0);
+    await bridgePoll(env.deps);
+    const msgs = await api(env.app, "GET", `/v1/orgs/${orgId}/channels/${projectChannel.id}/messages`, { token });
+    const done = msgs.body.messages.find((m: any) => m.metadata?.gcpTaskId === "pkg-1111");
+    expect(done.metadata.deliverables).toHaveLength(1);
+    expect(done.metadata.deliverables[0]).toMatchObject({
+      id: "d1111111-7777-4777-8777-000000000001", format: "DOCX", status: "COMPLETE",
+    });
+    expect(done.metadata.openWorkspace).toBe(true);
+  });
+
   it("channel activity serves the platform's real task events; unrouted channels read empty", async () => {
     scripted.setActivity([{
       task_id: "a1111111-9999-4999-8999-000000000001", task_type: "research", status: "running",

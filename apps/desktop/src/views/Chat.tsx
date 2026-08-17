@@ -13,6 +13,46 @@ export function agentColor(key: string): string {
   return `hsl(${hue} 40% 45%)`;
 }
 
+/** Packaging-completion card: the real generated files, with view + download. */
+function DeliverablesCard({ org, deliverables, onView }: {
+  org: Organization;
+  deliverables: NonNullable<ChatMessage["metadata"]>["deliverables"];
+  onView: (deliverableId: string) => void;
+}) {
+  const [busy, setBusy] = useState<string | null>(null);
+  return (
+    <div className="opp-card" style={{ maxWidth: 420 }}>
+      <div className="opp-card-title" style={{ marginTop: 0 }}>
+        {deliverables!.length === 1 ? "Document ready" : `${deliverables!.length} documents ready`}
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 8 }}>
+        {deliverables!.map((d) => {
+          const name = `application-v${d.version ?? 1}.${d.format.toLowerCase()}`;
+          return (
+            <div key={d.id} className="row" style={{ gap: 8 }}>
+              <Icon name="file-text" size={16} />
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <div style={{ fontSize: 13, fontWeight: 600 }}>{name}</div>
+                <div className="faint">{d.sizeBytes ? `${(d.sizeBytes / 1024).toFixed(1)} KB` : d.format.toUpperCase()}</div>
+              </div>
+              <button className="ghost" onClick={() => onView(d.id)}>View</button>
+              <button className="ghost" disabled={busy === d.id}
+                title="Download" aria-label="Download"
+                onClick={async () => {
+                  setBusy(d.id);
+                  try { await api.downloadGcpDeliverable(org.id, d.id, name); } finally { setBusy(null); }
+                }}>
+                <Icon name="download" size={14} />
+              </button>
+            </div>
+          );
+        })}
+      </div>
+      <p className="faint" style={{ marginTop: 8, fontSize: 11 }}>Private and authenticated — no public links.</p>
+    </div>
+  );
+}
+
 function matchPill(score: string): string {
   const s = score.toLowerCase();
   return s === "high" ? "green" : s === "medium" ? "amber" : s === "low" ? "red" : "gray";
@@ -36,6 +76,7 @@ export function ChatView({
   refresh,
   onOpenChannel,
   onOpenWork,
+  onViewDeliverable,
   working,
   onCancelRun,
 }: {
@@ -46,6 +87,7 @@ export function ChatView({
   refresh: () => void;
   onOpenChannel: (channelId: string) => void;
   onOpenWork: () => void;
+  onViewDeliverable?: (deliverableId: string) => void;
   working?: { runId: string; label: string; waiting?: boolean } | null;
   onCancelRun?: (runId: string) => void;
 }) {
@@ -172,6 +214,7 @@ export function ChatView({
             org={org}
             onOpenChannel={onOpenChannel}
             onOpenWork={onOpenWork}
+            onViewDeliverable={onViewDeliverable}
             onQuickSend={(body, action) => void send(body, null, action)}
             refresh={refresh}
           />
@@ -303,6 +346,7 @@ function Message({
   org,
   onOpenChannel,
   onOpenWork,
+  onViewDeliverable,
   onQuickSend,
   refresh,
 }: {
@@ -312,6 +356,7 @@ function Message({
   org: Organization;
   onOpenChannel: (id: string) => void;
   onOpenWork: () => void;
+  onViewDeliverable?: (deliverableId: string) => void;
   onQuickSend: (body: string, action?: GrantActionRef | null) => void;
   refresh: () => void;
 }) {
@@ -391,6 +436,11 @@ function Message({
               );
             })}
           </div>
+        )}
+
+        {meta.deliverables && meta.deliverables.length > 0 && (
+          <DeliverablesCard org={org} deliverables={meta.deliverables}
+            onView={(id) => (onViewDeliverable ? onViewDeliverable(id) : onOpenWork())} />
         )}
 
         {meta.infoRequest && meta.infoRequest.length > 0 && (

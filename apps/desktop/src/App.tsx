@@ -52,6 +52,9 @@ export default function App() {
   const [profileMenu, setProfileMenu] = useState(false);
   const [huddleNote, setHuddleNote] = useState(false);
   const [sidePanel, setSidePanel] = useState<"work" | "site" | null>(null);
+  // Set by a deliverable card's "View" action in chat: opens the panel
+  // straight to that document's preview, not just the Package tab in general.
+  const [previewDeliverableId, setPreviewDeliverableId] = useState<string | null>(null);
   const [runDetail, setRunDetail] = useState<RunDetail | null>(null);
   const [panelWidth, setPanelWidth] = useState(() => {
     const saved = Number(localStorage.getItem("deedwell.panelW"));
@@ -439,6 +442,7 @@ export default function App() {
                   refreshTick={refreshTick} refresh={refresh}
                   onOpenChannel={openChannel}
                   onOpenWork={() => setSidePanel("work")}
+                  onViewDeliverable={(id) => { setPreviewDeliverableId(id); setSidePanel("work"); }}
                   working={working}
                   onCancelRun={(runId) => { void api.cancelRun(org.id, runId).then(refresh).catch(() => undefined); }}
                 />
@@ -495,6 +499,8 @@ export default function App() {
                         refreshTick={refreshTick} refresh={refresh}
                         runDetail={runDetail} teammates={mateMap}
                         projectType={active.project_type ?? "grant_application"}
+                        autoPreviewDeliverableId={previewDeliverableId}
+                        onAutoPreviewConsumed={() => setPreviewDeliverableId(null)}
                       />
                     ) : active.kind === "dm" && (active.agent_key ?? "").startsWith("grant.") ? (
                       <GcpDmPanel org={org} channelId={active.id} refreshTick={refreshTick} />

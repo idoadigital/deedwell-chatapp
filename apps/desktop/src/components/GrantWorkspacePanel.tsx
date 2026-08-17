@@ -29,6 +29,7 @@ const STATUS_LABEL: Record<string, string> = {
 
 export function GrantWorkspacePanel({
   org, projectId, channelId, refreshTick, refresh, runDetail, teammates, projectType = "grant_application",
+  autoPreviewDeliverableId, onAutoPreviewConsumed,
 }: {
   org: Organization;
   projectId: string;
@@ -38,6 +39,9 @@ export function GrantWorkspacePanel({
   runDetail: RunDetail | null;
   teammates: Map<string, TeammateInfo>;
   projectType?: string;
+  /** Set by a "View" click on a deliverable card in chat: land on Package and open this document. */
+  autoPreviewDeliverableId?: string | null;
+  onAutoPreviewConsumed?: () => void;
 }) {
   const [ws, setWs] = useState<GrantWorkspace | null>(null);
   const [tab, setTab] = useState<Tab>("overview");
@@ -51,10 +55,12 @@ export function GrantWorkspacePanel({
     return () => { cancelled = true; };
   }, [org.id, projectId, refreshTick]);
 
-  // Land on the most useful tab: open questions first, else overview.
+  // Land on the most useful tab: a deliverable to view beats an open
+  // question beats the default overview.
   useEffect(() => {
+    if (autoPreviewDeliverableId) { setTab("package"); return; }
     if (ws?.questions.length) setTab((t) => (t === "overview" ? "questions" : t));
-  }, [ws?.questions.length]);
+  }, [ws?.questions.length, autoPreviewDeliverableId]);
 
   if (error) return <p className="error-text" style={{ padding: 16 }}>{error}</p>;
   if (!ws) return <p className="faint" style={{ padding: 16 }}>Loading workspace…</p>;
@@ -125,7 +131,10 @@ export function GrantWorkspacePanel({
         {tab === "sections" && gcp && <GcpSections gcp={gcp} />}
         {tab === "budget" && gcp && <GcpBudget gcp={gcp} />}
         {tab === "compliance" && gcp && <GcpCompliance gcp={gcp} />}
-        {tab === "package" && gcp && <GcpPackage org={org} gcp={gcp} />}
+        {tab === "package" && gcp && (
+          <GcpPackage org={org} gcp={gcp}
+            autoPreviewDeliverableId={autoPreviewDeliverableId} onAutoPreviewConsumed={onAutoPreviewConsumed} />
+        )}
         {tab === "application" && (
           ws.artifacts.length || runDetail
             ? <ArtifactPanel org={org} detail={runDetail} />
@@ -538,18 +547,40 @@ function GcpCompliance({ gcp }: { gcp: NonNullable<GrantWorkspace["gcp"]> }) {
   );
 }
 
-function GcpPackage({ org, gcp }: { org: Organization; gcp: NonNullable<GrantWorkspace["gcp"]> }) {
+function GcpPackage({ org, gcp, autoPreviewDeliverableId, onAutoPreviewConsumed }: {
+  org: Organization; gcp: NonNullable<GrantWorkspace["gcp"]>;
+  autoPreviewDeliverableId?: string | null; onAutoPreviewConsumed?: () => void;
+}) {
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   // In-panel preview: the PDF streams through the authenticated API into a
   // temporary blob URL — no public link to the file ever exists.
   const [preview, setPreview] = useState<{ id: string; url: string } | null>(null);
   useEffect(() => () => { if (preview) URL.revokeObjectURL(preview.url); }, [preview]);
+
+  // Arriving here via a chat "View" click: open that exact document.
+  useEffect(() => {
+    if (!autoPreviewDeliverableId) return;
+    const target = gcp.deliverables.find((d) => d.deliverable_id === autoPreviewDeliverableId);
+    if (!target) return; // workspace hasn't loaded this deliverable yet — retry on next data tick
+    if (target.format.toUpperCase() === "PDF") {
+      setBusy(target.deliverable_id);
+      api.previewGcpDeliverable(org.id, target.deliverable_id)
+        .then((url) => setPreview({ id: target.deliverable_id, url }))
+        .catch((e) => setErr(e instanceof Error ? e.message : "Preview failed"))
+        .finally(() => setBusy(null));
+    }
+    onAutoPreviewConsumed?.();
+  }, [autoPreviewDeliverableId, gcp.deliverables, org.id, onAutoPreviewConsumed]);
+
   if (!gcp.deliverables.length) {
     return <p className="faint">No generated documents yet — say "generate the final application package as Word and PDF" in the channel.</p>;
   }
   return (
     <div>
+      <p className="faint" style={{ fontSize: 12, margin: "0 0 8px" }}>
+        {gcp.deliverables.length} document{gcp.deliverables.length === 1 ? "" : "s"} generated for this application.
+      </p>
       {err && <p className="error-text">{err}</p>}
       {gcp.deliverables.map((d) => {
         const name = `application-v${d.version ?? 1}.${d.format.toLowerCase()}`;
