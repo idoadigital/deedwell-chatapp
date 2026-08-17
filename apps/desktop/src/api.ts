@@ -209,6 +209,23 @@ export const getGrantWorkspace = (orgId: string, projectId: string) =>
 export const answerGcpQuestion = (orgId: string, projectId: string, requestId: string, answer: string) =>
   call<Record<string, unknown>>("POST", `/v1/orgs/${orgId}/projects/${projectId}/gcp-answers`, { requestId, answer });
 
+/** Real platform execution for this channel's conversation: tasks + task events. */
+export const getGcpActivity = (orgId: string, channelId: string) =>
+  call<import("./types").GcpActivity>("GET", `/v1/orgs/${orgId}/channels/${channelId}/gcp-activity`);
+
+/** Safe research provenance for a finished research task (sources, queries). */
+export const getGcpResearchResult = (orgId: string, taskId: string) =>
+  call<import("./types").GcpResearchSources>("GET", `/v1/orgs/${orgId}/gcp-tasks/${taskId}/research-result`);
+
+/** Authenticated in-app preview: fetches the deliverable and returns a blob URL. */
+export async function previewGcpDeliverable(orgId: string, deliverableId: string): Promise<string> {
+  const token = getToken();
+  const res = await fetch(`${API_URL}/v1/orgs/${orgId}/gcp-deliverables/${deliverableId}/download`,
+    { headers: token ? { authorization: `Bearer ${token}` } : {} });
+  if (!res.ok) throw new ApiError(res.status, "Preview failed");
+  return URL.createObjectURL(await res.blob());
+}
+
 /** Private authenticated deliverable download (DOCX/PDF), streamed via the API. */
 export async function downloadGcpDeliverable(orgId: string, deliverableId: string, filename: string): Promise<void> {
   const token = getToken();

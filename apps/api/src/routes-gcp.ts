@@ -46,6 +46,44 @@ export function registerGcpRoutes(app: FastifyInstance, ctx: AppContext): void {
     return reply.status(201).send(out);
   });
 
+  // Observable execution for a channel's platform conversation: real tasks,
+  // real task events (planning, search passes, verification, ingestion …),
+  // retries and failures — straight from the platform's persisted state.
+  // A channel with no platform conversation yet reports an honest empty feed.
+  app.get("/v1/orgs/:orgId/channels/:channelId/gcp-activity", async (req) => {
+    ctx.requireRole(req, "viewer");
+    const { channelId } = req.params as { channelId: string };
+    return await ctx.inOrg(req, async (client) => {
+      const { rows: chan } = await client.query("SELECT id FROM channels WHERE id = $1", [channelId]);
+      if (!chan[0]) throw new HttpError(404, "Channel not found");
+      // Platform off, org not allowlisted, or nothing routed yet all read the
+      // same honest way: no platform work in this conversation.
+      const link = ctx.deps.gcp ? await getChannelLink(client, channelId) : null;
+      if (!link || !ctx.deps.gcp) return { tasks: [], counts: { tasks: 0, running: 0, failed: 0 } };
+      const ids = await resolveGcpIdsForRequest(ctx.deps, client, req.orgId!, req.userId!);
+      const activity = await ctx.deps.gcp!.activity(link.gcp_conversation_id, ids);
+      const tasks = Array.isArray(activity.tasks) ? activity.tasks : [];
+      return { tasks, counts: activity.counts ?? { tasks: tasks.length, running: 0, failed: 0 } };
+    });
+  });
+
+  // Sources behind a finished research task — the platform's safe subset
+  // (title/url/domain/quality; never plans, traces, or model internals).
+  app.get("/v1/orgs/:orgId/gcp-tasks/:taskId/research-result", async (req) => {
+    ctx.requireRole(req, "viewer");
+    if (!ctx.deps.gcp) throw new HttpError(404, "Grant platform is not enabled");
+    const { taskId } = req.params as { taskId: string };
+    return await ctx.inOrg(req, async (client) => {
+      const ids = await resolveGcpIdsForRequest(ctx.deps, client, req.orgId!, req.userId!);
+      try {
+        return await ctx.deps.gcp!.researchResult(taskId, ids);
+      } catch {
+        // Wrong id and another tenant's id are deliberately indistinguishable.
+        throw new HttpError(404, "Research result not found");
+      }
+    });
+  });
+
   // Private, authenticated deliverable download — bytes stream through the
   // API; the platform's storage stays unreachable from the browser.
   app.get("/v1/orgs/:orgId/gcp-deliverables/:deliverableId/download", async (req, reply) => {

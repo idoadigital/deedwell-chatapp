@@ -67,7 +67,8 @@ export function ChatView({
         const prevSeen = lastSeenRef.current;
         if (prevSeen !== null) {
           const fresh = messages.filter(
-            (m) => m.created_at > prevSeen && m.author_kind === "agent" && m.metadata?.openWorkspace
+            (m) => m.created_at > prevSeen && m.author_kind === "agent"
+              && (m.metadata?.openWorkspace || (m.metadata?.gcpTasks?.length ?? 0) > 0)
           );
           if (fresh.length) onOpenWork();
         }
@@ -103,8 +104,9 @@ export function ChatView({
     try {
       const { messages: created } = await api.sendMessage(org.id, channel.id, body.trim(), fileId, clientKey, null, action);
       setMessages((prev) => [...prev.filter((m) => m.id !== temp.id), ...created]);
-      // Meaningful work started — open the workspace panel automatically.
-      if (created.some((m) => m.metadata?.openWorkspace)) onOpenWork();
+      // Meaningful work started — open the workspace panel automatically
+      // (platform tasks count: their progress lives in the Activity panel).
+      if (created.some((m) => m.metadata?.openWorkspace || (m.metadata?.gcpTasks?.length ?? 0) > 0)) onOpenWork();
       refresh();
     } catch (err) {
       setMessages((prev) => prev.filter((m) => m.id !== temp.id));

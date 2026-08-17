@@ -9,6 +9,7 @@ import { Icon } from "./components/Icon";
 import { Avatar } from "./components/Avatar";
 import { ArtifactPanel } from "./components/ArtifactPanel";
 import { GrantWorkspacePanel } from "./components/GrantWorkspacePanel";
+import { GcpDmPanel } from "./components/GcpActivityFeed";
 import { PreviewSurface } from "./components/PreviewSurface";
 import { openExternal } from "./external";
 import { LoginView } from "./views/Login";
@@ -414,7 +415,8 @@ export default function App() {
                 </button>
                 <button role="tab" aria-selected={sidePanel === "work"} className={`seg-btn ${sidePanel === "work" ? "active" : ""}`}
                   onClick={() => setSidePanel("work")}
-                  disabled={activeRuns.length === 0 && !activeSite && active.project_type !== "grant_application"}>
+                  disabled={activeRuns.length === 0 && !activeSite && active.project_type !== "grant_application"
+                    && !(active.kind === "dm" && (active.agent_key ?? "").startsWith("grant."))}>
                   Work & artifacts
                 </button>
                 {activeSite && (
@@ -494,6 +496,8 @@ export default function App() {
                         runDetail={runDetail} teammates={mateMap}
                         projectType={active.project_type ?? "grant_application"}
                       />
+                    ) : active.kind === "dm" && (active.agent_key ?? "").startsWith("grant.") ? (
+                      <GcpDmPanel org={org} channelId={active.id} refreshTick={refreshTick} />
                     ) : (
                       <ArtifactPanel org={org} detail={runDetail} />
                     )

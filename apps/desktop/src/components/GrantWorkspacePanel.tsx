@@ -4,6 +4,7 @@ import type { GrantWorkspace, Organization, RunDetail, TeammateInfo } from "../t
 import { Icon } from "./Icon";
 import { Avatar } from "./Avatar";
 import { ArtifactPanel } from "./ArtifactPanel";
+import { GcpActivityFeed, GcpSources } from "./GcpActivityFeed";
 import { openExternal } from "../external";
 
 /**
@@ -66,7 +67,9 @@ export function GrantWorkspacePanel({
     // Research and the requirements matrix are grant-workflow records;
     // website projects surface their QA in the test-report artifact instead.
     ...(isGrant ? [
-      ...(gcp ? [] : [{ key: "research" as Tab, label: "Research", badge: ws.sources.length }]),
+      // Platform-backed workspaces show live research provenance as Sources;
+      // local grant workflows keep their original Research records view.
+      { key: "research" as Tab, label: gcp ? "Sources" : "Research", badge: gcp ? undefined : ws.sources.length },
       { key: "requirements" as Tab, label: "Requirements", badge: ws.requirements.length },
     ] : []),
     { key: "questions", label: "Questions", badge: ws.questions.length },
@@ -95,8 +98,12 @@ export function GrantWorkspacePanel({
       </div>
       <div className="ws-body">
         {tab === "overview" && (gcp?.application ? <GcpOverview ws={ws} /> : <Overview ws={ws} />)}
-        {tab === "activity" && <Activity ws={ws} teammates={teammates} />}
-        {tab === "research" && <Research ws={ws} />}
+        {tab === "activity" && (gcp
+          ? <GcpActivityFeed org={org} channelId={channelId} refreshTick={refreshTick} />
+          : <Activity ws={ws} teammates={teammates} />)}
+        {tab === "research" && (gcp
+          ? <GcpSources org={org} channelId={channelId} refreshTick={refreshTick} />
+          : <Research ws={ws} />)}
         {tab === "requirements" && <Requirements ws={ws} />}
         {tab === "questions" && (
           <Questions ws={ws} onSubmit={async (lines) => {
@@ -534,6 +541,10 @@ function GcpCompliance({ gcp }: { gcp: NonNullable<GrantWorkspace["gcp"]> }) {
 function GcpPackage({ org, gcp }: { org: Organization; gcp: NonNullable<GrantWorkspace["gcp"]> }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  // In-panel preview: the PDF streams through the authenticated API into a
+  // temporary blob URL — no public link to the file ever exists.
+  const [preview, setPreview] = useState<{ id: string; url: string } | null>(null);
+  useEffect(() => () => { if (preview) URL.revokeObjectURL(preview.url); }, [preview]);
   if (!gcp.deliverables.length) {
     return <p className="faint">No generated documents yet — say "generate the final application package as Word and PDF" in the channel.</p>;
   }
@@ -542,28 +553,51 @@ function GcpPackage({ org, gcp }: { org: Organization; gcp: NonNullable<GrantWor
       {err && <p className="error-text">{err}</p>}
       {gcp.deliverables.map((d) => {
         const name = `application-v${d.version ?? 1}.${d.format.toLowerCase()}`;
+        const isPdf = d.format.toUpperCase() === "PDF";
         return (
-          <div key={d.deliverable_id} className="ws-source row">
-            <Icon name="file-text" size={14} />
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 13, fontWeight: 600 }}>
-                {d.deliverable_type.replace(/_/g, " ").toLowerCase()} · {d.format.toUpperCase()}
-                <span className={`pill ${pillFor(d.status)}`} style={{ marginLeft: 6 }}>{d.status.toLowerCase()}</span>
+          <div key={d.deliverable_id}>
+            <div className="ws-source row">
+              <Icon name="file-text" size={14} />
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 13, fontWeight: 600 }}>
+                  {d.deliverable_type.replace(/_/g, " ").toLowerCase()} · {d.format.toUpperCase()}
+                  <span className={`pill ${pillFor(d.status)}`} style={{ marginLeft: 6 }}>{d.status.toLowerCase()}</span>
+                </div>
+                <div className="faint">
+                  {d.size_bytes ? `${(d.size_bytes / 1024).toFixed(1)} KB · ` : ""}
+                  {new Date(d.created_at).toLocaleString()}
+                </div>
               </div>
-              <div className="faint">
-                {d.size_bytes ? `${(d.size_bytes / 1024).toFixed(1)} KB · ` : ""}
-                {new Date(d.created_at).toLocaleString()}
-              </div>
+              {isPdf && (
+                <button className="ghost" disabled={busy === d.deliverable_id}
+                  onClick={async () => {
+                    if (preview?.id === d.deliverable_id) { setPreview(null); return; }
+                    setBusy(d.deliverable_id); setErr(null);
+                    try { setPreview({ id: d.deliverable_id, url: await api.previewGcpDeliverable(org.id, d.deliverable_id) }); }
+                    catch (e) { setErr(e instanceof Error ? e.message : "Preview failed"); }
+                    finally { setBusy(null); }
+                  }}>
+                  {preview?.id === d.deliverable_id ? "Hide" : "View"}
+                </button>
+              )}
+              <button className="ghost" disabled={busy === d.deliverable_id}
+                onClick={async () => {
+                  setBusy(d.deliverable_id); setErr(null);
+                  try { await api.downloadGcpDeliverable(org.id, d.deliverable_id, name); }
+                  catch (e) { setErr(e instanceof Error ? e.message : "Download failed"); }
+                  finally { setBusy(null); }
+                }}>
+                {busy === d.deliverable_id ? "Working…" : "Download"}
+              </button>
             </div>
-            <button className="ghost" disabled={busy === d.deliverable_id}
-              onClick={async () => {
-                setBusy(d.deliverable_id); setErr(null);
-                try { await api.downloadGcpDeliverable(org.id, d.deliverable_id, name); }
-                catch (e) { setErr(e instanceof Error ? e.message : "Download failed"); }
-                finally { setBusy(null); }
-              }}>
-              {busy === d.deliverable_id ? "Downloading…" : "Download"}
-            </button>
+            {preview?.id === d.deliverable_id && (
+              <object data={preview.url} type="application/pdf" aria-label="PDF preview"
+                style={{ width: "100%", height: 480, border: "1px solid var(--line, #ddd)", borderRadius: 6, marginBottom: 8 }}>
+                <p className="faint" style={{ padding: 8 }}>
+                  This viewer can't display PDFs inline — use Download instead.
+                </p>
+              </object>
+            )}
           </div>
         );
       })}

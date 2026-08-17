@@ -54,7 +54,23 @@ function scriptedPlatform() {
       nextTurn = null;
       return r;
     },
-    async activity() { return { tasks: activityTasks, counts: { running } }; },
+    async activity() {
+      return {
+        tasks: activityTasks,
+        counts: { tasks: activityTasks.length, running, failed: 0 },
+      };
+    },
+    async researchResult(taskId, ids) {
+      calls.push({ method: "researchResult", args: [taskId, ids] });
+      // Tenant-scoped like the real platform: the task belongs to org #1.
+      if (ids.organizationId !== "bbbbbbbb-2222-4222-8222-000000000001") throw new Error("not found");
+      if (taskId !== "a1111111-9999-4999-8999-000000000001") throw new Error("not found");
+      return {
+        task_id: taskId, answer: "Summary of findings.",
+        sources: [{ id: "S1", title: "Waterloo Foundation — Education", url: "https://example.org/grant", domain: "example.org", quality: "official" }],
+        web_search_queries: ["waterloo foundation education grants"],
+      };
+    },
     async conversationState() { return {}; },
     async applicationOverview(applicationId) {
       calls.push({ method: "applicationOverview", args: [applicationId] });
@@ -265,6 +281,37 @@ describe("external grant platform integration", () => {
     expect(announcements[0].body).toContain("Requirements analysis finished");
   });
 
+  it("channel activity serves the platform's real task events; unrouted channels read empty", async () => {
+    scripted.setActivity([{
+      task_id: "a1111111-9999-4999-8999-000000000001", task_type: "research", status: "running",
+      title: "Grant research", attempts: 1, run_count: 1, created_at: new Date().toISOString(),
+      events: [
+        { event_id: "e1", event_type: "research.planning", label: "Planning research", message: null, metadata: {}, at: new Date().toISOString() },
+        { event_id: "e2", event_type: "research.search_started", label: "Search pass started", message: "Pass 1", metadata: { search_passes: 1 }, at: new Date().toISOString() },
+      ],
+    }], 1);
+    const act = await api(env.app, "GET", `/v1/orgs/${orgId}/channels/${davidDm}/gcp-activity`, { token });
+    expect(act.status).toBe(200);
+    expect(act.body.counts.running).toBe(1);
+    expect(act.body.tasks[0].events).toHaveLength(2);
+    expect(act.body.tasks[0].events[1].label).toBe("Search pass started");
+
+    // A channel that never routed to the platform reports an honest empty feed.
+    const ch = await api(env.app, "GET", `/v1/orgs/${orgId}/channels`, { token });
+    const mayaDm = ch.body.channels.find((c: any) => c.key === "dm:core.executive_assistant").id;
+    const empty = await api(env.app, "GET", `/v1/orgs/${orgId}/channels/${mayaDm}/gcp-activity`, { token });
+    expect(empty.status).toBe(200);
+    expect(empty.body.tasks).toHaveLength(0);
+  });
+
+  it("research sources come from the platform's safe subset, tenant-scoped", async () => {
+    const res = await api(env.app, "GET", `/v1/orgs/${orgId}/gcp-tasks/a1111111-9999-4999-8999-000000000001/research-result`, { token });
+    expect(res.status).toBe(200);
+    expect(res.body.sources[0]).toMatchObject({ domain: "example.org", quality: "official" });
+    const missing = await api(env.app, "GET", `/v1/orgs/${orgId}/gcp-tasks/ffffffff-0000-4000-8000-000000000000/research-result`, { token });
+    expect(missing.status).toBe(404);
+  });
+
   it("cross-tenant: org B cannot see org A's platform workspace, answers, or downloads", async () => {
     const evil = await registerUser(env.app, "gcp-evil@example.org");
     const evilOrg = await createOrg(env.app, evil.token, "gcp-evil-org");
@@ -280,6 +327,12 @@ describe("external grant platform integration", () => {
     const ans = await api(env.app, "POST", `/v1/orgs/${evilOrg}/projects/${projectChannel.project_id}/gcp-answers`, {
       token: evil.token, body: { requestId: "e1111111-5555-4555-8555-000000000001", answer: "steal" } });
     expect(ans.status).toBe(404);
+
+    // Activity and research sources are equally unreachable across tenants.
+    const act = await api(env.app, "GET", `/v1/orgs/${orgId}/channels/${projectChannel.id}/gcp-activity`, { token: evil.token });
+    expect(act.status).toBe(404);
+    const rr = await api(env.app, "GET", `/v1/orgs/${evilOrg}/gcp-tasks/a1111111-9999-4999-8999-000000000001/research-result`, { token: evil.token });
+    expect(rr.status).toBe(404);
   });
 
   it("with the platform disabled nothing routes and grant DMs behave locally", async () => {

@@ -322,6 +322,51 @@ export interface ChatMessage {
   created_at: string;
 }
 
+// ---- grant-platform observable execution (Activity/Sources panels) ---------
+
+export interface GcpActivityEvent {
+  event_id: string;
+  event_type: string;
+  label: string;
+  message: string | null;
+  metadata: Record<string, unknown>;
+  at: string;
+}
+
+export interface GcpActivityTask {
+  task_id: string;
+  task_type: string;
+  status: "queued" | "running" | "completed" | "failed" | string;
+  title: string | null;
+  capability: string | null;
+  service: string | null;
+  progress: string | null;
+  result_summary: string | null;
+  failure_code: string | null;
+  failure_message: string | null;
+  application_id: string | null;
+  document_id: string | null;
+  run_count: number | null;
+  attempts: number | null;
+  created_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  elapsed_ms: number | null;
+  events: GcpActivityEvent[];
+}
+
+export interface GcpActivity {
+  tasks: GcpActivityTask[];
+  counts: { tasks: number; running: number; failed: number };
+}
+
+export interface GcpResearchSources {
+  task_id: string;
+  answer: string | null;
+  sources: Array<{ id?: string; title: string | null; url: string | null; domain: string | null; quality: string | null }>;
+  web_search_queries: string[];
+}
+
 export interface MemberInfo {
   id: string;
   display_name: string;

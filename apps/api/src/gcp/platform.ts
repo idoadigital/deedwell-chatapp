@@ -50,6 +50,7 @@ export interface GcpGrantPlatform {
   createConversation(ids: GcpIds, applicationId?: string | null): Promise<string>;
   turn(conversationId: string, ids: GcpIds, message: string): Promise<GcpTurnResult>;
   activity(conversationId: string, ids: GcpIds): Promise<Record<string, unknown>>;
+  researchResult(taskId: string, ids: GcpIds): Promise<Record<string, unknown>>;
   conversationState(conversationId: string, ids: GcpIds): Promise<Record<string, unknown>>;
   applicationOverview(applicationId: string, ids: GcpIds): Promise<Record<string, unknown>>;
   requirements(applicationId: string, ids: GcpIds): Promise<Record<string, unknown>>;
@@ -232,6 +233,9 @@ export class HttpGcpGrantPlatform implements GcpGrantPlatform {
 
   async activity(conversationId: string, ids: GcpIds) {
     return await this.call("GET", `/v1/conversations/${conversationId}/activity?${this.q(ids)}`);
+  }
+  async researchResult(taskId: string, ids: GcpIds) {
+    return await this.call("GET", `/v1/tasks/${taskId}/research-result?${this.q(ids)}`);
   }
   async conversationState(conversationId: string, ids: GcpIds) {
     return await this.call("GET", `/v1/conversations/${conversationId}/state?${this.q(ids)}`);
