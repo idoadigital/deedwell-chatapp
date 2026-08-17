@@ -116,7 +116,7 @@ class IdTokenSource {
 
   private async mintFromKeyFile(keyPath: string): Promise<string> {
     const key = JSON.parse(readFileSync(keyPath, "utf8")) as {
-      client_email?: string; private_key?: string; token_uri?: string;
+      client_email?: string; private_key?: string; private_key_id?: string; token_uri?: string;
     };
     if (!key.client_email || !key.private_key) {
       throw new Error("GOOGLE_APPLICATION_CREDENTIALS is not a service-account key (missing client_email/private_key)");
@@ -124,7 +124,9 @@ class IdTokenSource {
     const tokenUri = key.token_uri ?? "https://oauth2.googleapis.com/token";
     const now = Math.floor(Date.now() / 1000);
     const enc = (o: unknown) => Buffer.from(JSON.stringify(o)).toString("base64url");
-    const unsigned = `${enc({ alg: "RS256", typ: "JWT" })}.${enc({
+    // kid lets Google pick the right public key when the account has several
+    // registered (e.g. an uploaded key alongside a Google-generated one).
+    const unsigned = `${enc({ alg: "RS256", typ: "JWT", ...(key.private_key_id ? { kid: key.private_key_id } : {}) })}.${enc({
       iss: key.client_email,
       sub: key.client_email,
       aud: tokenUri,
