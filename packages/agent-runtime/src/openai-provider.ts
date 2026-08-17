@@ -72,8 +72,9 @@ export class OpenAiProvider implements ModelProvider {
   }
 }
 
-/** Compact output-shape descriptions appended to the system prompt per schema. */
-const SCHEMA_HINTS: Record<ModelRequest["outputSchemaRef"], string> = {
+/** Compact output-shape descriptions appended to the system prompt per schema.
+ *  Shared with the Gemini adapter — the contract is the seam's, not the vendor's. */
+export const SCHEMA_HINTS: Record<ModelRequest["outputSchemaRef"], string> = {
   requirements_extraction: `Output JSON shape: {"requirements":[{"text":string,"kind":"eligibility"|"narrative"|"budget"|"attachment"|"formatting"|"deadline"|"other","mandatory":boolean,"sourceLocation":{"line":number,"quote":string},"wordLimit":number|null}],"documentSummary":string}. Line numbers are 1-based lines of the document block.`,
   section_draft: `Output JSON shape: {"title":string,"body":string,"claims":[{"text":string,"factKey":string|null,"support":"verified"|"user_certified"|"estimate"|"assumption"|"unsupported","flagged":boolean}],"wordCount":number}. Every material claim must appear in claims with the org_facts key it rests on, or factKey null + support "unsupported" + flagged true.`,
   section_plan: `Output JSON shape: {"sections":[{"title":string,"objective":string,"wordLimit":number|null,"requirementLines":number[]}],"activities":string[]} (max 12 sections, max 20 activities).`,

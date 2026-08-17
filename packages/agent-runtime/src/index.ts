@@ -14,8 +14,10 @@ import {
 } from "@deedwell/schemas";
 import { MockModelProvider } from "./mock-provider.js";
 import { OpenAiProvider } from "./openai-provider.js";
+import { GeminiProvider } from "./gemini-provider.js";
 
 export { MockModelProvider } from "./mock-provider.js";
+export { GeminiProvider } from "./gemini-provider.js";
 export { seedAgentDefinitions } from "./seed.js";
 
 // ---------------------------------------------------------------------------
@@ -62,8 +64,9 @@ export interface ModelProvider {
 export function createModelProvider(kind = process.env.MODEL_PROVIDER ?? "mock"): ModelProvider {
   if (kind === "mock") return new MockModelProvider();
   if (kind === "openai") return new OpenAiProvider();
+  if (kind === "gemini") return new GeminiProvider();
   throw new Error(
-    `Model provider "${kind}" is not implemented. Available: "mock", "openai".`
+    `Model provider "${kind}" is not implemented. Available: "mock", "openai", "gemini".`
   );
 }
 

@@ -57,3 +57,21 @@ describe("MockModelProvider — section drafting", () => {
     expect(out.wordCount).toBeGreaterThan(0);
   });
 });
+
+describe("createModelProvider factory", () => {
+  it("selects mock, openai, and gemini by kind; rejects unknown kinds", async () => {
+    const { createModelProvider } = await import("./index.js");
+    expect(createModelProvider("mock").name).toBe("mock");
+    expect(() => createModelProvider("openai")).toThrow(/OPENAI_API_KEY/);
+    expect(() => createModelProvider("gemini")).toThrow(/GCP_PROJECT/);
+    expect(() => createModelProvider("bogus")).toThrow(/not implemented/);
+  });
+});
+
+describe("GeminiProvider", () => {
+  it("requires GCP_PROJECT unless a service-account key supplies project_id", async () => {
+    const { GeminiProvider } = await import("./gemini-provider.js");
+    expect(() => new GeminiProvider()).toThrow(/GCP_PROJECT/);
+    expect(() => new GeminiProvider({ project: "some-project" })).not.toThrow();
+  });
+});
