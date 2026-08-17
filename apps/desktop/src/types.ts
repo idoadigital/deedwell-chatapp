@@ -73,7 +73,8 @@ export interface ArtifactSummary {
     | "logic_model"
     | "review_report"
     | "compliance_report"
-    | "website_brief";
+    | "website_brief"
+    | "website_test_report";
   title: string;
   current_version: number;
   updated_at: string;
@@ -358,10 +359,64 @@ export interface GrantWorkspace {
   events: WorkspaceEvent[];
   sources: ResearchSource[];
   artifacts: Array<{ id: string; type: string; title: string; current_version: number; updated_at: string }>;
-  requirements: Array<{ key?: string; kind?: string; text?: string; mandatory?: boolean; sourceLine?: string }>;
+  requirements: Array<{ key?: string; kind?: string; text?: string; mandatory?: boolean; sourceLine?: string;
+    status?: string; statusReason?: string | null; wordLimit?: number | null }>;
   eligibility: { overall: string; rule_findings: unknown[]; missing_facts: string[]; created_at: string } | null;
-  files: Array<{ id: string; filename: string; mime: string; size_bytes: number; created_at: string }>;
+  files: Array<{ id: string; filename: string; mime: string; size_bytes: number; created_at: string;
+    ingestion_status?: string; fact_count?: number }>;
   questions: WorkspaceQuestion[];
+  /** Present when this project runs on the external grant platform. */
+  gcp?: GcpWorkspaceBlock | null;
+}
+
+/** Real persisted state from the grant platform — nothing computed client-side. */
+export interface GcpWorkspaceBlock {
+  application: {
+    application_id: string; status: string; funder: string; program_name: string;
+    official_url: string | null; deadline_text: string | null; deadline_date: string | null;
+    grant_opportunity?: { recommendation?: string | null; mission_fit_score?: number | null } | null;
+  } | null;
+  readiness: { total?: number; complete?: number; percent_complete?: number } | null;
+  strategy: {
+    version: number; status: string; blocking_gap_count?: number;
+    funder_priorities?: unknown[]; organization_fit?: string | null;
+    recommended_project?: string | null; recommended_project_rationale?: string | null;
+    strongest_evidence?: unknown[]; positioning?: string | null;
+    narrative_themes?: unknown[]; weaknesses?: unknown[]; risks?: unknown[];
+    evidence_gaps?: Array<Record<string, unknown>>; required_decisions?: unknown[];
+  } | null;
+  strategyApprovedVersion: number | null;
+  sections: {
+    progress: { total: number; not_started: number; draft: number; review: number;
+      approved: number; blocked?: number; total_blockers?: number };
+    sections: Array<{
+      section_id: string; section_title: string; question_text?: string; status: string;
+      current_revision_number: number; word_limit?: number | null; char_limit?: number | null;
+      unresolved_gaps?: unknown[]; blockers?: unknown[];
+    }>;
+  } | null;
+  budget: {
+    version: number; status: string; validation_status?: string; currency?: string;
+    requested_amount?: number; total_project_cost?: number;
+    direct_costs?: number; indirect_costs?: number; indirect_rate?: number | null;
+    funder_max_amount?: number | null; narrative?: string | null;
+    validation_errors?: unknown[]; validation_warnings?: unknown[];
+    lines?: Array<Record<string, unknown>>;
+  } | null;
+  compliance: {
+    result: string; hard_blocker_count: number; soft_warning_count?: number;
+    checks_run?: number; checks_passed?: number; created_at: string;
+    blockers?: Array<Record<string, unknown>>; warnings?: Array<Record<string, unknown>>;
+    checks?: Array<Record<string, unknown>>;
+  } | null;
+  deliverables: Array<{
+    deliverable_id: string; deliverable_type: string; format: string; status: string;
+    size_bytes?: number | null; version?: number; created_at: string;
+    generated_from?: Record<string, unknown> | null;
+  }>;
+  documents: Array<Record<string, unknown>>;
+  evidenceCount: number;
+  activity: { tasks: Array<Record<string, unknown>>; counts: { running?: number; failed?: number } };
 }
 
 export interface GrantActionRef {

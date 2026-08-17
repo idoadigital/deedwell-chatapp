@@ -186,24 +186,57 @@ export function registerChatRoutes(app: FastifyInstance, ctx: AppContext): void 
       );
       const { completionForRun } = await import("./workspace.js");
       const { describeInfoRequest } = await import("./fact-fields.js");
-      return {
+      const base = {
         project: project.rows[0],
         run: run.rows[0] ?? null,
         completion: run.rows[0]
           ? completionForRun(run.rows[0].current_step, run.rows[0].status, run.rows[0].definition)
           : project.rows[0].pending_intent ? 2 : 5,
-        events: events.rows,
+        events: events.rows as Array<Record<string, unknown>>,
         sources: sources.rows,
         artifacts: artifacts.rows,
-        requirements: matrix.rows[0]?.content?.requirements ?? [],
+        requirements: (matrix.rows[0]?.content?.requirements ?? []) as Array<Record<string, unknown>>,
         eligibility: eligibility.rows[0] ?? null,
-        files: files.rows,
+        files: files.rows as Array<Record<string, unknown>>,
         questions: describeInfoRequest(missingFacts, waitContext).map((field) => ({
           ...field,
           reasonNeeded: field.reason,
           prefill: knownFacts.rows.find((f) => f.fact_key === field.key)?.value ?? null,
-        })),
+        })) as Array<Record<string, unknown>>,
+        gcp: null as Record<string, unknown> | null,
       };
+      // Platform-backed workspace: real persisted state from the grant
+      // platform replaces the local workflow's view of this project. The
+      // existing tabs read the same fields; extra platform views come from
+      // the `gcp` block.
+      if (ctx.deps.gcp) {
+        const { buildGcpWorkspace, gcpActivityEvents, gcpQuestions } = await import("./gcp/workspace.js");
+        const block = await buildGcpWorkspace(ctx.deps, client, { tenantId: req.orgId!, userId: req.userId! }, projectId)
+          .catch((err) => {
+            console.log(JSON.stringify({ at: "gcp_workspace_failed", projectId, error: String(err instanceof Error ? err.message : err).slice(0, 200) }));
+            return null;
+          });
+        if (block) {
+          const readiness = (block.readiness ?? {}) as { percent_complete?: number };
+          base.gcp = block as unknown as Record<string, unknown>;
+          base.events = gcpActivityEvents(block);
+          base.questions = gcpQuestions(block);
+          base.requirements = block.requirements.map((r) => ({
+            text: r.title, key: r.requirement_key, mandatory: r.is_required !== false,
+            sourceLine: (r.source as { quote?: string } | null)?.quote ?? null,
+            status: r.status, statusReason: r.status_reason ?? null,
+            wordLimit: r.word_limit ?? null,
+          }));
+          base.files = block.documents.map((d) => ({
+            id: d.document_id, filename: d.original_filename,
+            mime: String(d.document_type ?? "document").replace(/_/g, " ").toLowerCase(),
+            size_bytes: Number(d.size_bytes ?? 0), created_at: d.created_at,
+            ingestion_status: d.ingestion_status, fact_count: d.fact_count ?? 0,
+          }));
+          if (typeof readiness.percent_complete === "number") base.completion = readiness.percent_complete;
+        }
+      }
+      return base;
     });
   });
 

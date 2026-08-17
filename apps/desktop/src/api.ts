@@ -203,6 +203,25 @@ export const sendMessage = (
 export const getGrantWorkspace = (orgId: string, projectId: string) =>
   call<import("./types").GrantWorkspace>("GET", `/v1/orgs/${orgId}/projects/${projectId}/grant-workspace`);
 
+// --- external grant platform (feature-flagged; only used when ws.gcp exists) --
+
+/** Structured Questions-form answer — feeds the same backend state as chat. */
+export const answerGcpQuestion = (orgId: string, projectId: string, requestId: string, answer: string) =>
+  call<Record<string, unknown>>("POST", `/v1/orgs/${orgId}/projects/${projectId}/gcp-answers`, { requestId, answer });
+
+/** Private authenticated deliverable download (DOCX/PDF), streamed via the API. */
+export async function downloadGcpDeliverable(orgId: string, deliverableId: string, filename: string): Promise<void> {
+  const token = getToken();
+  const res = await fetch(`${API_URL}/v1/orgs/${orgId}/gcp-deliverables/${deliverableId}/download`,
+    { headers: token ? { authorization: `Bearer ${token}` } : {} });
+  if (!res.ok) throw new ApiError(res.status, "Download failed");
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename; a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+
 export const startHuddle = (orgId: string, channelId: string) =>
   call<{ huddleId: string; resumed: boolean; participants?: string[]; voices: boolean }>(
     "POST", `/v1/orgs/${orgId}/huddles`, { channelId });

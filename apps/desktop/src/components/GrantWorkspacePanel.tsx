@@ -14,7 +14,8 @@ import { openExternal } from "../external";
  * state — nothing here is simulated or animated to look busy.
  */
 
-type Tab = "overview" | "activity" | "research" | "requirements" | "questions" | "documents" | "application";
+type Tab = "overview" | "activity" | "research" | "requirements" | "questions" | "documents" | "application"
+  | "strategy" | "sections" | "budget" | "compliance" | "package";
 
 const STATUS_LABEL: Record<string, string> = {
   created: "Created",
@@ -58,18 +59,28 @@ export function GrantWorkspacePanel({
   if (!ws) return <p className="faint" style={{ padding: 16 }}>Loading workspace…</p>;
 
   const isGrant = projectType === "grant_application";
+  const gcp = ws.gcp ?? null;
   const tabs: Array<{ key: Tab; label: string; badge?: number }> = [
     { key: "overview", label: "Overview" },
     { key: "activity", label: "Activity", badge: ws.events.length },
     // Research and the requirements matrix are grant-workflow records;
     // website projects surface their QA in the test-report artifact instead.
     ...(isGrant ? [
-      { key: "research" as Tab, label: "Research", badge: ws.sources.length },
+      ...(gcp ? [] : [{ key: "research" as Tab, label: "Research", badge: ws.sources.length }]),
       { key: "requirements" as Tab, label: "Requirements", badge: ws.requirements.length },
     ] : []),
     { key: "questions", label: "Questions", badge: ws.questions.length },
     { key: "documents", label: "Documents", badge: ws.files.length },
-    { key: "application", label: isGrant ? "Application" : "Artifacts", badge: ws.artifacts.length },
+    // Platform-backed applications expose the real persisted work products.
+    ...(gcp ? [
+      { key: "strategy" as Tab, label: "Strategy", badge: gcp.strategy ? 1 : 0 },
+      { key: "sections" as Tab, label: "Sections", badge: gcp.sections?.progress.total ?? 0 },
+      { key: "budget" as Tab, label: "Budget", badge: gcp.budget ? 1 : 0 },
+      { key: "compliance" as Tab, label: "Compliance", badge: gcp.compliance?.hard_blocker_count ?? 0 },
+      { key: "package" as Tab, label: "Package", badge: gcp.deliverables.length },
+    ] : [
+      { key: "application" as Tab, label: isGrant ? "Application" : "Artifacts", badge: ws.artifacts.length },
+    ]),
   ];
 
   return (
@@ -83,17 +94,31 @@ export function GrantWorkspacePanel({
         ))}
       </div>
       <div className="ws-body">
-        {tab === "overview" && <Overview ws={ws} />}
+        {tab === "overview" && (gcp?.application ? <GcpOverview ws={ws} /> : <Overview ws={ws} />)}
         {tab === "activity" && <Activity ws={ws} teammates={teammates} />}
         {tab === "research" && <Research ws={ws} />}
         {tab === "requirements" && <Requirements ws={ws} />}
         {tab === "questions" && (
           <Questions ws={ws} onSubmit={async (lines) => {
-            await api.sendMessage(org.id, channelId, lines);
+            // Same durable state either way: platform questions answer through
+            // the structured endpoint; local workflows through the chat.
+            if (gcp) {
+              for (const line of lines.split("\n")) {
+                const i = line.indexOf(": ");
+                if (i > 0) await api.answerGcpQuestion(org.id, projectId, line.slice(0, i), line.slice(i + 2));
+              }
+            } else {
+              await api.sendMessage(org.id, channelId, lines);
+            }
             refresh();
           }} />
         )}
         {tab === "documents" && <Documents ws={ws} />}
+        {tab === "strategy" && gcp && <GcpStrategy gcp={gcp} />}
+        {tab === "sections" && gcp && <GcpSections gcp={gcp} />}
+        {tab === "budget" && gcp && <GcpBudget gcp={gcp} />}
+        {tab === "compliance" && gcp && <GcpCompliance gcp={gcp} />}
+        {tab === "package" && gcp && <GcpPackage org={org} gcp={gcp} />}
         {tab === "application" && (
           ws.artifacts.length || runDetail
             ? <ArtifactPanel org={org} detail={runDetail} />
@@ -227,10 +252,14 @@ function Requirements({ ws }: { ws: GrantWorkspace }) {
       )}
       {ws.requirements.map((r, i) => (
         <div key={i} className="ws-req">
-          <span className={`pill ${r.mandatory ? "red" : "blue"}`}>{r.mandatory ? "mandatory" : "optional"}</span>
+          <span className={`pill ${r.status ? (r.status === "COMPLETE" ? "green" : r.status === "BLOCKED" ? "red" : "blue") : r.mandatory ? "red" : "blue"}`}>
+            {r.status ? r.status.replace(/_/g, " ").toLowerCase() : r.mandatory ? "mandatory" : "optional"}
+          </span>
           <div>
             <div style={{ fontSize: 13 }}>{r.text ?? r.key}</div>
-            {r.sourceLine && <div className="faint">Source: “{String(r.sourceLine).slice(0, 120)}”</div>}
+            {r.wordLimit ? <div className="faint">Limit: {r.wordLimit} words</div> : null}
+            {r.statusReason && <div className="faint">{String(r.statusReason).slice(0, 140)}</div>}
+            {r.sourceLine && <div className="faint">Funder's words: “{String(r.sourceLine).slice(0, 120)}”</div>}
           </div>
         </div>
       ))}
@@ -293,6 +322,256 @@ function Questions({ ws, onSubmit }: { ws: GrantWorkspace; onSubmit: (lines: str
   );
 }
 
+// ---------------------------------------------------------------------------
+// Platform-backed application views. Everything below renders persisted state
+// the grant platform returned — readiness, verdicts, and counts are never
+// computed or animated client-side.
+// ---------------------------------------------------------------------------
+
+function pillFor(status: string): string {
+  const s = status.toUpperCase();
+  if (["APPROVED", "COMPLETE", "COMPLETED", "VALID", "READY_FOR_SUBMISSION", "PASS", "PASSED"].includes(s)) return "green";
+  if (["FAILED", "INVALID", "BLOCKED", "NOT_READY", "REJECTED", "FAIL", "QUARANTINED"].includes(s)) return "red";
+  return "blue";
+}
+
+function GcpOverview({ ws }: { ws: GrantWorkspace }) {
+  const gcp = ws.gcp!;
+  const app = gcp.application!;
+  const r = gcp.readiness ?? {};
+  const p = gcp.sections?.progress;
+  const running = gcp.activity.counts.running ?? 0;
+  const nextAction = running > 0
+    ? "The team is working — follow the Activity tab."
+    : ws.questions.length
+      ? `Answer ${ws.questions.length} open question${ws.questions.length > 1 ? "s" : ""} in the Questions tab.`
+      : gcp.compliance?.result === "READY_FOR_SUBMISSION"
+        ? "Ready for submission — generate or download the package in the Package tab."
+        : gcp.compliance
+          ? `${gcp.compliance.hard_blocker_count} blocker${gcp.compliance.hard_blocker_count === 1 ? "" : "s"} to resolve — see the Compliance tab.`
+          : "Ask in the channel what the team needs, or say \"are we ready to submit?\".";
+  return (
+    <div>
+      <h3 className="ws-title">{app.funder} — {app.program_name}</h3>
+      <dl className="ws-facts">
+        <dt>Status</dt><dd><span className={`pill ${pillFor(app.status)}`}>{app.status.replace(/_/g, " ").toLowerCase()}</span></dd>
+        {app.deadline_text && <><dt>Deadline</dt><dd>{app.deadline_text}</dd></>}
+        {app.grant_opportunity?.mission_fit_score != null && (
+          <><dt>Mission fit</dt><dd>{app.grant_opportunity.mission_fit_score}</dd></>
+        )}
+        {app.grant_opportunity?.recommendation && (
+          <><dt>Recommendation</dt><dd>{app.grant_opportunity.recommendation}</dd></>
+        )}
+        {typeof r.total === "number" && <><dt>Requirements</dt><dd>{r.complete}/{r.total} complete</dd></>}
+        {p && <><dt>Sections</dt><dd>{p.approved}/{p.total} approved</dd></>}
+        {gcp.budget && (
+          <><dt>Budget</dt><dd>v{gcp.budget.version} · {(gcp.budget.validation_status ?? gcp.budget.status).toLowerCase()}</dd></>
+        )}
+        {gcp.compliance && (
+          <><dt>Compliance</dt><dd>
+            <span className={`pill ${pillFor(gcp.compliance.result)}`}>{gcp.compliance.result.replace(/_/g, " ").toLowerCase()}</span>
+          </dd></>
+        )}
+        <dt>Evidence</dt><dd>{gcp.evidenceCount} organization fact{gcp.evidenceCount === 1 ? "" : "s"} on file</dd>
+      </dl>
+      {typeof r.percent_complete === "number" && (
+        <>
+          <div className="ws-progress" role="progressbar" aria-valuenow={r.percent_complete} aria-valuemin={0} aria-valuemax={100}
+            aria-label="Requirements complete">
+            <span style={{ width: `${r.percent_complete}%` }} />
+          </div>
+          <p className="faint" style={{ marginTop: 4 }}>{r.percent_complete}% of the funder's requirements complete</p>
+        </>
+      )}
+      <div className="ws-next"><strong>Next:</strong> {nextAction}</div>
+      {app.official_url && (
+        <p style={{ marginTop: 10 }}>
+          <a href={app.official_url} onClick={(e) => { e.preventDefault(); void openExternal(app.official_url!); }}>
+            Funder's official page ↗
+          </a>
+        </p>
+      )}
+    </div>
+  );
+}
+
+function GcpStrategy({ gcp }: { gcp: NonNullable<GrantWorkspace["gcp"]> }) {
+  const s = gcp.strategy;
+  if (!s) return <p className="faint">No strategy yet — ask Amara to "draft the application strategy" in the channel.</p>;
+  const list = (items: unknown[] | undefined, empty: string) =>
+    items?.length ? <ul className="ws-list">{items.map((x, i) => <li key={i}>{typeof x === "string" ? x : JSON.stringify(x)}</li>)}</ul>
+      : <p className="faint">{empty}</p>;
+  return (
+    <div>
+      <p style={{ marginBottom: 8 }}>
+        <span className={`pill ${pillFor(s.status)}`}>{s.status.toLowerCase()}</span>{" "}
+        <span className="faint">version {s.version}{gcp.strategyApprovedVersion ? ` · v${gcp.strategyApprovedVersion} approved` : ""}</span>
+      </p>
+      {s.positioning && <><h4 className="ws-h4">Positioning</h4><p className="ws-text">{s.positioning}</p></>}
+      {s.recommended_project && <><h4 className="ws-h4">Recommended project</h4><p className="ws-text">{s.recommended_project}</p></>}
+      <h4 className="ws-h4">Funder priorities</h4>{list(s.funder_priorities, "None recorded.")}
+      <h4 className="ws-h4">Narrative themes</h4>{list(s.narrative_themes, "None recorded.")}
+      <h4 className="ws-h4">Strongest evidence</h4>{list(s.strongest_evidence, "None recorded.")}
+      <h4 className="ws-h4">Weaknesses &amp; risks</h4>{list([...(s.weaknesses ?? []), ...(s.risks ?? [])], "None recorded.")}
+      <h4 className="ws-h4">Evidence gaps ({s.evidence_gaps?.length ?? 0})</h4>
+      {list((s.evidence_gaps ?? []).map((g) => (g as { description?: string; gap?: string }).description ?? (g as { gap?: string }).gap ?? JSON.stringify(g)),
+        "No gaps named — that means the evidence held up, not that nobody looked.")}
+      <p className="faint" style={{ marginTop: 10 }}>
+        To change it, tell Amara in the channel — e.g. "make the strategy focus more strongly on sustainability", then "approve the strategy".
+      </p>
+    </div>
+  );
+}
+
+function GcpSections({ gcp }: { gcp: NonNullable<GrantWorkspace["gcp"]> }) {
+  const sec = gcp.sections;
+  if (!sec?.sections.length) {
+    return <p className="faint">No sections yet — once the strategy is approved, ask Sophia to "draft the application" in the channel.</p>;
+  }
+  const p = sec.progress;
+  return (
+    <div>
+      <p className="faint" style={{ marginBottom: 10 }}>
+        {p.approved}/{p.total} approved · {p.draft} in draft · {p.not_started} not started
+        {p.total_blockers ? ` · ${p.total_blockers} blocker${p.total_blockers === 1 ? "" : "s"}` : ""}
+      </p>
+      {sec.sections.map((s, i) => (
+        <details key={s.section_id} className="ws-source">
+          <summary style={{ cursor: "pointer" }}>
+            <span className={`pill ${pillFor(s.status)}`}>{s.status.replace(/_/g, " ").toLowerCase()}</span>{" "}
+            <strong>{i + 1}. {s.section_title}</strong>
+            <span className="faint"> · rev {s.current_revision_number}{s.word_limit ? ` · max ${s.word_limit} words` : ""}</span>
+          </summary>
+          {s.question_text && <p className="faint" style={{ marginTop: 6 }}>{s.question_text}</p>}
+          {(s.blockers?.length ?? 0) > 0 && (
+            <p className="error-text">{(s.blockers as unknown[]).length} blocker(s) — evidence is missing for claims this section needs.</p>
+          )}
+          <p className="faint" style={{ marginTop: 4 }}>
+            In the channel: "show me section {i + 1}", "rewrite section {i + 1} to …", "approve section {i + 1}".
+          </p>
+        </details>
+      ))}
+    </div>
+  );
+}
+
+function GcpBudget({ gcp }: { gcp: NonNullable<GrantWorkspace["gcp"]> }) {
+  const b = gcp.budget;
+  if (!b) return <p className="faint">No budget yet — give Michael real figures in the channel; the platform refuses invented ones.</p>;
+  const money = (n: number | null | undefined) =>
+    n == null ? "—" : `${b.currency ?? "USD"} ${Number(n).toLocaleString(undefined, { minimumFractionDigits: 2 })}`;
+  return (
+    <div>
+      <p style={{ marginBottom: 8 }}>
+        <span className={`pill ${pillFor(b.validation_status ?? b.status)}`}>{(b.validation_status ?? b.status).toLowerCase()}</span>{" "}
+        <span className="faint">version {b.version}</span>
+      </p>
+      <dl className="ws-facts">
+        <dt>Requested</dt><dd>{money(b.requested_amount)}</dd>
+        <dt>Total project cost</dt><dd>{money(b.total_project_cost)}</dd>
+        <dt>Direct costs</dt><dd>{money(b.direct_costs)}</dd>
+        <dt>Indirect costs</dt><dd>{money(b.indirect_costs)}{b.indirect_rate != null ? ` (${(b.indirect_rate * 100).toFixed(1)}%)` : ""}</dd>
+        {b.funder_max_amount != null && <><dt>Funder ceiling</dt><dd>{money(b.funder_max_amount)}</dd></>}
+      </dl>
+      {(b.validation_errors?.length ?? 0) > 0 && (
+        <div className="ws-alert" role="alert">
+          {(b.validation_errors as unknown[]).map((e, i) => <div key={i}>{typeof e === "string" ? e : JSON.stringify(e)}</div>)}
+        </div>
+      )}
+      {(b.lines?.length ?? 0) > 0 && (
+        <>
+          <h4 className="ws-h4">Line items</h4>
+          {(b.lines ?? []).map((l, i) => {
+            const line = l as { category?: string; description?: string; amount?: number };
+            return (
+              <div key={i} className="ws-req">
+                <span className="pill blue">{String(line.category ?? "item").toLowerCase()}</span>
+                <div style={{ fontSize: 13 }}>{line.description ?? ""} <span className="faint">· {money(line.amount)}</span></div>
+              </div>
+            );
+          })}
+        </>
+      )}
+      {b.narrative && <><h4 className="ws-h4">Budget narrative</h4><p className="ws-text">{b.narrative}</p></>}
+    </div>
+  );
+}
+
+function GcpCompliance({ gcp }: { gcp: NonNullable<GrantWorkspace["gcp"]> }) {
+  const c = gcp.compliance;
+  if (!c) return <p className="faint">Compliance hasn't been run yet — ask in the channel: "are we ready to submit?".</p>;
+  const ready = c.result === "READY_FOR_SUBMISSION";
+  const items = (c.checks?.length ? c.checks : [...(c.blockers ?? []), ...(c.warnings ?? [])]) as Array<Record<string, unknown>>;
+  return (
+    <div>
+      <div className={ready ? "ws-next" : "ws-alert"} role={ready ? undefined : "alert"} style={{ marginBottom: 10 }}>
+        <strong>{ready ? "READY FOR SUBMISSION" : `NOT READY — ${c.hard_blocker_count} blocker${c.hard_blocker_count === 1 ? "" : "s"}`}</strong>
+        {typeof c.checks_passed === "number" && typeof c.checks_run === "number" && (
+          <span className="faint"> · {c.checks_passed}/{c.checks_run} checks passed</span>
+        )}
+      </div>
+      {items.map((chk, i) => {
+        const result = String(chk.result ?? chk.severity ?? "");
+        const passed = ["PASS", "PASSED", "OK"].includes(result.toUpperCase());
+        const hard = ["HARD_BLOCKER", "FAIL", "FAILED", "BLOCKER"].includes(result.toUpperCase());
+        return (
+          <div key={i} className="ws-req">
+            <span className={`pill ${passed ? "green" : hard ? "red" : "blue"}`}>{passed ? "✓" : hard ? "✕" : "!"}</span>
+            <div>
+              <div style={{ fontSize: 13 }}>{String(chk.label ?? chk.title ?? chk.check_key ?? chk.code ?? "check")}</div>
+              {(chk.detail ?? chk.message) != null && <div className="faint">{String(chk.detail ?? chk.message).slice(0, 200)}</div>}
+            </div>
+          </div>
+        );
+      })}
+      <p className="faint" style={{ marginTop: 8 }}>
+        These checks are deterministic platform rules — the interface cannot override them. Checked {new Date(c.created_at).toLocaleString()}.
+      </p>
+    </div>
+  );
+}
+
+function GcpPackage({ org, gcp }: { org: Organization; gcp: NonNullable<GrantWorkspace["gcp"]> }) {
+  const [busy, setBusy] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  if (!gcp.deliverables.length) {
+    return <p className="faint">No generated documents yet — say "generate the final application package as Word and PDF" in the channel.</p>;
+  }
+  return (
+    <div>
+      {err && <p className="error-text">{err}</p>}
+      {gcp.deliverables.map((d) => {
+        const name = `application-v${d.version ?? 1}.${d.format.toLowerCase()}`;
+        return (
+          <div key={d.deliverable_id} className="ws-source row">
+            <Icon name="file-text" size={14} />
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 13, fontWeight: 600 }}>
+                {d.deliverable_type.replace(/_/g, " ").toLowerCase()} · {d.format.toUpperCase()}
+                <span className={`pill ${pillFor(d.status)}`} style={{ marginLeft: 6 }}>{d.status.toLowerCase()}</span>
+              </div>
+              <div className="faint">
+                {d.size_bytes ? `${(d.size_bytes / 1024).toFixed(1)} KB · ` : ""}
+                {new Date(d.created_at).toLocaleString()}
+              </div>
+            </div>
+            <button className="ghost" disabled={busy === d.deliverable_id}
+              onClick={async () => {
+                setBusy(d.deliverable_id); setErr(null);
+                try { await api.downloadGcpDeliverable(org.id, d.deliverable_id, name); }
+                catch (e) { setErr(e instanceof Error ? e.message : "Download failed"); }
+                finally { setBusy(null); }
+              }}>
+              {busy === d.deliverable_id ? "Downloading…" : "Download"}
+            </button>
+          </div>
+        );
+      })}
+      <p className="faint" style={{ marginTop: 8 }}>Downloads are private and authenticated — there are no public links to these files.</p>
+    </div>
+  );
+}
+
 function Documents({ ws }: { ws: GrantWorkspace }) {
   if (!ws.files.length) return <p className="faint">No documents yet — uploaded and retrieved files appear here.</p>;
   return (
@@ -301,8 +580,19 @@ function Documents({ ws }: { ws: GrantWorkspace }) {
         <div key={f.id} className="ws-source row">
           <Icon name="file-text" size={14} />
           <div>
-            <div style={{ fontSize: 13, fontWeight: 600 }}>{f.filename}</div>
-            <div className="faint">{f.mime} · {(f.size_bytes / 1024).toFixed(1)} KB · {new Date(f.created_at).toLocaleString()}</div>
+            <div style={{ fontSize: 13, fontWeight: 600 }}>
+              {f.filename}
+              {f.ingestion_status && (
+                <span className={`pill ${f.ingestion_status === "COMPLETE" ? "green" : f.ingestion_status === "FAILED" || f.ingestion_status === "QUARANTINED" ? "red" : "blue"}`}
+                  style={{ marginLeft: 6 }}>
+                  {f.ingestion_status.toLowerCase()}
+                </span>
+              )}
+            </div>
+            <div className="faint">
+              {f.mime} · {(f.size_bytes / 1024).toFixed(1)} KB · {new Date(f.created_at).toLocaleString()}
+              {typeof f.fact_count === "number" && f.fact_count > 0 ? ` · ${f.fact_count} fact${f.fact_count === 1 ? "" : "s"} extracted` : ""}
+            </div>
           </div>
         </div>
       ))}

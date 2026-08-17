@@ -21,6 +21,13 @@ async function main(): Promise<void> {
     });
   }
 
+  // External grant platform: the async bridge turns finished platform tasks
+  // into teammate messages. Only runs when the platform is configured.
+  if (deps.gcp) {
+    const { startGcpBridge } = await import("./gcp/bridge.js");
+    startGcpBridge(deps);
+  }
+
   const port = Number(process.env.PORT ?? 3000);
   await app.listen({ port, host: "0.0.0.0" });
 

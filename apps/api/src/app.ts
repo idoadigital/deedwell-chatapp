@@ -12,6 +12,7 @@ import { registerGrantFullRoutes } from "./routes-grants-full.js";
 import { registerWebsiteRoutes } from "./routes-website.js";
 import { registerChatRoutes } from "./routes-chat.js";
 import { registerHuddleRoutes } from "./routes-huddle.js";
+import { registerGcpRoutes } from "./routes-gcp.js";
 import { registerRtc } from "./rtc.js";
 
 declare module "fastify" {
@@ -121,6 +122,7 @@ export function buildApp(deps: Deps): FastifyInstance {
   registerWebsiteRoutes(app, ctx);
   registerChatRoutes(app, ctx);
   registerHuddleRoutes(app, ctx);
+  registerGcpRoutes(app, ctx);
   registerRtc(app, ctx);
   return app;
 }

@@ -26,6 +26,7 @@ import {
   buildWebsiteUpdateWorkflow,
   WEBSITE_AGENTS,
 } from "@deedwell/website-domain";
+import { createGcpGrantPlatform, type GcpGrantPlatform } from "./gcp/platform.js";
 
 export interface Deps {
   adminPool: Pool;
@@ -35,6 +36,8 @@ export interface Deps {
   gateway: ToolGateway;
   engine: PgWorkflowEngine<GrantServices>;
   grantSource: GrantSourceProvider;
+  /** External grant platform (GCP). Null = feature off; all behaviour local. */
+  gcp: GcpGrantPlatform | null;
 }
 
 export async function createDeps(overrides: Partial<{
@@ -44,6 +47,7 @@ export async function createDeps(overrides: Partial<{
   provider: ModelProvider;
   research: GrantServices["research"];
   backoffMs: (attempt: number) => number;
+  gcp: GcpGrantPlatform | null;
 }> = {}): Promise<Deps> {
   const adminPool = overrides.adminPool ?? createAdminPool();
   const appPool = overrides.appPool ?? createAppPool();
@@ -85,6 +89,7 @@ export async function createDeps(overrides: Partial<{
     gateway,
     engine,
     grantSource: createGrantSource(),
+    gcp: "gcp" in overrides ? (overrides.gcp ?? null) : createGcpGrantPlatform(),
   };
   const { executiveAssistant, attachEngineBridge } = await import("./assistant.js");
   await seedAgentDefinitions(adminPool, [...ALL_AGENTS, ...WEBSITE_AGENTS, executiveAssistant]);

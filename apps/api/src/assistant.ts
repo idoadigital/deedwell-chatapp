@@ -9,6 +9,7 @@ import type { Deps } from "./bootstrap.js";
 import { recordEvent, recordSource, setWorkspace } from "./workspace.js";
 import { DEFAULT_CHANNELS, MAYA_WELCOME, TEAMMATES, teammateByKey } from "./teammates.js";
 import { describeInfoRequest } from "./fact-fields.js";
+import { gcpRoutesChannel, handleGcpTurn } from "./gcp/turns.js";
 
 /**
  * The Executive Assistant: conversational entry point (BRD §4.1). It maps a
@@ -543,6 +544,16 @@ export async function handleUserMessage(
   } else {
     const stored = await client.query("SELECT timezone FROM users WHERE id = $1", [ids.userId]);
     timezone = validTimezone(stored.rows[0]?.timezone);
+  }
+
+  // External grant platform (feature-flagged): grant-team DMs and platform-
+  // bound project channels run on the durable GCP workflow engine — same
+  // teammates, same cards, different engine underneath. Everything else
+  // (Maya, team channels, the website team, huddles) is untouched, and with
+  // the platform unconfigured this branch never runs.
+  if (deps.gcp && await gcpRoutesChannel(deps, client, channel)) {
+    const handled = await handleGcpTurn(deps, client, ids, channel, body, fileId, out);
+    if (handled) return out;
   }
 
   const contextStart = Date.now();
