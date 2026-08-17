@@ -1,4 +1,6 @@
 import { execFile } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { createSign } from "node:crypto";
 
 /**
  * Client for the external Deedwell grant platform (GCP Cloud Run + Cloud SQL).
@@ -11,9 +13,10 @@ import { execFile } from "node:child_process";
  *
  * Enabled by GCP_GRANTS_API_URL; unset means honestly off (createGcpGrantPlatform
  * returns null and every caller falls back to existing local behaviour).
- * Auth: Cloud Run IAM ID tokens — from the metadata server when running on
- * GCP, from the gcloud CLI in development. The token, like every backend id,
- * never reaches the browser.
+ * Auth: Cloud Run IAM ID tokens — from a service-account key file when
+ * GOOGLE_APPLICATION_CREDENTIALS is set (production outside GCP), else the
+ * metadata server when running on GCP, else the gcloud CLI in development.
+ * The token, like every backend id, never reaches the browser.
  */
 
 export interface GcpTurnIntent {
@@ -89,6 +92,11 @@ class IdTokenSource {
   }
 
   private async mint(): Promise<string> {
+    // Service-account key file (production host outside GCP): self-sign a JWT
+    // and exchange it for an ID token scoped to this audience. Same flow the
+    // Google auth libraries use — done with node:crypto to avoid a dependency.
+    const keyPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+    if (keyPath) return await this.mintFromKeyFile(keyPath);
     try {
       const res = await fetch(
         `http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity?audience=${encodeURIComponent(this.audience)}`,
@@ -104,6 +112,40 @@ class IdTokenSource {
         else resolve(stdout.trim());
       });
     });
+  }
+
+  private async mintFromKeyFile(keyPath: string): Promise<string> {
+    const key = JSON.parse(readFileSync(keyPath, "utf8")) as {
+      client_email?: string; private_key?: string; token_uri?: string;
+    };
+    if (!key.client_email || !key.private_key) {
+      throw new Error("GOOGLE_APPLICATION_CREDENTIALS is not a service-account key (missing client_email/private_key)");
+    }
+    const tokenUri = key.token_uri ?? "https://oauth2.googleapis.com/token";
+    const now = Math.floor(Date.now() / 1000);
+    const enc = (o: unknown) => Buffer.from(JSON.stringify(o)).toString("base64url");
+    const unsigned = `${enc({ alg: "RS256", typ: "JWT" })}.${enc({
+      iss: key.client_email,
+      sub: key.client_email,
+      aud: tokenUri,
+      iat: now,
+      exp: now + 3600,
+      target_audience: this.audience,
+    })}`;
+    const signer = createSign("RSA-SHA256");
+    signer.update(unsigned);
+    const assertion = `${unsigned}.${signer.sign(key.private_key).toString("base64url")}`;
+    const res = await fetch(tokenUri, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer", assertion }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    const json = (await res.json().catch(() => ({}))) as { id_token?: string; error_description?: string };
+    if (!res.ok || !json.id_token) {
+      throw new Error(`ID-token exchange failed (${res.status}): ${json.error_description ?? "no id_token in response"}`);
+    }
+    return json.id_token;
   }
 }
 
