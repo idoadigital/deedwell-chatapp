@@ -472,8 +472,8 @@ function ExportView({
   markdown: string;
   budgetCsv: string | null;
 }) {
-  function downloadBlob(text: string, filename: string, type: string) {
-    const blob = new Blob([text], { type });
+  function downloadBlob(content: string | Blob, filename: string, type: string) {
+    const blob = content instanceof Blob ? content : new Blob([content], { type });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
@@ -485,11 +485,21 @@ function ExportView({
     const text = await api.getExportMarkdown(orgId, artifactId);
     downloadBlob(text, "application-package.md", "text/markdown");
   }
+  async function downloadBinary(format: "docx" | "pdf") {
+    const blob = await api.getExportBinary(orgId, artifactId, format);
+    downloadBlob(blob, `application-package.${format}`, blob.type);
+  }
   return (
     <div>
       <div className="row">
-        <button className="primary" onClick={download}>
-          <span className="row"><Icon name="download" /> Download package (.md)</span>
+        <button className="primary" onClick={() => downloadBinary("docx")}>
+          <span className="row"><Icon name="download" /> Download Word (.docx)</span>
+        </button>
+        <button className="primary" onClick={() => downloadBinary("pdf")}>
+          <span className="row"><Icon name="download" /> Download PDF</span>
+        </button>
+        <button onClick={download}>
+          <span className="row"><Icon name="download" /> Markdown (.md)</span>
         </button>
         {budgetCsv && (
           <button onClick={() => downloadBlob(budgetCsv, "budget.csv", "text/csv")}>

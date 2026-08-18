@@ -259,6 +259,31 @@ export function registerGrantRoutes(app: FastifyInstance, ctx: AppContext): void
   app.get("/v1/orgs/:orgId/artifacts/:artifactId/export", async (req, reply) => {
     ctx.requireRole(req, "viewer");
     const { artifactId } = req.params as { artifactId: string };
+    const { format } = req.query as { format?: string };
+
+    if (format === "docx" || format === "pdf") {
+      const storageKey = await ctx.inOrg(req, async (client) => {
+        const { rows } = await client.query(
+          `SELECT av.content->>'docxStorageKey' AS docx_key, av.content->>'pdfStorageKey' AS pdf_key
+           FROM artifacts a
+           JOIN artifact_versions av ON av.artifact_id = a.id AND av.version = a.current_version
+           WHERE a.id = $1 AND a.type = 'export_package'`,
+          [artifactId]
+        );
+        const key = format === "docx" ? rows[0]?.docx_key : rows[0]?.pdf_key;
+        if (!key) throw new HttpError(404, "No export available for this artifact");
+        return key as string;
+      });
+      const buf = await ctx.deps.storage.get(storageKey);
+      const contentType = format === "docx"
+        ? "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        : "application/pdf";
+      return reply
+        .header("content-disposition", `attachment; filename="application.${format}"`)
+        .type(contentType)
+        .send(buf);
+    }
+
     const markdown = await ctx.inOrg(req, async (client) => {
       const { rows } = await client.query(
         `SELECT av.content->>'markdown' AS markdown

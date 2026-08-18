@@ -30,6 +30,8 @@ import { evaluateCompliance } from "./compliance.js";
 import { passportStatus } from "./passport.js";
 import { scanForInjection } from "./injection.js";
 import { renderFullExport, budgetCsv } from "./export-full.js";
+import { renderFullExportDocx } from "./export-docx.js";
+import { renderFullExportPdf } from "./export-pdf.js";
 import type { GrantServices } from "./workflow.js";
 
 export const GRANT_FULL_WORKFLOW = "grant-application-full";
@@ -874,7 +876,7 @@ export function buildGrantFullWorkflow(): WorkflowDefinition<GrantServices> {
           [applicationId]
         );
 
-        const markdown = renderFullExport({
+        const exportInput = {
           opportunity: {
             title: opportunity.title,
             funder: opportunity.funder,
@@ -885,20 +887,30 @@ export function buildGrantFullWorkflow(): WorkflowDefinition<GrantServices> {
           budgetTotal: budget.rows[0] ? Number(budget.rows[0].total) : null,
           eligibility: ctx.state.eligibility as never,
           bid: ctx.state.bid as never,
-        });
+        };
+        const markdown = renderFullExport(exportInput);
         const csv = budgetCsv(items.rows);
+        const docxBuffer = await renderFullExportDocx(exportInput);
+        const pdfBuffer = await renderFullExportPdf(exportInput);
 
         const exportKey = `tenants/${ctx.tenantId}/exports/${ctx.runId}/application.md`;
         const csvKey = `tenants/${ctx.tenantId}/exports/${ctx.runId}/budget.csv`;
+        const docxKey = `tenants/${ctx.tenantId}/exports/${ctx.runId}/application.docx`;
+        const pdfKey = `tenants/${ctx.tenantId}/exports/${ctx.runId}/application.pdf`;
         await ctx.services.storage.put(exportKey, Buffer.from(markdown, "utf8"));
         await ctx.services.storage.put(csvKey, Buffer.from(csv, "utf8"));
+        await ctx.services.storage.put(docxKey, docxBuffer);
+        await ctx.services.storage.put(pdfKey, pdfBuffer);
 
         await upsertArtifactVersion(ctx.client, {
           tenantId: ctx.tenantId, projectId: ctx.projectId, runId: ctx.runId,
           type: "export_package", title: `Export — ${opportunity.title}`,
-          content: { markdown, budgetCsv: csv, storageKey: exportKey, csvStorageKey: csvKey },
+          content: {
+            markdown, budgetCsv: csv, storageKey: exportKey, csvStorageKey: csvKey,
+            docxStorageKey: docxKey, pdfStorageKey: pdfKey,
+          },
           agentKey: "system.exporter",
-          changeSummary: "Approved full application package generated",
+          changeSummary: "Approved full application package generated (Markdown, DOCX, PDF, budget CSV)",
         });
         await ctx.client.query(
           "UPDATE grant_applications SET status = 'ready' WHERE id = $1", [applicationId]

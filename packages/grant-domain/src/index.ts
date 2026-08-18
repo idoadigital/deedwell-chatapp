@@ -35,6 +35,8 @@ export {
 } from "./sources.js";
 export { buildGrantFullWorkflow, GRANT_FULL_WORKFLOW } from "./workflow-full.js";
 export { renderFullExport, budgetCsv, type FullExportInput } from "./export-full.js";
+export { renderFullExportDocx } from "./export-docx.js";
+export { renderFullExportPdf } from "./export-pdf.js";
 export { verifyClaims } from "./claims.js";
 export { requiredFactKeys, writeOrgFact, type WriteOrgFactParams } from "./facts.js";
 export { extractFactsFromDocument } from "./fact-extraction.js";

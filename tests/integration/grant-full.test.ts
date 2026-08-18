@@ -167,6 +167,32 @@ describe("full grant workflow — happy path", () => {
       `/v1/orgs/${s.orgId}/opportunities/${s.opportunityId}`, { token: s.token });
     expect(detail.body.opportunity.status).toBe("ready");
     expect(detail.body.application.status).toBe("ready");
+
+    expect(content.docxStorageKey).toMatch(/application\.docx$/);
+    expect(content.pdfStorageKey).toMatch(/application\.pdf$/);
+
+    // Real files, not placeholders — verified by their actual format magic bytes.
+    const docxRes = await env.app.inject({
+      method: "GET",
+      url: `/v1/orgs/${s.orgId}/artifacts/${exportArtifact.id}/export?format=docx`,
+      headers: { authorization: `Bearer ${s.token}` },
+    });
+    expect(docxRes.statusCode).toBe(200);
+    expect(docxRes.headers["content-type"]).toContain("wordprocessingml");
+    const docxBytes = docxRes.rawPayload;
+    expect(docxBytes.length).toBeGreaterThan(1000);
+    expect(docxBytes.subarray(0, 2).toString("ascii")).toBe("PK"); // .docx is a zip archive
+
+    const pdfRes = await env.app.inject({
+      method: "GET",
+      url: `/v1/orgs/${s.orgId}/artifacts/${exportArtifact.id}/export?format=pdf`,
+      headers: { authorization: `Bearer ${s.token}` },
+    });
+    expect(pdfRes.statusCode).toBe(200);
+    expect(pdfRes.headers["content-type"]).toBe("application/pdf");
+    const pdfBytes = pdfRes.rawPayload;
+    expect(pdfBytes.length).toBeGreaterThan(500);
+    expect(pdfBytes.subarray(0, 5).toString("ascii")).toBe("%PDF-");
   });
 
   it("records the outcome and closes the loop", async () => {

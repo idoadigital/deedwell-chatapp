@@ -199,6 +199,15 @@ export const getArtifact = (orgId: string, artifactId: string) =>
 export const getExportMarkdown = (orgId: string, artifactId: string) =>
   call<string>("GET", `/v1/orgs/${orgId}/artifacts/${artifactId}/export`, undefined, true);
 
+export async function getExportBinary(orgId: string, artifactId: string, format: "docx" | "pdf"): Promise<Blob> {
+  const token = getToken();
+  const res = await fetch(`${API_URL}/v1/orgs/${orgId}/artifacts/${artifactId}/export?format=${format}`, {
+    headers: token ? { "x-deedwell-token": token } : {},
+  });
+  if (!res.ok) throw new ApiError(res.status, `Export (${format}) failed (${res.status})`);
+  return res.blob();
+}
+
 // ---- agents ---------------------------------------------------------------
 
 export const listAgents = () => call<{ agents: AgentInfo[] }>("GET", "/v1/agents");
