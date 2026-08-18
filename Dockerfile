@@ -29,7 +29,9 @@ RUN pnpm install --frozen-lockfile --prod=false
 # Google Ad Grants browser automation needs a real Chromium + its OS libs —
 # browser-research's Playwright dependency never needed this in practice
 # (RESEARCH_FETCH has always run in "fetch" mode or off in production).
-RUN pnpm exec playwright install --with-deps chromium
+# playwright is a dependency of the browser-automation workspace package,
+# not the root, so `pnpm exec` must be scoped to it via --filter.
+RUN pnpm --filter @deedwell/browser-automation exec playwright install --with-deps chromium
 
 COPY . .
 
