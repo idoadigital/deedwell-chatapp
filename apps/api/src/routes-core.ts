@@ -104,16 +104,24 @@ export function registerCoreRoutes(app: FastifyInstance, ctx: AppContext): void 
   // ---- me & orgs ----------------------------------------------------------
 
   app.get("/v1/me", async (req) => {
-    const orgs = await withContext(deps.appPool, { tenantId: null, userId: req.userId }, (client) =>
-      client.query(
-        `SELECT o.id, o.slug, o.name, m.role
-         FROM organizations o
-         JOIN organization_memberships m ON m.tenant_id = o.id
-         WHERE m.user_id = $1 ORDER BY o.name`,
-        [req.userId]
-      )
-    );
-    return { userId: req.userId, organizations: orgs.rows };
+    const [user, orgs] = await Promise.all([
+      deps.appPool.query("SELECT email, display_name FROM users WHERE id = $1", [req.userId]),
+      withContext(deps.appPool, { tenantId: null, userId: req.userId }, (client) =>
+        client.query(
+          `SELECT o.id, o.slug, o.name, m.role
+           FROM organizations o
+           JOIN organization_memberships m ON m.tenant_id = o.id
+           WHERE m.user_id = $1 ORDER BY o.name`,
+          [req.userId]
+        )
+      ),
+    ]);
+    return {
+      userId: req.userId,
+      email: user.rows[0].email,
+      displayName: user.rows[0].display_name,
+      organizations: orgs.rows,
+    };
   });
 
   app.post("/v1/orgs", async (req, reply) => {
