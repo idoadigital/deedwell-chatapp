@@ -84,15 +84,38 @@ export default function App() {
     }, 250);
   }, []);
 
+  // A fresh load with no localStorage token might still carry a valid
+  // deedwell.org session cookie (e.g. arriving here right after logging in
+  // on the marketing site) — check once before falling back to the login
+  // screen.
+  useEffect(() => {
+    if (api.getToken()) return;
+    let cancelled = false;
+    api.me().then(() => { if (!cancelled) setAuthed(true); }).catch(() => { /* no cookie session either — stay logged out */ });
+    return () => { cancelled = true; };
+  }, []);
+
   // ---- session / org bootstrap -------------------------------------------
   useEffect(() => {
     if (!authed) { setOrgs(null); setOrg(null); return; }
+    let timedOut = false;
+    const timeout = setTimeout(() => { timedOut = true; api.setToken(null); setAuthed(false); }, 10000);
     api.me().then(({ organizations }) => {
+      if (timedOut) return;
+      clearTimeout(timeout);
       setOrgs(organizations);
       const saved = organizations.find((o) => o.id === localStorage.getItem(ORG_KEY));
       if (saved) setOrg(saved);
       else if (organizations.length === 1) setOrg(organizations[0]!);
-    }).catch(() => setAuthed(!!api.getToken()));
+    }).catch(() => {
+      if (timedOut) return;
+      clearTimeout(timeout);
+      // Couldn't verify the session (expired token or a network/proxy failure) —
+      // fall back to the login screen instead of spinning forever.
+      api.setToken(null);
+      setAuthed(false);
+    });
+    return () => clearTimeout(timeout);
   }, [authed]);
 
   // ---- workspace data -----------------------------------------------------
@@ -509,9 +532,21 @@ export default function App() {
                     )
                   ) : (
                     <PreviewSurface
+                      // Show the newest build, not whatever is published. Keying
+                      // off live_version meant that once a site went live the
+                      // panel showed the live copy forever — so the change you
+                      // just asked for was never the thing on screen.
                       url={activeSite
-                        ? `${api.SITE_ROUTER_URL}/${activeSite.live_version ? "live" : "preview"}/${activeSite.slug}/`
+                        ? api.siteUrl(
+                            activeSite.slug,
+                            (activeSite.preview_version ?? 0) > (activeSite.live_version ?? 0)
+                              ? "preview"
+                              : activeSite.live_version ? "live" : "preview"
+                          )
                         : null}
+                      reloadKey={activeSite
+                        ? `${activeSite.preview_version ?? 0}:${activeSite.live_version ?? 0}`
+                        : undefined}
                     />
                   )}
                 </aside>

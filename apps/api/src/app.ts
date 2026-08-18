@@ -1,5 +1,10 @@
+import { existsSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import cors from "@fastify/cors";
+import cookie from "@fastify/cookie";
+import fastifyStatic from "@fastify/static";
 import { ZodError } from "zod";
 import { hashSessionToken, roleAtLeast } from "@deedwell/auth";
 import { withContext, type PoolClient } from "@deedwell/database";
@@ -23,6 +28,9 @@ declare module "fastify" {
   }
 }
 
+/** Shared across every *.deedwell.org origin — see routes-core.ts for where it's set. */
+export const SESSION_COOKIE_NAME = "deedwell_session";
+
 export class HttpError extends Error {
   constructor(public readonly statusCode: number, message: string) {
     super(message);
@@ -45,11 +53,15 @@ export function buildApp(deps: Deps): FastifyInstance {
     bodyLimit: 15_000_000,
   });
 
-  // Desktop clients: Vite dev server and the Tauri webview origins.
+  // Desktop clients: Vite dev server and the Tauri webview origins. Also the
+  // marketing site (deedwell.org) posting to /v1/auth/* cross-origin — that
+  // login exchange is what plants the shared session cookie, so credentials
+  // must be allowed and the origin list can't be a wildcard.
   const corsOrigins = (
     process.env.CORS_ORIGINS ?? "http://localhost:5173,tauri://localhost,http://tauri.localhost"
   ).split(",");
-  void app.register(cors, { origin: corsOrigins, credentials: false });
+  void app.register(cors, { origin: corsOrigins, credentials: true });
+  void app.register(cookie);
 
   app.decorateRequest("userId", null);
   app.decorateRequest("orgId", null);
@@ -69,11 +81,24 @@ export function buildApp(deps: Deps): FastifyInstance {
   // ---- authentication -----------------------------------------------------
   app.addHook("preHandler", async (req: FastifyRequest, _reply: FastifyReply) => {
     const url = req.url;
-    if (url.startsWith("/v1/auth/") || url === "/healthz" || url.startsWith("/v1/rtc")) return;
+    // Every API route lives under /v1/ (rtc and auth are public within
+    // that); anything else is the static SPA shell (coworkers.deedwell.org
+    // serves apps/desktop's build from this same app) or /healthz — public
+    // by nature, since the SPA itself is what shows the login screen.
+    if (!url.startsWith("/v1/") || url.startsWith("/v1/auth/") || url.startsWith("/v1/rtc")) return;
 
+    // Some reverse proxies (e.g. Google Cloud Shell's web preview) intercept
+    // or strip the Authorization header for their own auth. x-deedwell-token
+    // carries the same bearer token through those environments. The session
+    // cookie is a third, equally valid credential: it's what lets a login on
+    // deedwell.org carry over to coworkers.deedwell.org automatically.
     const header = req.headers.authorization;
-    if (!header?.startsWith("Bearer ")) throw new HttpError(401, "Authentication required");
-    const tokenHash = hashSessionToken(header.slice("Bearer ".length));
+    const altToken = req.headers["x-deedwell-token"];
+    const token = header?.startsWith("Bearer ")
+      ? header.slice("Bearer ".length)
+      : typeof altToken === "string" ? altToken : req.cookies[SESSION_COOKIE_NAME];
+    if (!token) throw new HttpError(401, "Authentication required");
+    const tokenHash = hashSessionToken(token);
     const { rows } = await deps.appPool.query(
       `SELECT s.user_id FROM sessions s
        WHERE s.token_hash = $1 AND s.revoked_at IS NULL AND s.expires_at > now()`,
@@ -124,5 +149,21 @@ export function buildApp(deps: Deps): FastifyInstance {
   registerHuddleRoutes(app, ctx);
   registerGcpRoutes(app, ctx);
   registerRtc(app, ctx);
+
+  // coworkers.deedwell.org is this same origin: the chat app's built static
+  // assets ship alongside the API so there's no CORS boundary between them
+  // and the session cookie applies to both without any extra wiring. Only
+  // present once apps/desktop has actually been built (the production
+  // Docker image does this; plain local dev serves the desktop app itself
+  // via `pnpm dev` instead, so this is a no-op there).
+  const desktopDist = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "desktop", "dist");
+  if (existsSync(desktopDist)) {
+    void app.register(fastifyStatic, { root: desktopDist, prefix: "/", decorateReply: true });
+    app.setNotFoundHandler((req, reply) => {
+      if (req.url.startsWith("/v1/")) return reply.status(404).send({ error: "Not found" });
+      return reply.sendFile("index.html");
+    });
+  }
+
   return app;
 }

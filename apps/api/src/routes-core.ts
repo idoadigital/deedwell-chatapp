@@ -19,9 +19,31 @@ import {
   UploadFileInput,
 } from "@deedwell/schemas";
 import { extractDocumentText, extractFactsFromDocument, writeOrgFact } from "@deedwell/grant-domain";
-import { HttpError, type AppContext } from "./app.js";
+import { HttpError, SESSION_COOKIE_NAME, type AppContext } from "./app.js";
 
 const MAX_FILE_BYTES = 8_000_000;
+
+/**
+ * Plants the session as a cookie shared across every *.deedwell.org origin —
+ * this is what makes a login on deedwell.org carry over automatically to
+ * coworkers.deedwell.org. Only set when SESSION_COOKIE_DOMAIN is configured
+ * (real deployments); local dev has no real shared domain, so it's a no-op
+ * there and the existing header-based token flow is unaffected either way.
+ */
+function setSessionCookie(reply: import("fastify").FastifyReply, token: string): void {
+  const domain = process.env.SESSION_COOKIE_DOMAIN;
+  if (!domain) return;
+  reply.setCookie(SESSION_COOKIE_NAME, token, {
+    domain, path: "/", httpOnly: true, secure: true, sameSite: "lax",
+    maxAge: Math.floor(SESSION_TTL_MS / 1000),
+  });
+}
+
+function clearSessionCookie(reply: import("fastify").FastifyReply): void {
+  const domain = process.env.SESSION_COOKIE_DOMAIN;
+  if (!domain) return;
+  reply.clearCookie(SESSION_COOKIE_NAME, { domain, path: "/" });
+}
 
 export function registerCoreRoutes(app: FastifyInstance, ctx: AppContext): void {
   const { deps } = ctx;
@@ -44,10 +66,11 @@ export function registerCoreRoutes(app: FastifyInstance, ctx: AppContext): void 
       throw err;
     }
     const token = await createSession(deps.appPool, userId);
+    setSessionCookie(reply, token);
     return reply.status(201).send({ userId, token });
   });
 
-  app.post("/v1/auth/login", async (req) => {
+  app.post("/v1/auth/login", async (req, reply) => {
     const input = LoginInput.parse(req.body);
     const { rows } = await deps.appPool.query(
       "SELECT id, password_hash FROM users WHERE email = $1",
@@ -58,17 +81,23 @@ export function registerCoreRoutes(app: FastifyInstance, ctx: AppContext): void 
       throw new HttpError(401, "Invalid email or password");
     }
     const token = await createSession(deps.appPool, rows[0].id);
+    setSessionCookie(reply, token);
     return { userId: rows[0].id, token };
   });
 
-  app.post("/v1/auth/logout", async (req) => {
+  app.post("/v1/auth/logout", async (req, reply) => {
     const header = req.headers.authorization;
-    if (header?.startsWith("Bearer ")) {
+    const altToken = req.headers["x-deedwell-token"];
+    const token = header?.startsWith("Bearer ")
+      ? header.slice("Bearer ".length)
+      : typeof altToken === "string" ? altToken : req.cookies[SESSION_COOKIE_NAME];
+    if (token) {
       await deps.appPool.query(
         "UPDATE sessions SET revoked_at = now() WHERE token_hash = $1 AND revoked_at IS NULL",
-        [hashSessionToken(header.slice("Bearer ".length))]
+        [hashSessionToken(token)]
       );
     }
+    clearSessionCookie(reply);
     return { ok: true };
   });
 

@@ -55,6 +55,10 @@ async function call<T>(
   const token = getToken();
   const res = await fetch(`${API_URL}${path}`, {
     method,
+    // A fresh load with no localStorage token (e.g. arriving here after
+    // logging in on deedwell.org) still authenticates via the shared
+    // session cookie once this app is served from *.deedwell.org.
+    credentials: "include",
     headers: {
       ...(token ? { "x-deedwell-token": token } : {}),
       ...(body !== undefined ? { "content-type": "application/json" } : {}),
@@ -202,6 +206,7 @@ export const getExportMarkdown = (orgId: string, artifactId: string) =>
 export async function getExportBinary(orgId: string, artifactId: string, format: "docx" | "pdf"): Promise<Blob> {
   const token = getToken();
   const res = await fetch(`${API_URL}/v1/orgs/${orgId}/artifacts/${artifactId}/export?format=${format}`, {
+    credentials: "include",
     headers: token ? { "x-deedwell-token": token } : {},
   });
   if (!res.ok) throw new ApiError(res.status, `Export (${format}) failed (${res.status})`);
@@ -265,7 +270,7 @@ export const getGcpResearchResult = (orgId: string, taskId: string) =>
 export async function previewGcpDeliverable(orgId: string, deliverableId: string): Promise<string> {
   const token = getToken();
   const res = await fetch(`${API_URL}/v1/orgs/${orgId}/gcp-deliverables/${deliverableId}/download`,
-    { headers: token ? { "x-deedwell-token": token } : {} });
+    { credentials: "include", headers: token ? { "x-deedwell-token": token } : {} });
   if (!res.ok) throw new ApiError(res.status, "Preview failed");
   return URL.createObjectURL(await res.blob());
 }
@@ -274,7 +279,7 @@ export async function previewGcpDeliverable(orgId: string, deliverableId: string
 export async function downloadGcpDeliverable(orgId: string, deliverableId: string, filename: string): Promise<void> {
   const token = getToken();
   const res = await fetch(`${API_URL}/v1/orgs/${orgId}/gcp-deliverables/${deliverableId}/download`,
-    { headers: token ? { "x-deedwell-token": token } : {} });
+    { credentials: "include", headers: token ? { "x-deedwell-token": token } : {} });
   if (!res.ok) throw new ApiError(res.status, "Download failed");
   const blob = await res.blob();
   const url = URL.createObjectURL(blob);
@@ -299,7 +304,7 @@ export async function fetchTtsBlob(orgId: string, agent: string, text: string): 
   const token = getToken();
   const res = await fetch(
     `${API_URL}/v1/orgs/${orgId}/tts?agent=${encodeURIComponent(agent)}&text=${encodeURIComponent(text.slice(0, 600))}`,
-    { headers: token ? { "x-deedwell-token": token } : {} }
+    { credentials: "include", headers: token ? { "x-deedwell-token": token } : {} }
   );
   if (!res.ok) throw new ApiError(res.status, "Voice synthesis unavailable");
   return res.blob();

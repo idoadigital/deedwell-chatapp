@@ -26,6 +26,12 @@ RUN pnpm install --frozen-lockfile --prod=false
 
 COPY . .
 
+# coworkers.deedwell.org is this same service (see app.ts) — build the chat
+# app's static assets so it can serve them alongside the API. Empty
+# VITE_API_URL means its own fetch calls go to same-origin /v1/... directly.
+ENV VITE_API_URL=""
+RUN pnpm --filter @deedwell/desktop build
+
 ENV NODE_ENV=production
 EXPOSE 8080
 
