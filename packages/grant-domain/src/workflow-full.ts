@@ -700,9 +700,13 @@ export function buildGrantFullWorkflow(): WorkflowDefinition<GrantServices> {
 
         // Attachments can't be produced by the team — the checklist names each
         // one from the announcement so nothing is silently dropped (spec §5
-        // Stage 8). Files uploaded to the project count as provided.
+        // Stage 8). Files uploaded to the project, or reused from the
+        // organization's evidence library and linked here, count as provided.
         const uploadedFiles = await ctx.client.query(
-          "SELECT filename FROM files WHERE project_id = $1", [ctx.projectId]
+          `SELECT f.filename FROM files f
+           JOIN file_links fl ON fl.file_id = f.id
+           WHERE fl.project_id = $1`,
+          [ctx.projectId]
         );
 
         // An application with no drafted content or no costed budget must

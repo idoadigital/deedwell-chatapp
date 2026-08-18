@@ -124,6 +124,20 @@ export const extractFacts = (orgId: string, fileId: string) =>
     `/v1/orgs/${orgId}/files/${fileId}/extract-facts`
   );
 
+export interface LibraryFile {
+  id: string;
+  filename: string;
+  mime: string;
+  size_bytes: number;
+  created_at: string;
+}
+
+export const listLibraryFiles = (orgId: string, projectId: string) =>
+  call<{ files: LibraryFile[] }>("GET", `/v1/orgs/${orgId}/files/library?projectId=${projectId}`);
+
+export const linkLibraryFile = (orgId: string, projectId: string, fileId: string) =>
+  call<{ ok: true }>("POST", `/v1/orgs/${orgId}/projects/${projectId}/files/${fileId}/link`);
+
 // ---- files & grant slice --------------------------------------------------
 
 export const uploadFile = (

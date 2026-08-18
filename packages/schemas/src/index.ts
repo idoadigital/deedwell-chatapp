@@ -143,6 +143,11 @@ export const ResolveFactConflictInput = z.object({
 });
 export type ResolveFactConflictInput = z.infer<typeof ResolveFactConflictInput>;
 
+export const LinkFileInput = z.object({
+  fileId: z.string().uuid(),
+});
+export type LinkFileInput = z.infer<typeof LinkFileInput>;
+
 export const SectionClaim = z.object({
   text: z.string().min(1).max(4000),
   factKey: z.string().nullable(),

@@ -11,6 +11,7 @@ import {
 } from "./assistant.js";
 import { TEAMMATES } from "./teammates.js";
 import { HttpError, type AppContext } from "./app.js";
+import { resolveInfoRequest } from "./fact-fields.js";
 
 export function registerChatRoutes(app: FastifyInstance, ctx: AppContext): void {
   // Cancel a run that hasn't finished (safe: steps are transactional).
@@ -24,6 +25,15 @@ export function registerChatRoutes(app: FastifyInstance, ctx: AppContext): void 
         [runId]
       );
       if (!rowCount) throw new HttpError(409, "Run is already finished");
+      // The cancel writes workflow_runs directly rather than going through the
+      // engine, so attachWorkspaceBridge never fires and any in-progress
+      // timeline row would spin forever. Close them here, in the same
+      // transaction, so the activity feed reflects what actually happened.
+      await client.query(
+        `UPDATE workspace_events SET status = 'completed', completed_at = now()
+         WHERE run_id = $1 AND status = 'in_progress'`,
+        [runId]
+      );
       await audit(client, {
         tenantId: req.orgId!, actorUser: req.userId, action: "workflow.cancelled",
         entityType: "workflow_run", entityId: runId, metadata: {},
@@ -162,30 +172,30 @@ export function registerChatRoutes(app: FastifyInstance, ctx: AppContext): void 
         [projectId]
       );
       const files = await client.query(
-        `SELECT id, filename, mime, size_bytes, created_at FROM files
-         WHERE project_id = $1 ORDER BY created_at DESC LIMIT 30`,
+        `SELECT f.id, f.filename, f.mime, f.size_bytes, f.created_at FROM files f
+         JOIN file_links fl ON fl.file_id = f.id
+         WHERE fl.project_id = $1 ORDER BY f.created_at DESC LIMIT 30`,
         [projectId]
       );
-      // Open questions: facts the running workflow is genuinely missing,
-      // prefilled with anything the org already certified (never re-asked).
-      const waiting = run.rows[0]?.status === "waiting_for_info"
-        ? await client.query(
-            `SELECT state->'waiting'->>'payload' AS payload FROM workflow_runs WHERE id = $1`,
-            [run.rows[0].id]
-          )
-        : null;
-      let missingFacts: string[] = [];
-      let waitContext = "eligibility";
-      try {
-        const parsed = JSON.parse(waiting?.rows[0]?.payload ?? "{}") as { missingFacts?: string[]; context?: string };
-        missingFacts = parsed.missingFacts ?? [];
-        if (parsed.context) waitContext = parsed.context;
-      } catch { /* none */ }
+      // Open questions: whatever the running workflow is genuinely waiting on —
+      // missing passport facts for grant work, or the unanswered half of the
+      // website design catalog. Resolved in one place (fact-fields) so chat and
+      // this panel can never disagree about what is being asked.
+      const infoRequest = run.rows[0]
+        ? await resolveInfoRequest(client, run.rows[0].id)
+        : { fields: [], context: "eligibility", stage: null, allowSkip: false };
       const knownFacts = await client.query(
-        `SELECT fact_key, value FROM org_facts WHERE status = 'user_certified'`
+        `SELECT fact_key, value FROM org_facts WHERE status IN ('user_certified', 'verified')`
+      );
+      // The site backing this project, if any — drives the Preview tab.
+      const site = await client.query(
+        `SELECT s.id, s.slug, s.name, s.status,
+                (SELECT version FROM site_releases r WHERE r.id = s.preview_release_id) AS preview_version,
+                (SELECT version FROM site_releases r WHERE r.id = s.active_release_id)  AS live_version
+           FROM sites s WHERE s.project_id = $1 LIMIT 1`,
+        [projectId]
       );
       const { completionForRun } = await import("./workspace.js");
-      const { describeInfoRequest } = await import("./fact-fields.js");
       const base = {
         project: project.rows[0],
         run: run.rows[0] ?? null,
@@ -198,9 +208,13 @@ export function registerChatRoutes(app: FastifyInstance, ctx: AppContext): void 
         requirements: (matrix.rows[0]?.content?.requirements ?? []) as Array<Record<string, unknown>>,
         eligibility: eligibility.rows[0] ?? null,
         files: files.rows as Array<Record<string, unknown>>,
-        questions: describeInfoRequest(missingFacts, waitContext).map((field) => ({
+        site: site.rows[0] ?? null,
+        allowSkip: infoRequest.allowSkip,
+        questions: infoRequest.fields.map((field) => ({
           ...field,
           reasonNeeded: field.reason,
+          // Website design answers live per-site, not in org_facts, so only
+          // passport-backed questions can be prefilled from certified facts.
           prefill: knownFacts.rows.find((f) => f.fact_key === field.key)?.value ?? null,
         })) as Array<Record<string, unknown>>,
         gcp: null as Record<string, unknown> | null,
@@ -342,13 +356,41 @@ export function registerChatRoutes(app: FastifyInstance, ctx: AppContext): void 
     const { rows } = await ctx.inOrg(req, async (client) => {
       const channel = await client.query("SELECT id FROM channels WHERE id = $1", [channelId]);
       if (!channel.rows[0]) throw new HttpError(404, "Channel not found");
-      return client.query(
+      const messages = await client.query(
         `SELECT m.id, m.author_kind, m.author_user, m.author_agent, u.display_name AS author_name,
                 m.body, m.metadata, m.created_at
          FROM messages m LEFT JOIN users u ON u.id = m.author_user
          WHERE m.channel_id = $1 ORDER BY m.created_at ASC LIMIT 300`,
         [channelId]
       );
+
+      // Whether each info-request form is still worth showing. Computed here
+      // rather than stored on the message because `messages` is append-only
+      // (GRANT SELECT, INSERT — 0004_chat.sql). A form is open only if its run
+      // is still waiting AND it is the newest request for that run, so a
+      // partial answer that triggers a fresh round retires the older form
+      // instead of leaving two contradictory copies on screen.
+      const infoRows = messages.rows.filter(
+        (m) => Array.isArray(m.metadata?.infoRequest) && m.metadata?.runId
+      );
+      if (infoRows.length) {
+        const runIds = [...new Set(infoRows.map((m) => m.metadata.runId as string))];
+        const waiting = await client.query(
+          `SELECT id FROM workflow_runs WHERE id = ANY($1::uuid[]) AND status = 'waiting_for_info'`,
+          [runIds]
+        );
+        const stillWaiting = new Set<string>(waiting.rows.map((r) => r.id as string));
+        const newestPerRun = new Map<string, string>();
+        for (const m of infoRows) newestPerRun.set(m.metadata.runId as string, m.id as string);
+        for (const m of infoRows) {
+          const runId = m.metadata.runId as string;
+          m.metadata = {
+            ...m.metadata,
+            infoRequestOpen: stillWaiting.has(runId) && newestPerRun.get(runId) === m.id,
+          };
+        }
+      }
+      return messages;
     });
     return { messages: rows };
   });

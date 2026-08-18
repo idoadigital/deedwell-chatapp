@@ -155,7 +155,13 @@ export function GrantWorkspacePanel({
             refresh();
           }} />
         )}
-        {tab === "documents" && <Documents ws={ws} />}
+        {tab === "documents" && isGrant && (
+          <div>
+            <Documents ws={ws} />
+            <LibraryPicker org={org} projectId={projectId} onAttached={refresh} />
+          </div>
+        )}
+        {tab === "documents" && !isGrant && <Documents ws={ws} />}
         {tab === "evidence" && (
           <EvidenceConflicts
             org={org}
@@ -791,6 +797,66 @@ function EvidenceConflicts({
           )}
         </div>
       ))}
+    </div>
+  );
+}
+
+function LibraryPicker({
+  org, projectId, onAttached,
+}: {
+  org: Organization;
+  projectId: string;
+  onAttached: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [files, setFiles] = useState<api.LibraryFile[] | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+
+  const load = () => {
+    api.listLibraryFiles(org.id, projectId).then((data) => setFiles(data.files)).catch(() => setFiles([]));
+  };
+
+  return (
+    <div style={{ marginTop: 12 }}>
+      <button type="button" className="ghost" onClick={() => { setOpen((v) => !v); if (!open) load(); }}>
+        {open ? "Hide evidence library" : "Attach from evidence library…"}
+      </button>
+      {open && (
+        files === null ? (
+          <p className="faint" style={{ marginTop: 8 }}>Loading…</p>
+        ) : files.length === 0 ? (
+          <p className="faint" style={{ marginTop: 8 }}>Nothing else in the organization's evidence library yet — documents uploaded to other applications will show up here to reuse, instead of re-uploading.</p>
+        ) : (
+          <div style={{ marginTop: 8 }}>
+            {files.map((f) => (
+              <div key={f.id} className="ws-source row">
+                <Icon name="file-text" size={14} />
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600 }}>{f.filename}</div>
+                  <div className="faint">{f.mime} · {(f.size_bytes / 1024).toFixed(1)} KB</div>
+                </div>
+                <button
+                  type="button"
+                  className="ghost"
+                  disabled={busy === f.id}
+                  onClick={async () => {
+                    setBusy(f.id);
+                    try {
+                      await api.linkLibraryFile(org.id, projectId, f.id);
+                      setFiles((prev) => prev?.filter((x) => x.id !== f.id) ?? null);
+                      onAttached();
+                    } finally {
+                      setBusy(null);
+                    }
+                  }}
+                >
+                  Attach
+                </button>
+              </div>
+            ))}
+          </div>
+        )
+      )}
     </div>
   );
 }

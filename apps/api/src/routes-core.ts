@@ -217,6 +217,13 @@ export function registerCoreRoutes(app: FastifyInstance, ctx: AppContext): void 
         [fileId, req.orgId, projectId, input.filename, input.mime, content.length,
          createHash("sha256").update(content).digest("hex"), storageKey, req.userId]
       );
+      // The file also lives in the org's evidence library from day one — this
+      // just records that its first use was here, not a separate concept.
+      await client.query(
+        `INSERT INTO file_links (id, tenant_id, file_id, project_id, linked_by)
+         VALUES ($1,$2,$3,$4,$5)`,
+        [uuidv7(), req.orgId, fileId, projectId, req.userId]
+      );
       await audit(client, {
         tenantId: req.orgId!, actorUser: req.userId, action: "file.uploaded",
         entityType: "file", entityId: fileId,
@@ -225,6 +232,76 @@ export function registerCoreRoutes(app: FastifyInstance, ctx: AppContext): void 
       return { fileId };
     });
     return reply.status(201).send(result);
+  });
+
+  // ---- evidence library: files reusable across every application ----------
+
+  app.post("/v1/orgs/:orgId/files", async (req, reply) => {
+    ctx.requireRole(req, "member");
+    const input = UploadFileInput.parse(req.body);
+    const content = Buffer.from(input.contentBase64, "base64");
+    if (content.length === 0) throw new HttpError(400, "File is empty");
+    if (content.length > MAX_FILE_BYTES) throw new HttpError(413, "File exceeds the 8 MB limit");
+
+    const fileId = uuidv7();
+    const storageKey = tenantFileKey(req.orgId!, fileId, input.filename);
+    const result = await ctx.inOrg(req, async (client) => {
+      await deps.storage.put(storageKey, content);
+      await client.query(
+        `INSERT INTO files (id, tenant_id, project_id, filename, mime, size_bytes, sha256, storage_key, created_by)
+         VALUES ($1,$2,NULL,$3,$4,$5,$6,$7,$8)`,
+        [fileId, req.orgId, input.filename, input.mime, content.length,
+         createHash("sha256").update(content).digest("hex"), storageKey, req.userId]
+      );
+      await audit(client, {
+        tenantId: req.orgId!, actorUser: req.userId, action: "file.uploaded_to_library",
+        entityType: "file", entityId: fileId,
+        metadata: { filename: input.filename, bytes: content.length },
+      });
+      return { fileId };
+    });
+    return reply.status(201).send(result);
+  });
+
+  app.get("/v1/orgs/:orgId/files/library", async (req) => {
+    ctx.requireRole(req, "viewer");
+    const { projectId } = req.query as { projectId?: string };
+    const { rows } = await ctx.inOrg(req, (client) =>
+      client.query(
+        `SELECT f.id, f.filename, f.mime, f.size_bytes, f.created_at
+         FROM files f
+         WHERE NOT EXISTS (
+           SELECT 1 FROM file_links fl WHERE fl.file_id = f.id AND fl.project_id = $1
+         )
+         ORDER BY f.created_at DESC`,
+        [projectId ?? null]
+      )
+    );
+    return { files: rows };
+  });
+
+  app.post("/v1/orgs/:orgId/projects/:projectId/files/:fileId/link", async (req, reply) => {
+    ctx.requireRole(req, "member");
+    const { projectId, fileId } = req.params as { projectId: string; fileId: string };
+    await ctx.inOrg(req, async (client) => {
+      const [project, file] = await Promise.all([
+        client.query("SELECT id FROM projects WHERE id = $1", [projectId]),
+        client.query("SELECT id FROM files WHERE id = $1", [fileId]),
+      ]);
+      if (!project.rows[0]) throw new HttpError(404, "Project not found");
+      if (!file.rows[0]) throw new HttpError(404, "File not found");
+      await client.query(
+        `INSERT INTO file_links (id, tenant_id, file_id, project_id, linked_by)
+         VALUES ($1,$2,$3,$4,$5)
+         ON CONFLICT (file_id, project_id) DO NOTHING`,
+        [uuidv7(), req.orgId, fileId, projectId, req.userId]
+      );
+      await audit(client, {
+        tenantId: req.orgId!, actorUser: req.userId, action: "file.linked",
+        entityType: "file", entityId: fileId, metadata: { projectId },
+      });
+    });
+    return reply.status(201).send({ ok: true });
   });
 
   // ---- evidence: fact extraction with provenance, conflict resolution -----

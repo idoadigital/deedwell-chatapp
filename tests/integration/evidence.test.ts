@@ -102,3 +102,34 @@ describe("evidence extraction: conflict handling", () => {
     expect(listAfter.body.conflicts.find((c: any) => c.fact_key === "beneficiaries_served")).toBeUndefined();
   });
 });
+
+describe("evidence library: files reusable across applications", () => {
+  it("a file uploaded to one project is not automatically visible in a second project's library filter", async () => {
+    const fileId = await uploadDoc(env.app, token, orgId, projectId, ANNUAL_REPORT);
+    const second = await api(env.app, "POST", `/v1/orgs/${orgId}/projects`, {
+      token, body: { name: "Second Application", type: "grant_application" },
+    });
+    const secondProjectId = second.body.projectId;
+
+    const library = await api(env.app, "GET", `/v1/orgs/${orgId}/files/library?projectId=${secondProjectId}`, { token });
+    expect(library.body.files.some((f: any) => f.id === fileId)).toBe(true);
+
+    const link = await api(env.app, "POST", `/v1/orgs/${orgId}/projects/${secondProjectId}/files/${fileId}/link`, { token });
+    expect(link.status).toBe(201);
+
+    const libraryAfter = await api(env.app, "GET", `/v1/orgs/${orgId}/files/library?projectId=${secondProjectId}`, { token });
+    expect(libraryAfter.body.files.some((f: any) => f.id === fileId)).toBe(false);
+  });
+
+  it("a file uploaded straight to the org library has no project until linked", async () => {
+    const res = await api(env.app, "POST", `/v1/orgs/${orgId}/files`, {
+      token, body: {
+        filename: "board-list.txt", mime: "text/plain",
+        contentBase64: Buffer.from("Board Chair: Jane Doe\n", "utf8").toString("base64"),
+      },
+    });
+    expect(res.status).toBe(201);
+    const library = await api(env.app, "GET", `/v1/orgs/${orgId}/files/library?projectId=${projectId}`, { token });
+    expect(library.body.files.some((f: any) => f.id === res.body.fileId)).toBe(true);
+  });
+});
