@@ -7,13 +7,18 @@ import {
   SitePage,
   SiteTheme,
   type OrgFact,
-  type SiteContentOutput,
+  type SitePageOutput,
   type SitePatchOutput,
   type WebsiteBriefOutput,
 } from "@deedwell/schemas";
 import { digitalStrategist, websiteCopywriter, websiteDeveloper } from "./agents.js";
 import { renderSite } from "./renderer.js";
 import { blockingFailures, runSiteChecks } from "./checks.js";
+import {
+  INTAKE_SKIP_KEY,
+  WEBSITE_DIRECTION_KEYS,
+  WEBSITE_ESSENTIAL_FACTS,
+} from "./intake.js";
 
 export const WEBSITE_BUILD_WORKFLOW = "website-build";
 export const WEBSITE_UPDATE_WORKFLOW = "website-update";
@@ -110,6 +115,80 @@ async function replacePages(ctx: Ctx, siteId: string, rawPages: SitePage[]): Pro
   }
 }
 
+/**
+ * A timeline row linking straight to the built preview. The path is relative —
+ * the workflow has no business knowing the public base URL, and the client
+ * already knows where the site router lives.
+ */
+async function recordReleaseEvent(
+  ctx: Ctx, slug: string, version: number, failed: number, blocking: number,
+): Promise<void> {
+  const eventType = `release:v${version}`;
+  const { rows } = await ctx.client.query(
+    "SELECT 1 FROM workspace_events WHERE run_id = $1 AND event_type = $2",
+    [ctx.runId, eventType]
+  );
+  if (rows[0]) return;
+  const summary = blocking
+    ? `Built, but ${blocking} blocking check${blocking === 1 ? "" : "s"} must be fixed before it can go live. The preview shows the current state.`
+    : failed
+      ? `Built with ${failed} advisory check${failed === 1 ? "" : "s"} to review.`
+      : "All checks passed. Review it and approve to publish.";
+  await ctx.client.query(
+    `INSERT INTO workspace_events (id, tenant_id, project_id, run_id, event_type, title, summary,
+       status, agent_key, metadata, completed_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'website.qa_deployment',$9,now())`,
+    [uuidv7(), ctx.tenantId, ctx.projectId, ctx.runId, eventType,
+     `Preview v${version} is ready`, summary, blocking ? "blocked" : "completed",
+     JSON.stringify({ previewPath: `/preview/${slug}/`, version })]
+  );
+}
+
+/** Design answers recorded for this site, as a plain key -> value map. */
+async function loadIntake(ctx: Ctx, siteId: string): Promise<Record<string, unknown>> {
+  const { rows } = await ctx.client.query(
+    "SELECT question_key, value FROM site_intake_answers WHERE site_id = $1",
+    [siteId]
+  );
+  return Object.fromEntries(rows.map((r) => [r.question_key as string, r.value]));
+}
+
+/** Upsert a single page without disturbing the others. */
+async function upsertPage(ctx: Ctx, siteId: string, page: SitePage, orderIdx: number): Promise<void> {
+  await ctx.client.query(
+    `INSERT INTO site_pages (id, tenant_id, site_id, slug, title, order_idx, blocks, seo)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+     ON CONFLICT (site_id, slug) DO UPDATE SET
+       title = EXCLUDED.title, order_idx = EXCLUDED.order_idx,
+       blocks = EXCLUDED.blocks, seo = EXCLUDED.seo`,
+    [uuidv7(), ctx.tenantId, siteId, page.slug, page.title, orderIdx,
+     JSON.stringify(page.blocks), JSON.stringify({ description: page.seoDescription })]
+  );
+}
+
+/**
+ * One timeline row per page, so a build reads as visible progress rather than
+ * a single spinner. Guarded on event_type because a step retry re-runs the
+ * whole body — storage and model calls are not transactional, so the only
+ * safe assumption is that anything here may happen twice.
+ */
+async function recordPageEvent(ctx: Ctx, slug: string, title: string): Promise<void> {
+  const eventType = `page:${slug}`;
+  const { rows } = await ctx.client.query(
+    "SELECT 1 FROM workspace_events WHERE run_id = $1 AND event_type = $2",
+    [ctx.runId, eventType]
+  );
+  if (rows[0]) return;
+  await ctx.client.query(
+    `INSERT INTO workspace_events (id, tenant_id, project_id, run_id, event_type, title, summary,
+       status, agent_key, completed_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,'completed','website.copywriter',now())`,
+    [uuidv7(), ctx.tenantId, ctx.projectId, ctx.runId, eventType,
+     `Wrote the ${title} page`,
+     "Drafted from the approved brief and your certified facts."]
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Shared steps: build a release from the CMS working copy, then gate publish.
 // ---------------------------------------------------------------------------
@@ -120,7 +199,19 @@ async function buildRelease(ctx: Ctx, siteId: string): Promise<StepResult> {
   if (!pages.length) throw new Error("Site has no pages to build");
   const theme = SiteTheme.parse(site.theme);
 
-  const files = renderSite({ siteName: site.name, slug: site.slug, pages, theme });
+  // Registration status and a real contact address are the two things a grant
+  // reviewer checks first, so they belong in the footer of every page.
+  const facts = await fetchFacts(ctx, websiteCopywriter);
+  const registration =
+    facts.find((f) => f.key === "registration_status"
+      && (f.status === "verified" || f.status === "user_certified"))?.value ?? null;
+  // The public contact address is a site choice, not an organizational fact —
+  // it lives with the rest of the design intake.
+  const intake = await loadIntake(ctx, siteId);
+  const contactEmail = typeof intake.site_contact_email === "string" ? intake.site_contact_email : null;
+  const files = renderSite({
+    siteName: site.name, slug: site.slug, pages, theme, registration, contactEmail,
+  });
   const checks = runSiteChecks(files, pages);
 
   const { rows: versionRow } = await ctx.client.query(
@@ -186,6 +277,9 @@ async function buildRelease(ctx: Ctx, siteId: string): Promise<StepResult> {
       action: "site.release_failed_validation", entityType: "site_release", entityId: releaseId,
       metadata: { version, blocking: blocking.length, failedChecks: failures.length },
     });
+    // The preview exists even though it failed validation, and the whole point
+    // of a preview is to look at what is wrong. Emit the link before returning.
+    await recordReleaseEvent(ctx, site.slug, version, failures.length, blocking.length);
     return {
       state: {
         ...ctx.state, releaseId, version, published: false,
@@ -213,6 +307,7 @@ async function buildRelease(ctx: Ctx, siteId: string): Promise<StepResult> {
     action: "site.release_built", entityType: "site_release", entityId: releaseId,
     metadata: { version, failedChecks: failures.length },
   });
+  await recordReleaseEvent(ctx, site.slug, version, failures.length, 0);
   return {
     state: { ...ctx.state, releaseId, version, failedChecks: failures.length, testReportArtifactId: reportId },
     wait: { kind: "approval", payload: { approvalId, kind: "publish_site" }, resumeStep: "publish_gate" },
@@ -264,26 +359,65 @@ async function publishGate(ctx: Ctx, siteId: string): Promise<StepResult> {
 export function buildWebsiteBuildWorkflow(): WorkflowDefinition<WebsiteServices> {
   return {
     name: WEBSITE_BUILD_WORKFLOW,
-    version: 2,
+    version: 3,
+    // Budget accounts for the conversational intake and per-page generation:
+    // discovery may re-enter up to 4 times, each gate costs a step per
+    // re-entry, and generate_content now runs once per page. steps_used
+    // increments on every execution including resumes, so waits are not free.
     initialStep: "discovery",
-    stepBudget: 25,
+    stepBudget: 40,
     steps: {
       // Stage 1 (spec §5): confirm what we know, ask only for what's missing.
       // No page is generated until the essentials exist and the brief is approved.
+      //
+      // Two rounds. First the organizational facts the site cannot be written
+      // without — those are hard requirements. Then the design choices, which
+      // are all optional: the team asks, but never blocks on them.
       async discovery(ctx): Promise<StepResult> {
+        const input = BuildInput.parse(ctx.state.input);
         const facts = await fetchFacts(ctx, digitalStrategist);
         const usable = new Set(
           facts.filter((f) => f.status === "verified" || f.status === "user_certified").map((f) => f.key)
         );
-        const needed = ["mission", "programs", "beneficiaries", "service_area", "headquarters"];
-        const missing = needed.filter((k) => !usable.has(k));
+        const missing = WEBSITE_ESSENTIAL_FACTS.filter((k) => !usable.has(k));
         if (missing.length) {
           return {
             state: { ...ctx.state, missingFacts: missing },
-            wait: { kind: "info", payload: { missingFacts: missing, context: "website_discovery" }, resumeStep: "discovery" },
+            wait: {
+              kind: "info",
+              payload: { missingFacts: missing, context: "website_discovery", stage: "essentials" },
+              resumeStep: "discovery",
+            },
           };
         }
-        return { state: ctx.state, next: "intake_brief" };
+
+        // Re-read the durable answers rather than trusting the resume signal:
+        // engine.signal() truncates its payload to a string, so a signal says
+        // that something arrived, not what.
+        const intake = await loadIntake(ctx, input.siteId);
+        const answered = new Set(Object.keys(intake));
+        const outstanding = WEBSITE_DIRECTION_KEYS.filter((k) => !answered.has(k));
+        const rounds = typeof ctx.state.intakeRounds === "number" ? ctx.state.intakeRounds : 0;
+
+        // Three exits, so an optional round can never park the run forever:
+        // the user handed it to the team, there is nothing left to ask, or
+        // they have been asked enough and we get on with it.
+        const skipped = intake[INTAKE_SKIP_KEY] === true;
+        if (skipped || !outstanding.length || rounds >= 3) {
+          return { state: { ...ctx.state, intake }, next: "intake_brief" };
+        }
+
+        return {
+          state: { ...ctx.state, intake, intakeRounds: rounds + 1 },
+          wait: {
+            // Deliberately tiny: summarize() truncates this to 800 characters,
+            // so the questions themselves are recomputed from the catalog at
+            // read time instead of travelling here.
+            kind: "info",
+            payload: { context: "website_intake", stage: "direction", siteId: input.siteId },
+            resumeStep: "discovery",
+          },
+        };
       },
 
       async intake_brief(ctx): Promise<StepResult> {
@@ -294,7 +428,14 @@ export function buildWebsiteBuildWorkflow(): WorkflowDefinition<WebsiteServices>
           "Produce a website brief for this organization.",
           [
             { label: "org_facts", content: JSON.stringify(facts) },
-            { label: "intake", content: JSON.stringify({ siteName: input.siteName, donateUrl: input.donateUrl }) },
+            { label: "intake", content: JSON.stringify({
+              siteName: input.siteName,
+              // An explicit answer beats the value captured when the site was
+              // created — the user has seen the question since.
+              donateUrl: (ctx.state.intake as Record<string, unknown> | undefined)?.site_donate_url
+                ?? input.donateUrl,
+            }) },
+            { label: "intake_preferences", content: JSON.stringify(ctx.state.intake ?? {}) },
           ]
         );
         await recordModelUsage(ctx, digitalStrategist.agentKey, result.tokensEstimated);
@@ -357,30 +498,79 @@ export function buildWebsiteBuildWorkflow(): WorkflowDefinition<WebsiteServices>
         return { state: ctx.state, next: "generate_content" };
       },
 
+      /**
+       * One page per step, cursored through the approved sitemap.
+       *
+       * A step body and everything it writes commit in a single transaction,
+       * so a single call that returns six pages is invisible until the whole
+       * thing finishes — the user watches a spinner and has no idea whether
+       * anything is happening. Writing one page per step means one commit,
+       * one run_updated event, and one line of visible progress each time.
+       */
       async generate_content(ctx): Promise<StepResult> {
         const input = BuildInput.parse(ctx.state.input);
+        const brief = ctx.state.brief as WebsiteBriefOutput | undefined;
+        const sitemap = (brief?.sitemap ?? []).slice(0, 10);
+        if (!sitemap.length) {
+          // Nothing approved to write. Honest stop rather than inventing a site.
+          return { state: { ...ctx.state, placeholders: [] }, complete: true };
+        }
+
+        const cursor = typeof ctx.state.cursor === "number" ? ctx.state.cursor : 0;
+
+        // The delete sweep runs once, on first entry, against the planned slug
+        // set. Doing it per page would delete the pages already written.
+        if (cursor === 0) {
+          const planned = normalizeHome(
+            sitemap.map((entry) => ({ slug: entry.slug, title: entry.title, blocks: [], seoDescription: "" })) as SitePage[]
+          ).map((p) => p.slug);
+          await ctx.client.query(
+            "DELETE FROM site_pages WHERE site_id = $1 AND NOT (slug = ANY($2))",
+            [input.siteId, planned]
+          );
+        }
+
+        if (cursor >= sitemap.length) {
+          return { state: ctx.state, next: "build_release" };
+        }
+
+        const plan = sitemap[cursor]!;
+        // normalizeHome guarantees the first page is the site root; apply the
+        // same rule here so the cursor and the stored slugs agree.
+        const slug = cursor === 0 ? "home" : plan.slug;
         const facts = await fetchFacts(ctx, websiteCopywriter);
-        const result = await runAgentTask<SiteContentOutput>(
+        const result = await runAgentTask<SitePageOutput>(
           ctx.services.provider, websiteCopywriter,
-          "Write the site's pages using only the approved organizational facts.",
+          `Write the "${plan.title}" page. Write only this page.`,
           [
             { label: "org_facts", content: JSON.stringify(facts) },
             { label: "intake", content: JSON.stringify({ siteName: input.siteName, donateUrl: input.donateUrl }) },
-            { label: "brief", content: JSON.stringify(ctx.state.brief ?? {}) },
+            { label: "intake_preferences", content: JSON.stringify(ctx.state.intake ?? {}) },
+            { label: "brief", content: JSON.stringify(brief ?? {}) },
+            { label: "page_plan", content: JSON.stringify({ ...plan, slug }) },
           ]
         );
         await recordModelUsage(ctx, websiteCopywriter.agentKey, result.tokensEstimated);
-        await replacePages(ctx, input.siteId, result.output.pages);
+
+        const page = SitePage.parse({ ...result.output.page, slug });
+        await upsertPage(ctx, input.siteId, page, cursor);
+        await recordPageEvent(ctx, slug, plan.title);
+
+        const placeholders = [
+          ...((ctx.state.placeholders as string[] | undefined) ?? []),
+          ...result.output.placeholders,
+        ];
         if (result.output.placeholders.length) {
           await audit(ctx.client, {
             tenantId: ctx.tenantId, actorAgent: websiteCopywriter.agentKey,
             action: "site.placeholders_flagged", entityType: "site", entityId: input.siteId,
-            metadata: { placeholders: result.output.placeholders },
+            metadata: { page: slug, placeholders: result.output.placeholders },
           });
         }
+
         return {
-          state: { ...ctx.state, placeholders: result.output.placeholders },
-          next: "build_release",
+          state: { ...ctx.state, cursor: cursor + 1, placeholders },
+          next: cursor + 1 >= sitemap.length ? "build_release" : "generate_content",
         };
       },
 

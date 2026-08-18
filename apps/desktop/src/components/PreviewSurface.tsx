@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { isValidExternalUrl, openExternal } from "../external";
 
 /**
@@ -6,10 +6,29 @@ import { isValidExternalUrl, openExternal } from "../external";
  * empty states, retry, and a real Open-in-Browser action — never a silent
  * blank frame.
  */
-export function PreviewSurface({ url }: { url: string | null }) {
+export function PreviewSurface({ url, reloadKey, frameWidth, toolbarExtra }: {
+  url: string | null;
+  /** Changing this reloads the frame — pass the release version so a fresh
+   *  build appears without the user having to hit Refresh. */
+  reloadKey?: string | number;
+  /** Constrain the frame to a device width; null fills the panel. */
+  frameWidth?: number | null;
+  toolbarExtra?: ReactNode;
+}) {
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
   const [attempt, setAttempt] = useState(0);
   const [openError, setOpenError] = useState<string | null>(null);
+
+  // The site router sends `no-store` for preview releases, so remounting the
+  // frame is enough to pick up a new build — no cache-busting query needed
+  // (which the site's own relative links would drop anyway).
+  const lastKey = useRef(reloadKey);
+  useEffect(() => {
+    if (reloadKey !== undefined && reloadKey !== lastKey.current) {
+      lastKey.current = reloadKey;
+      setAttempt((a) => a + 1);
+    }
+  }, [reloadKey]);
 
   useEffect(() => {
     setState("loading");
@@ -34,6 +53,7 @@ export function PreviewSurface({ url }: { url: string | null }) {
       <div className="artifact-toolbar">
         <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{url}</span>
         <span style={{ marginLeft: "auto" }} />
+        {toolbarExtra}
         <button className="ghost" style={{ minHeight: 0, padding: "4px 10px" }}
           onClick={() => setAttempt((a) => a + 1)}>
           Refresh
@@ -68,6 +88,7 @@ export function PreviewSurface({ url }: { url: string | null }) {
             title="Website preview"
             sandbox="allow-forms allow-same-origin"
             src={url}
+            style={frameWidth ? { width: frameWidth, margin: "0 auto", flex: 1 } : undefined}
             onLoad={() => setState("ready")}
             onError={() => setState("error")}
           />

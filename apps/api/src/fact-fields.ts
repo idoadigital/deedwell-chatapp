@@ -1,4 +1,6 @@
+import type { PoolClient } from "pg";
 import { PASSPORT_FIELDS } from "@deedwell/grant-domain";
+import { websiteIntakeFields } from "@deedwell/website-domain";
 import type { InfoRequestField } from "@deedwell/schemas";
 
 /**
@@ -35,4 +37,84 @@ export function describeInfoRequest(keys: string[], context = "eligibility"): In
       group: field?.section ?? "Details",
     };
   });
+}
+
+// ---------------------------------------------------------------------------
+// Resolving a run's open information request
+// ---------------------------------------------------------------------------
+
+/**
+ * What a waiting run is actually asking for.
+ *
+ * The wait payload is deliberately tiny — summarize() truncates it to 800
+ * characters, so it carries a context tag and an id, never the questions. The
+ * question set is recomputed here from durable records: missing passport facts
+ * for grant work, and the website intake catalog minus what's already answered
+ * for a site build. Recomputing also means a catalog change reaches runs that
+ * are already in flight.
+ */
+export interface ResolvedInfoRequest {
+  fields: InfoRequestField[];
+  context: string;
+  stage: string | null;
+  /** True when the user may hand the remaining choices to the team. */
+  allowSkip: boolean;
+}
+
+const EMPTY: ResolvedInfoRequest = { fields: [], context: "eligibility", stage: null, allowSkip: false };
+
+export async function resolveInfoRequest(
+  client: PoolClient,
+  runId: string,
+): Promise<ResolvedInfoRequest> {
+  const { rows } = await client.query(
+    `SELECT status,
+            state->'waiting'->>'payload' AS payload,
+            state->'input'->>'siteId'    AS site_id
+       FROM workflow_runs WHERE id = $1`,
+    [runId],
+  );
+  const run = rows[0];
+  if (!run || run.status !== "waiting_for_info") return EMPTY;
+
+  let parsed: { missingFacts?: string[]; context?: string; stage?: string; siteId?: string } = {};
+  try {
+    parsed = JSON.parse(run.payload ?? "{}");
+  } catch {
+    // A truncated or malformed payload must not take the whole panel down; an
+    // empty request renders as "no open questions", which is honest.
+    return EMPTY;
+  }
+
+  const context = parsed.context ?? "eligibility";
+
+  if (context === "website_intake") {
+    const siteId = parsed.siteId ?? run.site_id;
+    if (!siteId) return EMPTY;
+    const answered = await client.query(
+      `SELECT question_key FROM site_intake_answers WHERE site_id = $1`,
+      [siteId],
+    );
+    const seen = new Set<string>(answered.rows.map((r) => r.question_key as string));
+    const fields: InfoRequestField[] = websiteIntakeFields("direction", seen).map((f) => ({
+      key: f.key,
+      label: f.label,
+      inputType: f.inputType,
+      ...(f.choices ? { choices: f.choices } : {}),
+      ...(f.maxSelections ? { maxSelections: f.maxSelections } : {}),
+      ...(f.placeholder ? { placeholder: f.placeholder } : {}),
+      help: f.help,
+      reason: f.reason,
+      required: f.required,
+      group: f.group,
+    }));
+    return { fields, context, stage: parsed.stage ?? "direction", allowSkip: true };
+  }
+
+  return {
+    fields: describeInfoRequest(parsed.missingFacts ?? [], context),
+    context,
+    stage: parsed.stage ?? null,
+    allowSkip: false,
+  };
 }

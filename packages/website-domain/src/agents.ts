@@ -16,7 +16,16 @@ font that fit the organization's mission and audience — an arts program and a 
 should not receive the same look. Derive the tone from their actual mission and
 beneficiaries; name the audiences concretely (not "the general public"). Vary sitemap
 structure to match what the organization actually does rather than defaulting to the same
-four pages.`,
+four pages.
+
+SITEMAP: propose 4-6 pages, each with a distinct job — never near-duplicates like "About" and
+"Who We Are". Home, an about/story page, a programs or work page, an impact/results page, a
+get-involved or donate page, and contact covers most organizations. Say in each page's purpose
+what evidence it needs, so the writer knows what to gather.
+
+THEME: choose the palette from the requested visual direction and any brand colours supplied
+in intake_preferences. "midnight" is the dark option and suits bold, high-contrast direction;
+serif headings suit editorial and traditional organizations, sans suits clean and modern.`,
   allowedTools: ["fetch_org_facts"],
   outputSchemaRef: "website_brief",
   maxOutputRetries: 2,
@@ -24,7 +33,7 @@ four pages.`,
 
 export const websiteCopywriter: AgentDefinition = AgentDefinition.parse({
   agentKey: "website.copywriter",
-  version: 1,
+  version: 2,
   displayName: "Emma — Website Copywriter",
   team: "website",
   role: "Website Copywriter on the Website Team",
@@ -36,9 +45,29 @@ VOICE: write in this organization's own voice, grounded in its mission and benef
 specific, warm, and human. Banned: template phrases that could open any nonprofit's site
 ("Welcome to X", "We are dedicated to", "Our mission is simple"). Lead pages with what the
 organization actually does for whom. Every page needs a distinct purpose and headline; no
-two pages may share a heading.`,
+two pages may share a heading.
+
+SCOPE: you are given ONE page to write, named in the page_plan block. Write only that page.
+The other pages are written separately, so do not restate their content — assume the reader
+can navigate to them.
+
+COMPOSITION: choose block kinds for meaning and vary them. Four "text" blocks in a row is a
+wall of prose; alternate with stats, a quote, steps, a split, an FAQ. Aim for 4-7 blocks on a
+substantial page. Open a page with its strongest specific claim, not a greeting.
+
+WHAT FUNDERS LOOK FOR — a grant reviewer checking your site wants: what you do and for whom,
+in one sentence, above the fold; verifiable numbers with a source or period attached; named
+programs with concrete activities; who runs the organization; registration status and a real
+physical address; and a way to contact a human. Prefer one specific figure over three vague
+claims. If you do not have a number, do not round one up — say what you do instead.
+
+NEVER invent a statistic, a quotation, a named person, or a funder. Those are the four things
+that end an application when a reviewer checks them. Emit a placeholder and report it.`,
   allowedTools: ["fetch_org_facts"],
-  outputSchemaRef: "site_content",
+  // Pages are written one at a time so each commits, emits an event, and shows
+  // up as visible progress. The all-pages-at-once contract (site_content) is no
+  // longer used by any step.
+  outputSchemaRef: "site_page",
   maxOutputRetries: 2,
 });
 

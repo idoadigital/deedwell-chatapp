@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import * as api from "../api";
-import type { ChannelInfo, ChatMessage, GrantActionRef, Organization, TeammateInfo } from "../types";
+import type { ChannelInfo, ChatMessage, GrantActionRef, InfoRequestField, Organization, TeammateInfo } from "../types";
+import { InfoFieldInput, hasAnswer, type FieldValue } from "../components/InfoFieldInput";
 import { Icon } from "../components/Icon";
 import { Avatar } from "../components/Avatar";
 import { chips, fitLabel, headline, type BidPayload } from "../decision";
@@ -443,8 +444,15 @@ function Message({
             onView={(id) => (onViewDeliverable ? onViewDeliverable(id) : onOpenWork())} />
         )}
 
-        {meta.infoRequest && meta.infoRequest.length > 0 && (
-          <InfoQuickForm request={meta.infoRequest} onSubmit={onQuickSend} />
+        {meta.infoRequest && meta.infoRequest.length > 0 && meta.infoRequestOpen !== false && (
+          <InfoQuickForm
+            org={org}
+            runId={meta.runId}
+            request={meta.infoRequest}
+            allowSkip={meta.allowSkip}
+            onSubmit={onQuickSend}
+            onDone={refresh}
+          />
         )}
 
         {meta.approvalId && meta.approvalKind === "bid_decision" && (
@@ -479,45 +487,70 @@ function Message({
   );
 }
 
-interface InfoField {
-  key: string;
-  label: string;
-  inputType: "text" | "textarea" | "number" | "date" | "boolean" | "choice";
-  choices?: string[];
-  help: string;
-  reason: string;
-  required: boolean;
-  group: string;
-}
-
 /** Structured information request (spec §6): typed inputs with guidance,
- *  grouped, partial submission allowed — the run resumes as facts arrive. */
-function InfoQuickForm({ request, onSubmit }: {
-  request: Array<InfoField | string>;
+ *  grouped, partial submission allowed — the run resumes as answers arrive.
+ *
+ *  Answers post as typed values to provide-info rather than as a "key: value"
+ *  chat message. The old text round trip silently corrupted any answer
+ *  containing ": " or a newline, and forced the server to re-derive keys from
+ *  prose it had just generated. */
+function InfoQuickForm({ org, runId, request, allowSkip, onSubmit, onDone }: {
+  org: Organization;
+  runId: string | undefined;
+  request: Array<InfoRequestField | string>;
+  allowSkip?: boolean;
+  /** Fallback for messages that predate structured submission. */
   onSubmit: (body: string) => void;
+  onDone: () => void;
 }) {
-  const [values, setValues] = useState<Record<string, string>>({});
+  const [values, setValues] = useState<Record<string, FieldValue>>({});
   const [sent, setSent] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   if (sent) return null;
+
   // Back-compat: pre-structured messages carried bare fact keys.
-  const fields: InfoField[] = request.map((f) =>
+  const fields: InfoRequestField[] = request.map((f) =>
     typeof f === "string"
-      ? { key: f, label: f.replace(/_/g, " "), inputType: "text", help: "", reason: "", required: true, group: "Details" }
+      ? { key: f, label: f.replace(/_/g, " "), inputType: "text" as const, help: "", reason: "", required: true, group: "Details" }
       : f
   );
   const groups = [...new Set(fields.map((f) => f.group))];
-  const filled = fields.filter((f) => values[f.key]?.trim());
-  const set = (key: string, value: string) => setValues((v) => ({ ...v, [key]: value }));
+  const filled = fields.filter((f) => hasAnswer(values[f.key]));
+  const set = (key: string, value: FieldValue) => setValues((v) => ({ ...v, [key]: value }));
+
+  const post = async (facts: Array<{ key: string; value: FieldValue }>) => {
+    setBusy(true);
+    setError(null);
+    try {
+      if (runId) {
+        await api.provideInfo(org.id, runId, facts);
+      } else {
+        onSubmit(facts.map((f) => `${f.key}: ${String(f.value)}`).join("\n"));
+      }
+      setSent(true);
+      onDone();
+    } catch (e) {
+      // A 409 means the run already moved on — someone else answered, or this
+      // is a double submit. Not an error worth alarming anyone about.
+      const msg = e instanceof Error ? e.message : String(e);
+      if (/409/.test(msg)) {
+        setSent(true);
+        onDone();
+      } else {
+        setError("That didn't save. Try again in a moment.");
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <form
       className="chat-card info-form"
       onSubmit={(e) => {
         e.preventDefault();
-        const lines = filled.map((f) => `${f.key}: ${values[f.key]!.trim()}`);
-        if (lines.length) {
-          onSubmit(lines.join("\n"));
-          setSent(true);
-        }
+        if (filled.length) void post(filled.map((f) => ({ key: f.key, value: values[f.key]! })));
       }}
     >
       {groups.map((group) => (
@@ -529,36 +562,34 @@ function InfoQuickForm({ request, onSubmit }: {
                 {f.label}
                 {!f.required && <span className="faint"> (optional)</span>}
               </label>
-              {f.inputType === "textarea" ? (
-                <textarea id={`iq-${f.key}`} rows={3} value={values[f.key] ?? ""}
-                  onChange={(e) => set(f.key, e.target.value)} />
-              ) : f.inputType === "choice" ? (
-                <select id={`iq-${f.key}`} value={values[f.key] ?? ""} onChange={(e) => set(f.key, e.target.value)}>
-                  <option value="">Choose…</option>
-                  {(f.choices ?? []).map((c) => <option key={c} value={c}>{c}</option>)}
-                </select>
-              ) : f.inputType === "boolean" ? (
-                <select id={`iq-${f.key}`} value={values[f.key] ?? ""} onChange={(e) => set(f.key, e.target.value)}>
-                  <option value="">Choose…</option>
-                  <option value="yes">Yes</option>
-                  <option value="no">No</option>
-                </select>
-              ) : (
-                <input id={`iq-${f.key}`} type={f.inputType === "number" ? "number" : f.inputType === "date" ? "date" : "text"}
-                  value={values[f.key] ?? ""} onChange={(e) => set(f.key, e.target.value)} />
-              )}
+              <InfoFieldInput field={f} id={`iq-${f.key}`} value={values[f.key]} onChange={(v) => set(f.key, v)} />
               {f.help && <p className="faint mt" style={{ margin: "3px 0 0" }}>{f.help}</p>}
             </div>
           ))}
         </div>
       ))}
-      <button className="primary" disabled={filled.length === 0}>
-        {filled.length && filled.length < fields.length
-          ? `Send ${filled.length} of ${fields.length} answers`
-          : "Send answers"}
-      </button>
+      <div className="row" style={{ gap: 8 }}>
+        <button className="primary" disabled={filled.length === 0 || busy}>
+          {filled.length && filled.length < fields.length
+            ? `Send ${filled.length} of ${fields.length} answers`
+            : "Send answers"}
+        </button>
+        {allowSkip && (
+          <button
+            type="button"
+            className="ghost"
+            disabled={busy}
+            onClick={() => void post([{ key: "site_intake_skipped", value: true }])}
+          >
+            Let the team decide
+          </button>
+        )}
+      </div>
+      {error && <p className="error-text mt">{error}</p>}
       <p className="faint mt" style={{ marginTop: 6 }}>
-        Partial answers are fine — the team resumes as facts arrive, and answers are saved as user-certified evidence.
+        {allowSkip
+          ? "None of these are required — answer what you care about and the team will choose the rest."
+          : "Partial answers are fine — the team resumes as facts arrive, and answers are saved as user-certified evidence."}
       </p>
     </form>
   );

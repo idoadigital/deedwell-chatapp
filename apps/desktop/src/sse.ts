@@ -39,7 +39,7 @@ export function subscribeSSE(
   void (async () => {
     try {
       const res = await fetch(url, {
-        headers: { authorization: `Bearer ${token}` },
+        headers: { "x-deedwell-token": token },
         signal: controller.signal,
       });
       if (!res.ok || !res.body) throw new Error(`SSE connect failed: ${res.status}`);

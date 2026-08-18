@@ -4,6 +4,7 @@ import type {
   SiteBlock,
   SiteContentOutput,
   SitePage,
+  SitePageOutput,
   SitePatchOutput,
   WebsiteBriefOutput,
 } from "@deedwell/schemas";
@@ -205,4 +206,45 @@ export function sitePatch(request: ModelRequest): SitePatchOutput {
     "The mock provider only understands a few edit patterns (tagline, volunteer form, add/remove page). " +
       "A real model provider will handle free-form requests."
   );
+}
+
+/**
+ * One page at a time — the mock counterpart to per-page generation.
+ *
+ * Rather than duplicate siteContent's fact handling (and drift from it), this
+ * generates the full deterministic set and returns the one page the plan asked
+ * for. A page the mock doesn't know about gets an honest placeholder page
+ * instead of invented copy, matching how the real agent is instructed to behave.
+ */
+export function sitePage(request: ModelRequest): SitePageOutput {
+  const plan = jsonBlock<{ slug?: string; title?: string; purpose?: string }>(
+    request,
+    "page_plan",
+    {},
+  );
+  const slug = plan.slug ?? "home";
+  const all = siteContent(request);
+  const match = all.pages.find((p) => p.slug === slug);
+  if (match) {
+    // Report the shared placeholder list only when this page actually carries a
+    // gap, so a complete page doesn't inherit another page's missing facts.
+    const hasGap = JSON.stringify(match.blocks).includes("[Placeholder");
+    return { page: match, placeholders: hasGap ? all.placeholders : [] };
+  }
+  const title = plan.title ?? slug.replace(/-/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  return {
+    page: {
+      slug,
+      title,
+      seoDescription: `${title} — ${plan.purpose ?? "more information coming soon."}`.slice(0, 300),
+      blocks: [
+        {
+          kind: "text",
+          heading: title,
+          body: `[Placeholder: add content for the ${title} page]`,
+        },
+      ],
+    },
+    placeholders: [`Page "${slug}" has no certified content yet`],
+  };
 }

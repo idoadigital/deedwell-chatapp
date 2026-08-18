@@ -83,8 +83,8 @@ function SitePanel({
   const canEdit = roleAtLeast(org.role, "member");
   const canRollback = roleAtLeast(org.role, "admin");
 
-  const previewUrl = `${api.SITE_ROUTER_URL}/preview/${row.slug}/`;
-  const liveUrl = `${api.SITE_ROUTER_URL}/${row.slug}/`;
+  const previewUrl = api.siteUrl(row.slug, "preview");
+  const liveUrl = api.siteUrl(row.slug, "live");
 
   useEffect(() => {
     api.getSite(org.id, row.id).then(setDetail).catch(() => undefined);

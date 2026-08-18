@@ -7,7 +7,18 @@ export {
   WEBSITE_AGENTS,
 } from "./agents.js";
 export { renderSite, esc, pageUrl, type RenderedFile, type RenderSiteInput } from "./renderer.js";
-export { runSiteChecks, type SiteCheck } from "./checks.js";
+export { runSiteChecks, blockingFailures, type SiteCheck } from "./checks.js";
+export {
+  WEBSITE_INTAKE_FIELDS,
+  WEBSITE_INTAKE_KEYS,
+  WEBSITE_DIRECTION_KEYS,
+  WEBSITE_ESSENTIAL_FACTS,
+  INTAKE_SKIP_KEY,
+  websiteIntakeFields,
+  websiteIntakeField,
+  type IntakeStage,
+  type WebsiteIntakeField,
+} from "./intake.js";
 export {
   buildWebsiteBuildWorkflow,
   buildWebsiteUpdateWorkflow,

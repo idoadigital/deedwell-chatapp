@@ -159,3 +159,30 @@ export async function startSlice(
   if (started.status !== 201) throw new Error(`slice start failed: ${started.raw}`);
   return { token, userId, orgId, projectId, fileId, ...started.body };
 }
+
+/**
+ * Skip the website design-intake round.
+ *
+ * `discovery` asks two things: the organizational facts a site cannot be
+ * written without (required), then design preferences (all optional). Tests
+ * that only care about the build pipeline would otherwise park at the second
+ * gate forever. Writing the real skip row — rather than signalling the run —
+ * is deliberate: the resume path re-reads this table and ignores the signal
+ * payload, so a signal alone would not move it.
+ */
+export async function skipWebsiteIntake(
+  env: { deps: { appPool: import("pg").Pool } },
+  orgId: string,
+  siteId: string,
+): Promise<void> {
+  const { withContext } = await import("@deedwell/database");
+  const { uuidv7 } = await import("@deedwell/database");
+  await withContext(env.deps.appPool, { tenantId: orgId, userId: null }, async (client) => {
+    await client.query(
+      `INSERT INTO site_intake_answers (id, tenant_id, site_id, question_key, value)
+       VALUES ($1,$2,$3,'site_intake_skipped','true'::jsonb)
+       ON CONFLICT (site_id, question_key) DO NOTHING`,
+      [uuidv7(), orgId, siteId]
+    );
+  });
+}
