@@ -1,0 +1,10 @@
+node_modules
+**/node_modules
+.git
+.data
+.data-demo
+.data-test
+apps/desktop/dist
+apps/desktop/src-tauri/target
+**/*.test.ts
+.env

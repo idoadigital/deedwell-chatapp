@@ -36,3 +36,36 @@ export function tenantFileKey(tenantId: string, fileId: string, filename: string
   const safeName = filename.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 100);
   return `tenants/${tenantId}/files/${fileId}/${safeName}`;
 }
+
+/**
+ * GCS-backed storage — production on Cloud Run, whose container filesystem
+ * is ephemeral. Same tenant-prefixed, server-generated-key contract as
+ * LocalFsStorage; no object is ever made public.
+ */
+export class GcsStorage implements StorageAdapter {
+  private bucketPromise: Promise<import("@google-cloud/storage").Bucket> | null = null;
+
+  constructor(private readonly bucketName: string) {}
+
+  private async bucket(): Promise<import("@google-cloud/storage").Bucket> {
+    if (!this.bucketPromise) {
+      this.bucketPromise = import("@google-cloud/storage").then(
+        ({ Storage }) => new Storage().bucket(this.bucketName)
+      );
+    }
+    return this.bucketPromise;
+  }
+
+  async put(key: string, content: Buffer): Promise<void> {
+    if (key.includes("..")) throw new Error("Invalid storage key");
+    const bucket = await this.bucket();
+    await bucket.file(key).save(content, { resumable: false });
+  }
+
+  async get(key: string): Promise<Buffer> {
+    if (key.includes("..")) throw new Error("Invalid storage key");
+    const bucket = await this.bucket();
+    const [buf] = await bucket.file(key).download();
+    return buf;
+  }
+}

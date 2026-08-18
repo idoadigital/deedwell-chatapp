@@ -3,6 +3,7 @@ import {
   createAdminPool,
   createAppPool,
   LocalFsStorage,
+  GcsStorage,
   type StorageAdapter,
 } from "@deedwell/database";
 import {
@@ -51,7 +52,10 @@ export async function createDeps(overrides: Partial<{
 }> = {}): Promise<Deps> {
   const adminPool = overrides.adminPool ?? createAdminPool();
   const appPool = overrides.appPool ?? createAppPool();
-  const storage = overrides.storage ?? new LocalFsStorage(process.env.DATA_DIR ?? "./.data");
+  const storage = overrides.storage
+    ?? (process.env.STORAGE_BUCKET
+      ? new GcsStorage(process.env.STORAGE_BUCKET)
+      : new LocalFsStorage(process.env.DATA_DIR ?? "./.data"));
   const provider = overrides.provider ?? createModelProvider();
 
   const gateway = new ToolGateway();

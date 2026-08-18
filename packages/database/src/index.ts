@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { summarize } from "@deedwell/observability";
 
 export type { PoolClient } from "pg";
-export { LocalFsStorage, tenantFileKey, type StorageAdapter } from "./storage.js";
+export { LocalFsStorage, GcsStorage, tenantFileKey, type StorageAdapter } from "./storage.js";
 
 // ---------------------------------------------------------------------------
 // Identifiers — UUIDv7-style time-ordered UUIDs, generated app-side.
