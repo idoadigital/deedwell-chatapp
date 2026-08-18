@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { ExtractedRequirement, OrgFact } from "@deedwell/schemas";
 import { deriveEligibilityRules, evaluateEligibility } from "./eligibility.js";
 import { computeBidDecision } from "./bidnobid.js";
+import { evaluateCompliance, type ComplianceInputs } from "./compliance.js";
 import { passportStatus, PASSPORT_FIELDS } from "./passport.js";
 
 const req = (text: string, line: number, kind = "eligibility", mandatory = true): ExtractedRequirement => ({
@@ -126,5 +127,81 @@ describe("funding passport", () => {
     const status = passportStatus([{ key: "legal_name", value: "X", status: "assumption" }]);
     expect(status.requiredMissing).toContain("legal_name");
     expect(status.completeness).toBe(0);
+  });
+});
+
+describe("final compliance gate (deterministic)", () => {
+  const baseline: ComplianceInputs = {
+    sectionCount: 2,
+    draftedSectionCount: 2,
+    costedBudgetLineCount: 3,
+    requirements: [],
+    coveredRequirementLines: new Set(),
+    uploadedFileCount: 0,
+    flaggedClaims: 0,
+    budgetWarnings: [],
+    wordLimitViolations: [],
+    deadline: null,
+  };
+
+  it("a fully empty application (no sections, no budget) fails compliance, not passes vacuously", () => {
+    const checks = evaluateCompliance({
+      ...baseline,
+      sectionCount: 0,
+      draftedSectionCount: 0,
+      costedBudgetLineCount: 0,
+    });
+    const content = checks.find((c) => c.name === "Application has real drafted content")!;
+    expect(content.pass).toBe(false);
+    expect(checks.some((c) => !c.pass)).toBe(true);
+  });
+
+  it("a partially drafted application (some sections still planned) fails the content check", () => {
+    const checks = evaluateCompliance({ ...baseline, draftedSectionCount: 1 });
+    const content = checks.find((c) => c.name === "Application has real drafted content")!;
+    expect(content.pass).toBe(false);
+    expect(content.detail).toContain("1/2");
+  });
+
+  it("a fully drafted, costed application passes the content check", () => {
+    const checks = evaluateCompliance(baseline);
+    const content = checks.find((c) => c.name === "Application has real drafted content")!;
+    expect(content.pass).toBe(true);
+  });
+
+  it("attachments are compared against the actual required count, not a fixed threshold", () => {
+    const requirements: ExtractedRequirement[] = [
+      req("Attach your IRS determination letter.", 10, "attachment"),
+      req("Attach your most recent audited financials.", 11, "attachment"),
+      req("Attach your board list.", 12, "attachment"),
+    ];
+    // Old bug: `uploadedFiles.rows.length > 1` passed with exactly 2 files
+    // regardless of how many were actually required. Here 3 are required.
+    const twoFiles = evaluateCompliance({ ...baseline, requirements, uploadedFileCount: 2 });
+    expect(twoFiles.find((c) => c.name === "Required attachments accounted for")!.pass).toBe(false);
+
+    const threeFiles = evaluateCompliance({ ...baseline, requirements, uploadedFileCount: 3 });
+    expect(threeFiles.find((c) => c.name === "Required attachments accounted for")!.pass).toBe(true);
+  });
+
+  it("a section over its word limit blocks compliance", () => {
+    const checks = evaluateCompliance({
+      ...baseline,
+      wordLimitViolations: ['"Need statement" exceeds its 500-word limit (612 words).'],
+    });
+    const wordCheck = checks.find((c) => c.name === "Section word limits")!;
+    expect(wordCheck.pass).toBe(false);
+    expect(wordCheck.detail).toContain("612 words");
+  });
+
+  it("a fully drafted, costed, on-time, fully-covered application passes every check", () => {
+    const requirements: ExtractedRequirement[] = [req("Describe your program.", 3, "narrative")];
+    const checks = evaluateCompliance({
+      ...baseline,
+      requirements,
+      coveredRequirementLines: new Set([3]),
+      deadline: "2099-01-01",
+    });
+    expect(checks.every((c) => c.pass)).toBe(true);
   });
 });

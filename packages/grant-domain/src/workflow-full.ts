@@ -26,6 +26,7 @@ import { extractDocumentText } from "./documents.js";
 import { verifyClaims } from "./claims.js";
 import { deriveEligibilityRules, evaluateEligibility } from "./eligibility.js";
 import { computeBidDecision } from "./bidnobid.js";
+import { evaluateCompliance } from "./compliance.js";
 import { passportStatus } from "./passport.js";
 import { scanForInjection } from "./injection.js";
 import { renderFullExport, budgetCsv } from "./export-full.js";
@@ -500,8 +501,11 @@ export function buildGrantFullWorkflow(): WorkflowDefinition<GrantServices> {
         const { claims, flaggedCount } = verifyClaims(result.output.claims, facts);
 
         const warnings: string[] = [];
+        const wordLimitViolations = z.array(z.string()).parse(ctx.state.wordLimitViolations ?? []);
         if (section.wordLimit && result.output.wordCount > section.wordLimit) {
+          const msg = `"${section.title}" exceeds its ${section.wordLimit}-word limit (${result.output.wordCount} words).`;
           warnings.push(`Exceeds the ${section.wordLimit}-word limit (${result.output.wordCount} words).`);
+          wordLimitViolations.push(msg);
         }
         if (flaggedCount > 0) warnings.push(`${flaggedCount} claim(s) lack verified evidence.`);
 
@@ -523,6 +527,7 @@ export function buildGrantFullWorkflow(): WorkflowDefinition<GrantServices> {
             ...ctx.state,
             cursor: cursor + 1,
             flaggedClaims: z.number().parse(ctx.state.flaggedClaims ?? 0) + flaggedCount,
+            wordLimitViolations,
           },
           next: "draft_sections",
         };
@@ -691,51 +696,41 @@ export function buildGrantFullWorkflow(): WorkflowDefinition<GrantServices> {
         const sections = z.array(PlannedSection).parse(ctx.state.sections);
         const flaggedClaims = z.number().parse(ctx.state.flaggedClaims ?? 0);
         const budgetWarnings = z.array(z.string()).parse(ctx.state.budgetWarnings ?? []);
-
-        const narrativeMandatory = requirements.filter((r) => r.mandatory && r.kind === "narrative");
-        const covered = new Set(sections.flatMap((s) => s.requirementLines));
-        const uncovered = narrativeMandatory.filter((r) => !covered.has(r.sourceLocation.line));
+        const wordLimitViolations = z.array(z.string()).parse(ctx.state.wordLimitViolations ?? []);
 
         // Attachments can't be produced by the team — the checklist names each
         // one from the announcement so nothing is silently dropped (spec §5
         // Stage 8). Files uploaded to the project count as provided.
-        const attachmentReqs = requirements.filter((r) => r.mandatory && r.kind === "attachment");
         const uploadedFiles = await ctx.client.query(
           "SELECT filename FROM files WHERE project_id = $1", [ctx.projectId]
         );
 
-        const checks = [
-          {
-            name: "Required attachments accounted for",
-            pass: attachmentReqs.length === 0 || uploadedFiles.rows.length > 1,
-            detail: attachmentReqs.length
-              ? `The announcement requires ${attachmentReqs.length} attachment(s): ${attachmentReqs
-                  .map((r) => r.text.slice(0, 80)).join(" | ")} — project has ${uploadedFiles.rows.length} uploaded file(s). Verify each before submitting.`
-              : "No mandatory attachments in the announcement",
-          },
-          {
-            name: "Mandatory narrative requirements mapped to sections",
-            pass: uncovered.length === 0,
-            detail: uncovered.length
-              ? `${uncovered.length} unmapped: ${uncovered.map((r) => `line ${r.sourceLocation.line}`).join(", ")}`
-              : `All ${narrativeMandatory.length} mapped`,
-          },
-          {
-            name: "No unsupported claims",
-            pass: flaggedClaims === 0,
-            detail: flaggedClaims ? `${flaggedClaims} claim(s) still lack verified evidence` : "All claims supported",
-          },
-          {
-            name: "Budget validation",
-            pass: budgetWarnings.length === 0,
-            detail: budgetWarnings.length ? budgetWarnings.join("; ") : "Budget checks passed",
-          },
-          {
-            name: "Deadline still in the future",
-            pass: !opportunity.deadline || new Date(opportunity.deadline).getTime() > Date.now(),
-            detail: opportunity.deadline ?? "No deadline on record — confirm with the funder",
-          },
-        ];
+        // An application with no drafted content or no costed budget must
+        // never pass compliance vacuously just because it has nothing to
+        // flag — content and budget presence are checked explicitly.
+        const draftedSections = await ctx.client.query(
+          "SELECT count(*)::int AS n FROM application_sections WHERE application_id = $1 AND status != 'planned'",
+          [applicationId]
+        );
+        const budgetItemCount = await ctx.client.query(
+          `SELECT count(bi.*)::int AS n FROM budgets b
+           JOIN budget_items bi ON bi.budget_id = b.id
+           WHERE b.application_id = $1`,
+          [applicationId]
+        );
+
+        const checks = evaluateCompliance({
+          sectionCount: sections.length,
+          draftedSectionCount: draftedSections.rows[0].n as number,
+          costedBudgetLineCount: budgetItemCount.rows[0].n as number,
+          requirements,
+          coveredRequirementLines: new Set(sections.flatMap((s) => s.requirementLines)),
+          uploadedFileCount: uploadedFiles.rows.length,
+          flaggedClaims,
+          budgetWarnings,
+          wordLimitViolations,
+          deadline: opportunity.deadline,
+        });
         const failures = checks.filter((c) => !c.pass);
 
         await upsertArtifactVersion(ctx.client, {
@@ -781,7 +776,10 @@ export function buildGrantFullWorkflow(): WorkflowDefinition<GrantServices> {
           await ctx.client.query(
             "UPDATE grant_applications SET status = 'drafting' WHERE id = $1", [applicationId]
           );
-          return { state: { ...ctx.state, cursor: 0, flaggedClaims: 0 }, next: "draft_sections" };
+          return {
+            state: { ...ctx.state, cursor: 0, flaggedClaims: 0, wordLimitViolations: [] },
+            next: "draft_sections",
+          };
         }
         return { state: ctx.state, next: "export_full" };
       },
