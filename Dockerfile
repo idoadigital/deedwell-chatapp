@@ -13,6 +13,8 @@ COPY apps/desktop/package.json apps/desktop/package.json
 COPY apps/site-router/package.json apps/site-router/package.json
 COPY packages/agent-runtime/package.json packages/agent-runtime/package.json
 COPY packages/auth/package.json packages/auth/package.json
+COPY packages/adgrants-domain/package.json packages/adgrants-domain/package.json
+COPY packages/browser-automation/package.json packages/browser-automation/package.json
 COPY packages/browser-research/package.json packages/browser-research/package.json
 COPY packages/database/package.json packages/database/package.json
 COPY packages/grant-domain/package.json packages/grant-domain/package.json
@@ -23,6 +25,11 @@ COPY packages/website-domain/package.json packages/website-domain/package.json
 COPY packages/workflows/package.json packages/workflows/package.json
 
 RUN pnpm install --frozen-lockfile --prod=false
+
+# Google Ad Grants browser automation needs a real Chromium + its OS libs —
+# browser-research's Playwright dependency never needed this in practice
+# (RESEARCH_FETCH has always run in "fetch" mode or off in production).
+RUN pnpm exec playwright install --with-deps chromium
 
 COPY . .
 
