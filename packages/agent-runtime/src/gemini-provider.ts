@@ -40,21 +40,26 @@ class AccessTokenSource {
   private async mint(): Promise<string> {
     const keyPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
     if (keyPath) return await this.mintFromKeyFile(keyPath);
-    try {
-      const res = await fetch(
-        "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token",
-        { headers: { "Metadata-Flavor": "Google" }, signal: AbortSignal.timeout(3000) }
-      );
-      if (res.ok) {
-        const json = (await res.json()) as { access_token?: string };
-        if (json.access_token) return json.access_token;
+    // Two attempts before giving up on the metadata server — a cold Cloud
+    // Run instance's first metadata call can occasionally outrun a short
+    // timeout even though the server is genuinely reachable.
+    for (const timeoutMs of [5000, 8000]) {
+      try {
+        const res = await fetch(
+          "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token",
+          { headers: { "Metadata-Flavor": "Google" }, signal: AbortSignal.timeout(timeoutMs) }
+        );
+        if (res.ok) {
+          const json = (await res.json()) as { access_token?: string };
+          if (json.access_token) return json.access_token;
+        }
+      } catch {
+        // Retry once with a longer timeout before falling through to the CLI.
       }
-    } catch {
-      // Not on GCP — fall through to the CLI (development).
     }
     return await new Promise<string>((resolve, reject) => {
       execFile("gcloud", ["auth", "print-access-token"], { timeout: 15_000 }, (err, stdout) => {
-        if (err) reject(new Error(`No GCP credentials for Vertex (metadata unreachable, gcloud failed: ${err.message.slice(0, 120)})`));
+        if (err) reject(new Error(`No GCP credentials for Vertex (metadata server unreachable after retries, gcloud CLI unavailable: ${err.message.slice(0, 120)})`));
         else resolve(stdout.trim());
       });
     });
