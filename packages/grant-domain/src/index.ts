@@ -19,6 +19,14 @@ export {
 } from "./eligibility.js";
 export { computeBidDecision, type BidInputs, type BidResult } from "./bidnobid.js";
 export {
+  computeMissionFit,
+  computeApplicationViability,
+  type MissionFitInputs,
+  type MissionFitResult,
+  type ViabilityInputs,
+  type ViabilityResult,
+} from "./bidnobid.js";
+export {
   GrantsGovProvider,
   MockGrantSource,
   createGrantSource,

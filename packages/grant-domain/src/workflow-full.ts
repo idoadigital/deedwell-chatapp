@@ -25,7 +25,7 @@ import { upsertArtifactVersion } from "./artifacts.js";
 import { extractDocumentText } from "./documents.js";
 import { verifyClaims } from "./claims.js";
 import { deriveEligibilityRules, evaluateEligibility } from "./eligibility.js";
-import { computeBidDecision } from "./bidnobid.js";
+import { computeBidDecision, computeApplicationViability, computeMissionFit } from "./bidnobid.js";
 import { evaluateCompliance } from "./compliance.js";
 import { passportStatus } from "./passport.js";
 import { scanForInjection } from "./injection.js";
@@ -66,7 +66,7 @@ async function recordModelUsage(ctx: Ctx, agentKey: string, tokens: number): Pro
 async function getOpportunity(ctx: Ctx, id: string) {
   const { rows } = await ctx.client.query(
     `SELECT id, title, funder, deadline::text AS deadline, funding_min, funding_max,
-            opportunity_number, file_id, source_url
+            opportunity_number, file_id, source_url, status
      FROM grant_opportunities WHERE id = $1`,
     [id]
   );
@@ -75,6 +75,7 @@ async function getOpportunity(ctx: Ctx, id: string) {
     id: string; title: string; funder: string; deadline: string | null;
     funding_min: string | null; funding_max: string | null;
     opportunity_number: string | null; file_id: string | null; source_url: string | null;
+    status: string;
   };
 }
 
@@ -320,13 +321,28 @@ export function buildGrantFullWorkflow(): WorkflowDefinition<GrantServices> {
           annualBudgetUsd,
           mandatoryRequirementCount: requirements.filter((r) => r.mandatory).length,
         });
+        // Mission Fit and Application Viability are independent — a great-fit
+        // opportunity that's already closed is still a great fit, just not
+        // viable right now (spec: "95% fit, 0% viability — closed").
+        const missionFit = computeMissionFit({
+          fundingMax: opportunity.funding_max ? Number(opportunity.funding_max) : null,
+          annualBudgetUsd,
+          passportCompleteness: passport.completeness,
+        });
+        const viability = computeApplicationViability({
+          eligibility: eligibility as never,
+          opportunityStatus: opportunity.status,
+          daysToDeadline,
+        });
 
         const bidId = uuidv7();
         await ctx.client.query(
-          `INSERT INTO bid_decisions (id, tenant_id, opportunity_id, run_id, scores, total, recommendation, rationale)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+          `INSERT INTO bid_decisions (id, tenant_id, opportunity_id, run_id, scores, total, recommendation,
+             rationale, mission_fit_score, mission_fit_rationale, viability, viability_rationale)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
           [bidId, ctx.tenantId, input.opportunityId, ctx.runId,
-           JSON.stringify(bid.dimensions), bid.total, bid.recommendation, bid.rationale]
+           JSON.stringify(bid.dimensions), bid.total, bid.recommendation, bid.rationale,
+           missionFit.score, missionFit.rationale, viability.viability, viability.rationale]
         );
 
         // Transparent fit assessment (spec §5 Stage 3): every entry below is
@@ -356,17 +372,19 @@ export function buildGrantFullWorkflow(): WorkflowDefinition<GrantServices> {
           [approvalId, ctx.tenantId, ctx.runId, JSON.stringify({
             bidId, recommendation: bid.recommendation, total: bid.total,
             rationale: bid.rationale, dimensions: bid.dimensions, fit,
+            missionFit: { score: missionFit.score, rationale: missionFit.rationale },
+            viability: { status: viability.viability, rationale: viability.rationale },
             warnings: [...fit.disqualifiers, ...fit.risks],
           })]
         );
         await audit(ctx.client, {
           tenantId: ctx.tenantId, actorAgent: "grant.funding_strategist",
           action: "bid.recommended", entityType: "bid_decision", entityId: bidId,
-          metadata: { recommendation: bid.recommendation, total: bid.total },
+          metadata: { recommendation: bid.recommendation, total: bid.total, viability: viability.viability },
         });
 
         return {
-          state: { ...ctx.state, bid: { id: bidId, ...bid } },
+          state: { ...ctx.state, bid: { id: bidId, ...bid, missionFit, viability } },
           wait: { kind: "approval", payload: { approvalId, kind: "bid_decision" }, resumeStep: "bid_gate" },
         };
       },

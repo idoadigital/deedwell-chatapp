@@ -185,6 +185,8 @@ export interface OpportunityRow {
   status: string;
   eligibility: string | null;
   bid_recommendation: string | null;
+  mission_fit_score: number | null;
+  viability: "apply" | "monitor" | "closed" | "not_eligible" | null;
   created_at: string;
 }
 

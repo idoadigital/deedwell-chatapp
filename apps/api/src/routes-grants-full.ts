@@ -77,7 +77,11 @@ export function registerGrantFullRoutes(app: FastifyInstance, ctx: AppContext): 
                 (SELECT overall FROM eligibility_results er
                   WHERE er.opportunity_id = o.id ORDER BY er.created_at DESC LIMIT 1) AS eligibility,
                 (SELECT recommendation FROM bid_decisions bd
-                  WHERE bd.opportunity_id = o.id ORDER BY bd.created_at DESC LIMIT 1) AS bid_recommendation
+                  WHERE bd.opportunity_id = o.id ORDER BY bd.created_at DESC LIMIT 1) AS bid_recommendation,
+                (SELECT mission_fit_score FROM bid_decisions bd
+                  WHERE bd.opportunity_id = o.id ORDER BY bd.created_at DESC LIMIT 1) AS mission_fit_score,
+                (SELECT viability FROM bid_decisions bd
+                  WHERE bd.opportunity_id = o.id ORDER BY bd.created_at DESC LIMIT 1) AS viability
          FROM grant_opportunities o JOIN projects p ON p.id = o.project_id
          ORDER BY o.created_at DESC LIMIT 200`
       )
@@ -100,7 +104,8 @@ export function registerGrantFullRoutes(app: FastifyInstance, ctx: AppContext): 
         [opportunityId]
       );
       const bid = await client.query(
-        `SELECT id, scores, total, recommendation, rationale, decision, created_at
+        `SELECT id, scores, total, recommendation, rationale, decision, created_at,
+                mission_fit_score, mission_fit_rationale, viability, viability_rationale
          FROM bid_decisions WHERE opportunity_id = $1 ORDER BY created_at DESC LIMIT 1`,
         [opportunityId]
       );

@@ -22,6 +22,12 @@ const ELIGIBILITY_TONE: Record<string, string> = {
 const BID_TONE: Record<string, string> = {
   apply: "green", needs_review: "amber", do_not_apply: "red",
 };
+const VIABILITY_TONE: Record<string, string> = {
+  apply: "green", monitor: "amber", closed: "gray", not_eligible: "red",
+};
+const VIABILITY_LABEL: Record<string, string> = {
+  apply: "Apply", monitor: "Monitor", closed: "Closed", not_eligible: "Not eligible",
+};
 const OUTCOME_OPTIONS = ["submitted", "awarded", "rejected", "waitlisted", "withdrawn", "not_submitted"];
 
 export function GrantsView({
@@ -92,7 +98,7 @@ export function GrantsView({
           ) : (
             <table>
               <thead>
-                <tr><th>Opportunity</th><th>Deadline</th><th>Status</th><th>Eligibility</th><th>Bid</th><th /></tr>
+                <tr><th>Opportunity</th><th>Deadline</th><th>Status</th><th>Eligibility</th><th>Mission Fit</th><th>Viability</th><th /></tr>
               </thead>
               <tbody>
                 {opportunities.map((o) => (
@@ -109,8 +115,13 @@ export function GrantsView({
                         : <span className="faint">not checked</span>}
                     </td>
                     <td>
-                      {o.bid_recommendation
-                        ? <span className={`pill ${BID_TONE[o.bid_recommendation] ?? "gray"}`}>{o.bid_recommendation.replace(/_/g, " ")}</span>
+                      {o.mission_fit_score !== null
+                        ? <span title={o.bid_recommendation ? `Composite score: ${o.bid_recommendation.replace(/_/g, " ")}` : undefined}>{o.mission_fit_score}%</span>
+                        : <span className="faint">—</span>}
+                    </td>
+                    <td>
+                      {o.viability
+                        ? <span className={`pill ${VIABILITY_TONE[o.viability] ?? "gray"}`}>{VIABILITY_LABEL[o.viability] ?? o.viability}</span>
                         : <span className="faint">—</span>}
                     </td>
                     <td style={{ textAlign: "right" }}>

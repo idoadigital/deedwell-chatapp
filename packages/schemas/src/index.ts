@@ -362,6 +362,12 @@ export type BidDimension = z.infer<typeof BidDimension>;
 export const BidRecommendation = z.enum(["apply", "do_not_apply", "needs_review"]);
 export type BidRecommendation = z.infer<typeof BidRecommendation>;
 
+/** Application Viability: can the org actually apply right now — independent
+ *  of Mission Fit, and driven deterministically by eligibility + the
+ *  opportunity's own status/deadline, never an LLM opinion. */
+export const ApplicationViability = z.enum(["apply", "monitor", "closed", "not_eligible"]);
+export type ApplicationViability = z.infer<typeof ApplicationViability>;
+
 // ---------------------------------------------------------------------------
 // Phase 3 — Agent output contracts
 // ---------------------------------------------------------------------------

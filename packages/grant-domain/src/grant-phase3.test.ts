@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ExtractedRequirement, OrgFact } from "@deedwell/schemas";
 import { deriveEligibilityRules, evaluateEligibility } from "./eligibility.js";
-import { computeBidDecision } from "./bidnobid.js";
+import { computeApplicationViability, computeBidDecision, computeMissionFit } from "./bidnobid.js";
 import { evaluateCompliance, type ComplianceInputs } from "./compliance.js";
 import { passportStatus, PASSPORT_FIELDS } from "./passport.js";
 
@@ -203,5 +203,49 @@ describe("final compliance gate (deterministic)", () => {
       deadline: "2099-01-01",
     });
     expect(checks.every((c) => c.pass)).toBe(true);
+  });
+});
+
+describe("Mission Fit vs. Application Viability (deterministic, independent)", () => {
+  it("mission fit is unaffected by eligibility or deadline — only funding size and readiness", () => {
+    const strongFit = computeMissionFit({ fundingMax: 100_000, annualBudgetUsd: 500_000, passportCompleteness: 100 });
+    expect(strongFit.score).toBeGreaterThanOrEqual(80);
+  });
+
+  it("a great-fit opportunity that's already closed is still a great fit, just not viable", () => {
+    const fit = computeMissionFit({ fundingMax: 100_000, annualBudgetUsd: 500_000, passportCompleteness: 100 });
+    const viability = computeApplicationViability({
+      eligibility: "verified_eligible", opportunityStatus: "closed", daysToDeadline: -5,
+    });
+    expect(fit.score).toBeGreaterThanOrEqual(80);
+    expect(viability.viability).toBe("closed");
+  });
+
+  it("ineligible is always not_eligible, regardless of how open the opportunity is", () => {
+    const viability = computeApplicationViability({
+      eligibility: "ineligible", opportunityStatus: "intake", daysToDeadline: 60,
+    });
+    expect(viability.viability).toBe("not_eligible");
+  });
+
+  it("a passed deadline is closed even when otherwise eligible", () => {
+    const viability = computeApplicationViability({
+      eligibility: "verified_eligible", opportunityStatus: "in_progress", daysToDeadline: -1,
+    });
+    expect(viability.viability).toBe("closed");
+  });
+
+  it("unresolved eligibility is monitor, not apply and not closed", () => {
+    const viability = computeApplicationViability({
+      eligibility: "insufficient_information", opportunityStatus: "intake", daysToDeadline: 30,
+    });
+    expect(viability.viability).toBe("monitor");
+  });
+
+  it("eligible, open, future deadline is apply", () => {
+    const viability = computeApplicationViability({
+      eligibility: "likely_eligible", opportunityStatus: "in_progress", daysToDeadline: 45,
+    });
+    expect(viability.viability).toBe("apply");
   });
 });
