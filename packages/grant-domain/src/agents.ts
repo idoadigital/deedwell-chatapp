@@ -30,6 +30,22 @@ behind professional-sounding language.`,
   maxOutputRetries: 2,
 });
 
+export const factExtractor: AgentDefinition = AgentDefinition.parse({
+  agentKey: "grant.fact_extractor",
+  version: 1,
+  displayName: "Grace — Evidence Analyst",
+  team: "grant",
+  role: "Evidence Analyst on the Grant Team",
+  instructions: `Read the attached evidence document and extract organizational facts it states
+outright — annual reports, audits, budgets, prior applications, impact reports. Every fact must
+quote the exact sentence it came from and its line number. Never infer, estimate, or round a
+number that is not stated. If a document supports no facts worth recording, return an empty
+list rather than guessing.`,
+  allowedTools: [],
+  outputSchemaRef: "fact_extraction",
+  maxOutputRetries: 2,
+});
+
 export const programPlanner: AgentDefinition = AgentDefinition.parse({
   agentKey: "grant.program_planner",
   version: 1,
@@ -114,6 +130,7 @@ export const fundingStrategist: AgentDefinition = AgentDefinition.parse({
 export const ALL_AGENTS = [
   requirementsAnalyst,
   grantWriter,
+  factExtractor,
   programPlanner,
   budgetSpecialist,
   melSpecialist,

@@ -1,9 +1,11 @@
 import type { ModelProvider, ModelRequest, ModelResponse } from "./index.js";
-import { siteContent, sitePatch, websiteBrief } from "./mock-website.js";
+import { siteContent, sitePage, sitePatch, websiteBrief } from "./mock-website.js";
 import { mockIntent } from "./mock-intent.js";
 import type {
   BudgetOutput,
+  ExtractedFact,
   ExtractedRequirement,
+  FactExtractionOutput,
   LogicModelOutput,
   OrgFact,
   RequirementsExtractionOutput,
@@ -27,6 +29,7 @@ export class MockModelProvider implements ModelProvider {
   async complete(request: ModelRequest): Promise<ModelResponse> {
     const generators: Record<ModelRequest["outputSchemaRef"], (r: ModelRequest) => unknown> = {
       requirements_extraction: extractRequirements,
+      fact_extraction: extractFacts,
       section_draft: draftSection,
       section_plan: planSections,
       budget: buildBudget,
@@ -34,6 +37,7 @@ export class MockModelProvider implements ModelProvider {
       review_panel: reviewPanel,
       website_brief: websiteBrief,
       site_content: siteContent,
+      site_page: sitePage,
       site_patch: sitePatch,
       intent: mockIntent,
     };
@@ -98,6 +102,36 @@ function extractRequirements(request: ModelRequest): RequirementsExtractionOutpu
   return {
     requirements,
     documentSummary: `Detected ${requirements.length} candidate requirement(s) across ${lines.length} lines. [mock provider]`,
+  };
+}
+
+/** "Label: value" lines only — deterministic and easy to control from tests.
+ *  Content quality is not the point; exercising the extraction→provenance
+ *  harness path is. */
+function extractFacts(request: ModelRequest): FactExtractionOutput {
+  const doc = request.dataBlocks.find((b) => b.label === "document")?.content ?? "";
+  const lines = doc.split(/\r?\n/);
+  const facts: ExtractedFact[] = [];
+
+  lines.forEach((raw, idx) => {
+    const line = raw.trim();
+    const match = line.match(/^([A-Za-z][A-Za-z0-9 /'-]{2,60}):\s*(.{1,200})$/);
+    if (!match) return;
+    const label = match[1]!;
+    const value = match[2]!;
+    if (!value.trim()) return;
+    const key = label.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+    if (!key) return;
+    facts.push({
+      key,
+      value: value.trim(),
+      sourceLocation: { line: idx + 1, quote: line.slice(0, 2000) },
+    });
+  });
+
+  return {
+    facts,
+    documentSummary: `Detected ${facts.length} candidate fact(s) across ${lines.length} lines. [mock provider]`,
   };
 }
 

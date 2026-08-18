@@ -15,8 +15,10 @@ import {
   LoginInput,
   ProvideInfoInput,
   RegisterInput,
+  ResolveFactConflictInput,
   UploadFileInput,
 } from "@deedwell/schemas";
+import { extractDocumentText, extractFactsFromDocument, writeOrgFact } from "@deedwell/grant-domain";
 import { HttpError, type AppContext } from "./app.js";
 
 const MAX_FILE_BYTES = 8_000_000;
@@ -146,22 +148,26 @@ export function registerCoreRoutes(app: FastifyInstance, ctx: AppContext): void 
   app.post("/v1/orgs/:orgId/facts", async (req, reply) => {
     ctx.requireRole(req, "member");
     const input = ProvideInfoInput.parse(req.body);
+    const conflicts: string[] = [];
     await ctx.inOrg(req, async (client) => {
       for (const fact of input.facts) {
-        await client.query(
-          `INSERT INTO org_facts (id, tenant_id, fact_key, value, status, certified_by)
-           VALUES ($1,$2,$3,$4,'user_certified',$5)
-           ON CONFLICT (tenant_id, fact_key)
-           DO UPDATE SET value = EXCLUDED.value, status = 'user_certified', certified_by = EXCLUDED.certified_by`,
-          [uuidv7(), req.orgId, fact.key, fact.value, req.userId]
-        );
+        const value = Array.isArray(fact.value)
+          ? fact.value.join(", ")
+          : typeof fact.value === "boolean"
+            ? fact.value ? "yes" : "no"
+            : fact.value;
+        const { conflict } = await writeOrgFact(client, {
+          tenantId: req.orgId!, factKey: fact.key, value, status: "user_certified",
+          certifiedBy: req.userId,
+        });
+        if (conflict) conflicts.push(fact.key);
       }
       await audit(client, {
         tenantId: req.orgId!, actorUser: req.userId, action: "facts.certified",
-        entityType: "org_facts", metadata: { keys: input.facts.map((f) => f.key) },
+        entityType: "org_facts", metadata: { keys: input.facts.map((f) => f.key), conflicts },
       });
     });
-    return reply.status(201).send({ ok: true });
+    return reply.status(201).send({ ok: true, conflicts });
   });
 
   // ---- projects & files ---------------------------------------------------
@@ -219,6 +225,88 @@ export function registerCoreRoutes(app: FastifyInstance, ctx: AppContext): void 
       return { fileId };
     });
     return reply.status(201).send(result);
+  });
+
+  // ---- evidence: fact extraction with provenance, conflict resolution -----
+
+  app.post("/v1/orgs/:orgId/files/:fileId/extract-facts", async (req, reply) => {
+    ctx.requireRole(req, "member");
+    const { fileId } = req.params as { fileId: string };
+    const file = await ctx.inOrg(req, (client) =>
+      client.query("SELECT filename, storage_key FROM files WHERE id = $1", [fileId])
+    );
+    if (!file.rows[0]) throw new HttpError(404, "File not found");
+    const raw = await deps.storage.get(file.rows[0].storage_key);
+    const { text } = await extractDocumentText(raw, String(file.rows[0].filename));
+    if (!text.trim()) throw new HttpError(422, "Could not extract any text from this document");
+
+    const extraction = await extractFactsFromDocument(deps.provider, text);
+    const written: string[] = [];
+    const conflicts: string[] = [];
+    await ctx.inOrg(req, async (client) => {
+      for (const fact of extraction.facts) {
+        const { conflict } = await writeOrgFact(client, {
+          tenantId: req.orgId!, factKey: fact.key, value: fact.value, status: "verified",
+          sourceFileId: fileId, sourceLocation: String(fact.sourceLocation.line),
+          sourceQuote: fact.sourceLocation.quote, extractedByAgent: "grant.fact_extractor",
+        });
+        if (conflict) conflicts.push(fact.key); else written.push(fact.key);
+      }
+      await audit(client, {
+        tenantId: req.orgId!, actorUser: req.userId, action: "facts.extracted",
+        entityType: "file", entityId: fileId,
+        metadata: { written, conflicts, documentSummary: extraction.documentSummary },
+      });
+    });
+    return reply.status(201).send({ written, conflicts, documentSummary: extraction.documentSummary });
+  });
+
+  app.get("/v1/orgs/:orgId/fact-conflicts", async (req) => {
+    ctx.requireRole(req, "viewer");
+    const { rows } = await ctx.inOrg(req, (client) =>
+      client.query(
+        `SELECT id, fact_key, current_value, current_status, proposed_value, proposed_status,
+                proposed_source_quote, created_at
+         FROM org_fact_conflicts WHERE status = 'open' ORDER BY created_at DESC`
+      )
+    );
+    return { conflicts: rows };
+  });
+
+  app.post("/v1/orgs/:orgId/fact-conflicts/:conflictId/resolve", async (req, reply) => {
+    ctx.requireRole(req, "member");
+    const { conflictId } = req.params as { conflictId: string };
+    const input = ResolveFactConflictInput.parse(req.body);
+    await ctx.inOrg(req, async (client) => {
+      const found = await client.query(
+        "SELECT * FROM org_fact_conflicts WHERE id = $1 AND status = 'open'", [conflictId]
+      );
+      const row = found.rows[0];
+      if (!row) throw new HttpError(404, "Open conflict not found");
+
+      const resolvedValue = input.resolution === "use_proposed" ? row.proposed_value : row.current_value;
+      if (input.resolution === "use_proposed") {
+        await writeOrgFact(client, {
+          tenantId: req.orgId!, factKey: row.fact_key, value: row.proposed_value,
+          status: row.proposed_status, sourceFileId: row.proposed_source_file_id,
+          sourceQuote: row.proposed_source_quote,
+          extractedByAgent: row.proposed_status === "verified" ? "grant.fact_extractor" : null,
+          certifiedBy: row.proposed_status === "user_certified" ? req.userId : null,
+          force: true,
+        });
+      }
+      await client.query(
+        `UPDATE org_fact_conflicts
+         SET status = 'resolved', resolved_value = $2, resolved_by = $3, resolved_at = now()
+         WHERE id = $1`,
+        [conflictId, resolvedValue, req.userId]
+      );
+      await audit(client, {
+        tenantId: req.orgId!, actorUser: req.userId, action: "facts.conflict_resolved",
+        entityType: "org_fact_conflicts", entityId: conflictId, metadata: { resolution: input.resolution },
+      });
+    });
+    return reply.status(200).send({ ok: true });
   });
 }
 

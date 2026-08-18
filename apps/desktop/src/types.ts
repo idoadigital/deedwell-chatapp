@@ -117,6 +117,17 @@ export interface OrgFactRow {
   updated_at: string;
 }
 
+export interface FactConflict {
+  id: string;
+  fact_key: string;
+  current_value: string;
+  current_status: string;
+  proposed_value: string;
+  proposed_status: string;
+  proposed_source_quote: string | null;
+  created_at: string;
+}
+
 export interface Requirement {
   text: string;
   kind: string;
@@ -308,11 +319,13 @@ export interface ChatMessage {
     approvalKind?: string;
     approvalPayload?: Record<string, unknown>;
     /** Structured info-request fields (older messages carried bare keys). */
-    infoRequest?: Array<string | {
-      key: string; label: string;
-      inputType: "text" | "textarea" | "number" | "date" | "boolean" | "choice";
-      choices?: string[]; help: string; reason: string; required: boolean; group: string;
-    }>;
+    infoRequest?: Array<string | InfoRequestField>;
+    /** Which catalog the request came from ("website_intake" | "eligibility" | …). */
+    infoRequestContext?: string;
+    /** False once answered or superseded — computed server-side, survives refetch. */
+    infoRequestOpen?: boolean;
+    /** The user may hand the remaining (optional) choices to the team. */
+    allowSkip?: boolean;
     runId?: string;
     siteId?: string;
     fileId?: string;
@@ -401,11 +414,28 @@ export interface ResearchSource {
   file_id: string | null; excerpt: string; retrieved_at: string;
 }
 
-export interface WorkspaceQuestion {
-  key: string; label: string; reasonNeeded: string; prefill: string | null;
-  inputType?: "text" | "textarea" | "number" | "date" | "boolean" | "choice";
-  choices?: string[]; help?: string; required?: boolean; group?: string;
+/** One field of a structured information request. Mirrors the zod
+ *  InfoRequestField in @deedwell/schemas — the single shape used by both the
+ *  chat form and the workspace Questions tab. */
+export interface InfoRequestField {
+  key: string;
+  label: string;
+  inputType:
+    | "text" | "textarea" | "number" | "date" | "boolean" | "choice"
+    | "multiselect" | "radio" | "color" | "url";
+  choices?: string[];
+  maxSelections?: number;
+  placeholder?: string;
+  help: string;
+  reason: string;
+  required: boolean;
+  group: string;
 }
+
+export type WorkspaceQuestion = InfoRequestField & {
+  reasonNeeded: string;
+  prefill: string | null;
+};
 
 export interface GrantWorkspace {
   project: {
@@ -425,6 +455,13 @@ export interface GrantWorkspace {
   files: Array<{ id: string; filename: string; mime: string; size_bytes: number; created_at: string;
     ingestion_status?: string; fact_count?: number }>;
   questions: WorkspaceQuestion[];
+  /** True when the open questions are optional and may be handed to the team. */
+  allowSkip?: boolean;
+  /** The site backing this project, when it is a website project. */
+  site: {
+    id: string; slug: string; name: string; status: string;
+    preview_version: number | null; live_version: number | null;
+  } | null;
   /** Present when this project runs on the external grant platform. */
   gcp?: GcpWorkspaceBlock | null;
 }

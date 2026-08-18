@@ -3,6 +3,7 @@ import type {
   ApplicationRow,
   ChannelInfo,
   ChatMessage,
+  FactConflict,
   MemberInfo,
   SiteDetail,
   SiteRow,
@@ -55,7 +56,7 @@ async function call<T>(
   const res = await fetch(`${API_URL}${path}`, {
     method,
     headers: {
-      ...(token ? { authorization: `Bearer ${token}` } : {}),
+      ...(token ? { "x-deedwell-token": token } : {}),
       ...(body !== undefined ? { "content-type": "application/json" } : {}),
     },
     body: body !== undefined ? JSON.stringify(body) : undefined,
@@ -106,7 +107,22 @@ export const listFacts = (orgId: string) =>
   call<{ facts: OrgFactRow[] }>("GET", `/v1/orgs/${orgId}/facts`);
 
 export const saveFacts = (orgId: string, facts: Array<{ key: string; value: string }>) =>
-  call<{ ok: true }>("POST", `/v1/orgs/${orgId}/facts`, { facts });
+  call<{ ok: true; conflicts: string[] }>("POST", `/v1/orgs/${orgId}/facts`, { facts });
+
+export const listFactConflicts = (orgId: string) =>
+  call<{ conflicts: FactConflict[] }>("GET", `/v1/orgs/${orgId}/fact-conflicts`);
+
+export const resolveFactConflict = (
+  orgId: string,
+  conflictId: string,
+  resolution: "keep_current" | "use_proposed"
+) => call<{ ok: true }>("POST", `/v1/orgs/${orgId}/fact-conflicts/${conflictId}/resolve`, { resolution });
+
+export const extractFacts = (orgId: string, fileId: string) =>
+  call<{ written: string[]; conflicts: string[]; documentSummary: string }>(
+    "POST",
+    `/v1/orgs/${orgId}/files/${fileId}/extract-facts`
+  );
 
 // ---- files & grant slice --------------------------------------------------
 
@@ -145,8 +161,13 @@ export const getRun = (orgId: string, runId: string) =>
 export const provideInfo = (
   orgId: string,
   runId: string,
-  facts: Array<{ key: string; value: string }>
-) => call<{ ok: true }>("POST", `/v1/orgs/${orgId}/runs/${runId}/provide-info`, { facts });
+  facts: Array<{ key: string; value: string | string[] | boolean }>
+) =>
+  call<{ ok: true; accepted: string[]; ignored: string[] }>(
+    "POST",
+    `/v1/orgs/${orgId}/runs/${runId}/provide-info`,
+    { facts }
+  );
 
 export const listApprovals = (orgId: string) =>
   call<{ approvals: Approval[] }>("GET", `/v1/orgs/${orgId}/approvals`);
@@ -221,7 +242,7 @@ export const getGcpResearchResult = (orgId: string, taskId: string) =>
 export async function previewGcpDeliverable(orgId: string, deliverableId: string): Promise<string> {
   const token = getToken();
   const res = await fetch(`${API_URL}/v1/orgs/${orgId}/gcp-deliverables/${deliverableId}/download`,
-    { headers: token ? { authorization: `Bearer ${token}` } : {} });
+    { headers: token ? { "x-deedwell-token": token } : {} });
   if (!res.ok) throw new ApiError(res.status, "Preview failed");
   return URL.createObjectURL(await res.blob());
 }
@@ -230,7 +251,7 @@ export async function previewGcpDeliverable(orgId: string, deliverableId: string
 export async function downloadGcpDeliverable(orgId: string, deliverableId: string, filename: string): Promise<void> {
   const token = getToken();
   const res = await fetch(`${API_URL}/v1/orgs/${orgId}/gcp-deliverables/${deliverableId}/download`,
-    { headers: token ? { authorization: `Bearer ${token}` } : {} });
+    { headers: token ? { "x-deedwell-token": token } : {} });
   if (!res.ok) throw new ApiError(res.status, "Download failed");
   const blob = await res.blob();
   const url = URL.createObjectURL(blob);
@@ -255,7 +276,7 @@ export async function fetchTtsBlob(orgId: string, agent: string, text: string): 
   const token = getToken();
   const res = await fetch(
     `${API_URL}/v1/orgs/${orgId}/tts?agent=${encodeURIComponent(agent)}&text=${encodeURIComponent(text.slice(0, 600))}`,
-    { headers: token ? { authorization: `Bearer ${token}` } : {} }
+    { headers: token ? { "x-deedwell-token": token } : {} }
   );
   if (!res.ok) throw new ApiError(res.status, "Voice synthesis unavailable");
   return res.blob();
@@ -327,6 +348,11 @@ export const listApplications = (orgId: string) =>
 
 export const SITE_ROUTER_URL: string =
   envUrl("VITE_SITE_ROUTER_URL") ?? (onDirectDevPort ? "http://178.104.188.229:8788" : "/sites");
+
+/** The one place that knows how a hosted site's URL is shaped.
+ *  Both /preview/<slug>/ and /live/<slug>/ are served by the site router. */
+export const siteUrl = (slug: string, mode: "preview" | "live"): string =>
+  `${SITE_ROUTER_URL}/${mode}/${slug}/`;
 
 export const createWebsite = (
   orgId: string,

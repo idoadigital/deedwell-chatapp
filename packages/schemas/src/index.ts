@@ -122,6 +122,27 @@ export const OrgFact = z.object({
 });
 export type OrgFact = z.infer<typeof OrgFact>;
 
+/** A fact proposed from a real evidence document — every one must cite where
+ *  it came from. This is the only path allowed to write status "verified". */
+export const ExtractedFact = z.object({
+  key: z.string().min(1).max(120),
+  value: z.string().min(1).max(4000),
+  sourceLocation: SourceLocation,
+});
+export type ExtractedFact = z.infer<typeof ExtractedFact>;
+
+/** Fact Extractor output contract (agent output schema). */
+export const FactExtractionOutput = z.object({
+  facts: z.array(ExtractedFact),
+  documentSummary: z.string().max(2000),
+});
+export type FactExtractionOutput = z.infer<typeof FactExtractionOutput>;
+
+export const ResolveFactConflictInput = z.object({
+  resolution: z.enum(["keep_current", "use_proposed"]),
+});
+export type ResolveFactConflictInput = z.infer<typeof ResolveFactConflictInput>;
+
 export const SectionClaim = z.object({
   text: z.string().min(1).max(4000),
   factKey: z.string().nullable(),
@@ -139,9 +160,24 @@ export const SectionDraftOutput = z.object({
 });
 export type SectionDraftOutput = z.infer<typeof SectionDraftOutput>;
 
+/** Answers to a structured information request.
+ *
+ *  Values are typed rather than stringly: a multiselect answers with an array
+ *  and a yes/no with a boolean. The previous "key: value" text round trip lost
+ *  any answer containing ": " or a newline. Plain strings stay valid, so every
+ *  existing caller keeps working unchanged. */
 export const ProvideInfoInput = z.object({
   facts: z
-    .array(z.object({ key: z.string().min(1).max(120), value: z.string().min(1).max(4000) }))
+    .array(
+      z.object({
+        key: z.string().min(1).max(120),
+        value: z.union([
+          z.string().min(1).max(4000),
+          z.array(z.string().min(1).max(200)).max(20),
+          z.boolean(),
+        ]),
+      }),
+    )
     .min(1),
 });
 
@@ -183,6 +219,7 @@ export const ArtifactType = z.enum([
   "review_report",
   "compliance_report",
   "website_brief",
+  "website_test_report",
 ]);
 export type ArtifactType = z.infer<typeof ArtifactType>;
 
@@ -200,6 +237,7 @@ export const AgentDefinition = z.object({
   allowedTools: z.array(z.string()),
   outputSchemaRef: z.enum([
     "requirements_extraction",
+    "fact_extraction",
     "section_draft",
     "section_plan",
     "budget",
@@ -207,6 +245,7 @@ export const AgentDefinition = z.object({
     "review_panel",
     "website_brief",
     "site_content",
+    "site_page",
     "site_patch",
     "intent",
     // "none" marks agents whose work is deterministic system logic (e.g. the
@@ -238,8 +277,26 @@ export type PassportField = z.infer<typeof PassportField>;
 export const InfoRequestField = z.object({
   key: z.string(),
   label: z.string(),
-  inputType: z.enum(["text", "textarea", "number", "date", "boolean", "choice"]),
+  /** PassportField.inputType is a strict subset of this, so passport-derived
+   *  requests keep validating unchanged. The extra types exist for website
+   *  design intake, where a dropdown of five tones reads as a form and a row
+   *  of cards reads as a choice. */
+  inputType: z.enum([
+    "text",
+    "textarea",
+    "number",
+    "date",
+    "boolean",
+    "choice",
+    "multiselect",
+    "radio",
+    "color",
+    "url",
+  ]),
   choices: z.array(z.string()).optional(),
+  /** multiselect only: cap on how many choices may be selected. */
+  maxSelections: z.number().int().positive().max(20).optional(),
+  placeholder: z.string().max(120).optional(),
   help: z.string(),
   reason: z.string(),
   required: z.boolean(),
@@ -415,6 +472,12 @@ export const SiteBlock = z.discriminatedUnion("kind", [
     tagline: z.string().max(400),
     ctaText: z.string().max(60).nullable(),
     ctaHref: z.string().max(500).nullable(),
+    /** Small line above the headline — "Kigali Province, Rwanda" or
+     *  "Registered 501(c)(3)". Orients the reader before the claim. */
+    eyebrow: z.string().max(80).nullable().optional(),
+    /** Secondary action beside the primary one. */
+    secondaryText: z.string().max(60).nullable().optional(),
+    secondaryHref: z.string().max(500).nullable().optional(),
   }),
   z.object({
     kind: z.literal("text"),
@@ -458,6 +521,73 @@ export const SiteBlock = z.discriminatedUnion("kind", [
     phone: z.string().max(60).nullable(),
     address: z.string().max(400).nullable(),
   }),
+  // ---- richer layout vocabulary --------------------------------------------
+  // These exist so a page can have rhythm — a wall of identical cards reads as
+  // a template, and funders notice. Each renders to fixed, escaped markup; the
+  // model still never emits HTML.
+  z.object({
+    kind: z.literal("quote"),
+    quote: z.string().min(1).max(600),
+    attribution: z.string().max(160).nullable(),
+    role: z.string().max(160).nullable().default(null),
+  }),
+  z.object({
+    kind: z.literal("steps"),
+    heading: z.string().max(200),
+    intro: z.string().max(600).nullable().default(null),
+    items: z
+      .array(z.object({ title: z.string().max(160), body: z.string().max(800) }))
+      .min(2)
+      .max(8),
+  }),
+  z.object({
+    kind: z.literal("faq"),
+    heading: z.string().max(200),
+    items: z
+      .array(z.object({ q: z.string().max(300), a: z.string().max(1500) }))
+      .min(1)
+      .max(12),
+  }),
+  z.object({
+    kind: z.literal("team"),
+    heading: z.string().max(200),
+    members: z
+      .array(z.object({
+        name: z.string().max(120),
+        role: z.string().max(120),
+        bio: z.string().max(600).nullable().default(null),
+      }))
+      .min(1)
+      .max(12),
+  }),
+  z.object({
+    kind: z.literal("logos"),
+    heading: z.string().max(200),
+    /** Funders and partners, by name. Naming them is a credibility signal
+     *  reviewers actively look for. */
+    names: z.array(z.string().max(120)).min(1).max(24),
+  }),
+  z.object({
+    kind: z.literal("split"),
+    heading: z.string().max(200),
+    body: z.string().min(1).max(3000),
+    /** Short supporting facts shown in the panel beside the prose. */
+    highlights: z.array(z.string().max(200)).max(6).default([]),
+    ctaText: z.string().max(60).nullable().default(null),
+    ctaHref: z.string().max(500).nullable().default(null),
+  }),
+  z.object({
+    kind: z.literal("donate"),
+    heading: z.string().max(200),
+    body: z.string().max(800).nullable().default(null),
+    href: z.string().min(1).max(500),
+    /** Amount tiers with what each buys — concrete beats abstract. */
+    tiers: z
+      .array(z.object({ amount: z.string().max(24), effect: z.string().max(200) }))
+      .max(4)
+      .default([]),
+    buttonText: z.string().max(60).default("Donate"),
+  }),
 ]);
 export type SiteBlock = z.infer<typeof SiteBlock>;
 
@@ -498,6 +628,19 @@ export const SiteContentOutput = z.object({
   placeholders: z.array(z.string().max(300)).max(20),
 });
 export type SiteContentOutput = z.infer<typeof SiteContentOutput>;
+
+/** One page, written on its own.
+ *
+ *  Pages are generated one per workflow step rather than all at once. A step
+ *  body and its writes commit in a single transaction, so a single call that
+ *  produces six pages is invisible until it finishes — the user watches a
+ *  spinner for a minute. One page per step means one commit, one event, and
+ *  one line of visible progress each time. */
+export const SitePageOutput = z.object({
+  page: SitePage,
+  placeholders: z.array(z.string().max(300)).max(10),
+});
+export type SitePageOutput = z.infer<typeof SitePageOutput>;
 
 /** Conversational-edit contract: a proposed patch, or an honest inability. */
 export const SitePatchOutput = z.object({

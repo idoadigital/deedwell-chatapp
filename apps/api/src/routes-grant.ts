@@ -1,9 +1,13 @@
 import type { FastifyInstance } from "fastify";
 import { audit, uuidv7 } from "@deedwell/database";
 import { ApprovalDecisionInput, ProvideInfoInput, StartGrantSliceInput } from "@deedwell/schemas";
-import { GRANT_SLICE_WORKFLOW } from "@deedwell/grant-domain";
+import { GRANT_SLICE_WORKFLOW, writeOrgFact } from "@deedwell/grant-domain";
 import type { WorkflowEvent } from "@deedwell/workflows";
 import { HttpError, type AppContext } from "./app.js";
+import { PASSPORT_FIELDS } from "@deedwell/grant-domain";
+import { WEBSITE_INTAKE_KEYS } from "@deedwell/website-domain";
+
+const passportKeys = new Set(PASSPORT_FIELDS.map((f) => f.key));
 
 export function registerGrantRoutes(app: FastifyInstance, ctx: AppContext): void {
   // ---- agent directory (platform-level, versioned definitions) -----------
@@ -136,29 +140,75 @@ export function registerGrantRoutes(app: FastifyInstance, ctx: AppContext): void
     ctx.requireRole(req, "member");
     const { runId } = req.params as { runId: string };
     const input = ProvideInfoInput.parse(req.body);
+    let result: { ok: true; accepted: string[]; ignored: string[]; conflicts: string[] } =
+      { ok: true, accepted: [], ignored: [], conflicts: [] };
     await ctx.inOrg(req, async (client) => {
-      const run = await client.query("SELECT status FROM workflow_runs WHERE id = $1", [runId]);
+      const run = await client.query(
+        `SELECT status, state->'input'->>'siteId' AS site_id FROM workflow_runs WHERE id = $1`,
+        [runId]
+      );
       if (!run.rows[0]) throw new HttpError(404, "Run not found");
       if (run.rows[0].status !== "waiting_for_info") {
         throw new HttpError(409, `Run is not waiting for information (status: ${run.rows[0].status})`);
       }
+      // Where an answer lands is decided HERE, from the catalogs — never from
+      // anything the client sends. A stale or tampered client must not be able
+      // to write a website design preference into the Funding Passport, which
+      // is the evidence base grant narratives are cited from.
+      const siteId: string | null = run.rows[0].site_id ?? null;
+      const accepted: string[] = [];
+      const ignored: string[] = [];
+      const conflicts: string[] = [];
+
       for (const fact of input.facts) {
-        await client.query(
-          `INSERT INTO org_facts (id, tenant_id, fact_key, value, status, certified_by)
-           VALUES ($1,$2,$3,$4,'user_certified',$5)
-           ON CONFLICT (tenant_id, fact_key)
-           DO UPDATE SET value = EXCLUDED.value, status = 'user_certified', certified_by = EXCLUDED.certified_by`,
-          [uuidv7(), req.orgId, fact.key, fact.value, req.userId]
+        if (passportKeys.has(fact.key)) {
+          // org_facts.value is text, so typed answers are flattened on the way
+          // in. The canonical form matches what a user would have typed.
+          const value = Array.isArray(fact.value)
+            ? fact.value.join(", ")
+            : typeof fact.value === "boolean"
+              ? fact.value ? "yes" : "no"
+              : fact.value;
+          const { conflict } = await writeOrgFact(client, {
+            tenantId: req.orgId!, factKey: fact.key, value, status: "user_certified",
+            certifiedBy: req.userId,
+          });
+          if (conflict) conflicts.push(fact.key); else accepted.push(fact.key);
+        } else if (WEBSITE_INTAKE_KEYS.has(fact.key) && siteId) {
+          // Kept as jsonb: a multiselect stays an array and a yes/no stays a
+          // boolean, so the workflow reads back exactly what was chosen.
+          await client.query(
+            `INSERT INTO site_intake_answers (id, tenant_id, site_id, question_key, value, answered_by)
+             VALUES ($1,$2,$3,$4,$5::jsonb,$6)
+             ON CONFLICT (site_id, question_key)
+             DO UPDATE SET value = EXCLUDED.value, answered_by = EXCLUDED.answered_by, updated_at = now()`,
+            [uuidv7(), req.orgId, siteId, fact.key, JSON.stringify(fact.value), req.userId]
+          );
+          accepted.push(fact.key);
+        } else {
+          // Reported back rather than silently dropped into org_facts.
+          ignored.push(fact.key);
+        }
+      }
+
+      if (!accepted.length) {
+        throw new HttpError(
+          400,
+          conflicts.length
+            ? `These answers conflict with existing verified data and were not applied: ${conflicts.join(", ")}. Resolve the conflict first.`
+            : `No recognised answers (unknown keys: ${ignored.join(", ")})`
         );
       }
-      await ctx.deps.engine.signal(client, runId, "info", { keys: input.facts.map((f) => f.key) });
+
+      await ctx.deps.engine.signal(client, runId, "info", { keys: accepted });
       await audit(client, {
         tenantId: req.orgId!, actorUser: req.userId, action: "workflow.info_provided",
         entityType: "workflow_run", entityId: runId,
-        metadata: { keys: input.facts.map((f) => f.key) },
+        metadata: { keys: accepted, ignored, conflicts },
       });
+      result = { ok: true, accepted, ignored, conflicts };
     });
-    return reply.status(200).send({ ok: true });
+    return reply.status(200).send(result);
   });
 
   // ---- approvals ----------------------------------------------------------

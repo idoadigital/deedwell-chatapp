@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   BudgetOutput,
+  FactExtractionOutput,
   IntentOutput,
   LogicModelOutput,
   RequirementsExtractionOutput,
@@ -8,6 +9,7 @@ import {
   SectionDraftOutput,
   SectionPlanOutput,
   SiteContentOutput,
+  SitePageOutput,
   SitePatchOutput,
   WebsiteBriefOutput,
   type AgentDefinition,
@@ -36,6 +38,7 @@ export interface ModelRequest {
   dataBlocks: ModelDataBlock[];
   outputSchemaRef:
     | "requirements_extraction"
+    | "fact_extraction"
     | "section_draft"
     | "section_plan"
     | "budget"
@@ -43,6 +46,7 @@ export interface ModelRequest {
     | "review_panel"
     | "website_brief"
     | "site_content"
+    | "site_page"
     | "site_patch"
     | "intent";
 }
@@ -76,6 +80,7 @@ export function createModelProvider(kind = process.env.MODEL_PROVIDER ?? "mock")
 
 const OUTPUT_SCHEMAS: Record<ModelRequest["outputSchemaRef"], z.ZodTypeAny> = {
   requirements_extraction: RequirementsExtractionOutput,
+  fact_extraction: FactExtractionOutput,
   section_draft: SectionDraftOutput,
   section_plan: SectionPlanOutput,
   budget: BudgetOutput,
@@ -83,6 +88,7 @@ const OUTPUT_SCHEMAS: Record<ModelRequest["outputSchemaRef"], z.ZodTypeAny> = {
   review_panel: ReviewPanelOutput,
   website_brief: WebsiteBriefOutput,
   site_content: SiteContentOutput,
+  site_page: SitePageOutput,
   site_patch: SitePatchOutput,
   intent: IntentOutput,
 };

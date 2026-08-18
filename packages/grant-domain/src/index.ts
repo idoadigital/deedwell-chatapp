@@ -2,6 +2,7 @@ export { scanForInjection, type InjectionWarning } from "./injection.js";
 export {
   requirementsAnalyst,
   grantWriter,
+  factExtractor,
   programPlanner,
   budgetSpecialist,
   melSpecialist,
@@ -27,7 +28,8 @@ export {
 export { buildGrantFullWorkflow, GRANT_FULL_WORKFLOW } from "./workflow-full.js";
 export { renderFullExport, budgetCsv, type FullExportInput } from "./export-full.js";
 export { verifyClaims } from "./claims.js";
-export { requiredFactKeys } from "./facts.js";
+export { requiredFactKeys, writeOrgFact, type WriteOrgFactParams } from "./facts.js";
+export { extractFactsFromDocument } from "./fact-extraction.js";
 export { registerGrantTools } from "./tools.js";
 export { upsertArtifactVersion } from "./artifacts.js";
 export { renderExportMarkdown, type ExportInput } from "./export.js";

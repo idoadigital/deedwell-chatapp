@@ -3,12 +3,12 @@ import { createHash } from "node:crypto";
 import { audit, tenantFileKey, uuidv7, withContext } from "@deedwell/database";
 import { runAgentTask } from "@deedwell/agent-runtime";
 import { AgentDefinition, IntentOutput, RESERVED_SITE_SLUGS, type GrantActionRef, type OrgFact } from "@deedwell/schemas";
-import { GRANT_FULL_WORKFLOW } from "@deedwell/grant-domain";
+import { GRANT_FULL_WORKFLOW, writeOrgFact } from "@deedwell/grant-domain";
 import { WEBSITE_BUILD_WORKFLOW, WEBSITE_UPDATE_WORKFLOW } from "@deedwell/website-domain";
 import type { Deps } from "./bootstrap.js";
 import { recordEvent, recordSource, setWorkspace } from "./workspace.js";
 import { DEFAULT_CHANNELS, MAYA_WELCOME, TEAMMATES, teammateByKey } from "./teammates.js";
-import { describeInfoRequest } from "./fact-fields.js";
+import { resolveInfoRequest } from "./fact-fields.js";
 import { gcpRoutesChannel, handleGcpTurn } from "./gcp/turns.js";
 
 /**
@@ -927,22 +927,31 @@ export async function handleUserMessage(
         await say(`Nobody on the team is waiting for information right now, so I've not recorded those values. If you want them in your Funding Passport anyway, use the Passport tool in the sidebar.`);
         break;
       }
+      const conflicted: string[] = [];
+      const recorded: string[] = [];
       for (const fact of intent.facts) {
-        await client.query(
-          `INSERT INTO org_facts (id, tenant_id, fact_key, value, status, certified_by)
-           VALUES ($1,$2,$3,$4,'user_certified',$5)
-           ON CONFLICT (tenant_id, fact_key)
-           DO UPDATE SET value = EXCLUDED.value, status = 'user_certified', certified_by = EXCLUDED.certified_by`,
-          [uuidv7(), ids.tenantId, fact.key, fact.value, ids.userId]
-        );
+        const { conflict } = await writeOrgFact(client, {
+          tenantId: ids.tenantId, factKey: fact.key, value: fact.value, status: "user_certified",
+          certifiedBy: ids.userId,
+        });
+        if (conflict) conflicted.push(fact.key); else recorded.push(fact.key);
       }
-      await deps.engine.signal(client, waitingRun.id, "info", { keys: intent.facts.map((f) => f.key) });
+      if (recorded.length) {
+        await deps.engine.signal(client, waitingRun.id, "info", { keys: recorded });
+      }
       await audit(client, {
         tenantId: ids.tenantId, actorUser: ids.userId, action: "workflow.info_provided",
         entityType: "workflow_run", entityId: waitingRun.id,
-        metadata: { via: "chat", keys: intent.facts.map((f) => f.key) },
+        metadata: { via: "chat", keys: recorded, conflicts: conflicted },
       });
-      await say(`Recorded as user-certified facts: ${intent.facts.map((f) => f.key.replace(/_/g, " ")).join(", ")}. The team is picking the work back up.`);
+      const parts: string[] = [];
+      if (recorded.length) {
+        parts.push(`Recorded as user-certified facts: ${recorded.map((k) => k.replace(/_/g, " ")).join(", ")}.`);
+      }
+      if (conflicted.length) {
+        parts.push(`${conflicted.map((k) => k.replace(/_/g, " ")).join(", ")} conflict${conflicted.length === 1 ? "s" : ""} with data already on file — I've flagged that for you to resolve instead of overwriting it.`);
+      }
+      await say(parts.length ? `${parts.join(" ")} The team is picking the work back up.` : "I didn't record anything from that.");
       break;
     }
 
@@ -1125,18 +1134,26 @@ async function bridgeMessage(
     let metadata: Record<string, unknown> = { runId: event.runId };
 
     if (event.status === "waiting_for_info") {
-      const { missing, context } = ((): { missing: string[]; context: string } => {
-        try {
-          const w = state.waiting as { payload?: string };
-          const parsed = JSON.parse(w?.payload ?? "{}") as { missingFacts?: string[]; context?: string };
-          return { missing: parsed.missingFacts ?? [], context: parsed.context ?? "eligibility" };
-        } catch { return { missing: [], context: "eligibility" }; }
-      })();
-      const fields = describeInfoRequest(missing, context);
-      body = `Before we go further I need a few organizational facts:\n${fields
-        .map((f) => `• ${f.label}${f.help ? ` (${f.help})` : ""}`)
-        .join("\n")}\nFill in the form below — partial answers are fine, the work resumes as facts arrive. Your answers are recorded as user-certified evidence.`;
-      metadata = { ...metadata, infoRequest: fields };
+      const request = await resolveInfoRequest(client, event.runId);
+      const fields = request.fields;
+      if (!fields.length) return;
+      if (request.context === "website_intake") {
+        agent = "website.digital_strategist";
+        body = `I have the facts I need about your organization. Now a few choices about how the site should look and what it should ask visitors to do:\n${fields
+          .slice(0, 6)
+          .map((f) => `• ${f.label}`)
+          .join("\n")}${fields.length > 6 ? `\n…and ${fields.length - 6} more below.` : ""}\nNone of these are required — answer what you care about and let the team decide the rest.`;
+      } else {
+        body = `Before we go further I need a few organizational facts:\n${fields
+          .map((f) => `• ${f.label}${f.help ? ` (${f.help})` : ""}`)
+          .join("\n")}\nFill in the form below — partial answers are fine, the work resumes as facts arrive. Your answers are recorded as user-certified evidence.`;
+      }
+      metadata = {
+        ...metadata,
+        infoRequest: fields,
+        infoRequestContext: request.context,
+        allowSkip: request.allowSkip,
+      };
     } else if (event.status === "waiting_approval") {
       const approval = await client.query(
         `SELECT id, kind, payload FROM approvals WHERE run_id = $1 AND status = 'pending'

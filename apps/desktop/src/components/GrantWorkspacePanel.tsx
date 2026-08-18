@@ -1,9 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import * as api from "../api";
-import type { GrantWorkspace, Organization, RunDetail, TeammateInfo } from "../types";
+import type { FactConflict, GrantWorkspace, Organization, RunDetail, TeammateInfo } from "../types";
 import { Icon } from "./Icon";
 import { Avatar } from "./Avatar";
 import { ArtifactPanel } from "./ArtifactPanel";
+import { PreviewSurface } from "./PreviewSurface";
+import { InfoFieldInput, hasAnswer, type FieldValue } from "./InfoFieldInput";
 import { GcpActivityFeed, GcpSources } from "./GcpActivityFeed";
 import { openExternal } from "../external";
 
@@ -15,8 +17,11 @@ import { openExternal } from "../external";
  * state — nothing here is simulated or animated to look busy.
  */
 
-type Tab = "overview" | "activity" | "research" | "requirements" | "questions" | "documents" | "application"
+type Tab = "overview" | "preview" | "activity" | "research" | "requirements" | "questions" | "documents" | "evidence" | "application"
   | "strategy" | "sections" | "budget" | "compliance" | "package";
+
+/** Viewport widths for the preview device toggle. null = fill the panel. */
+const DEVICE_WIDTHS: Record<string, number | null> = { mobile: 390, tablet: 834, desktop: null };
 
 const STATUS_LABEL: Record<string, string> = {
   created: "Created",
@@ -46,6 +51,7 @@ export function GrantWorkspacePanel({
   const [ws, setWs] = useState<GrantWorkspace | null>(null);
   const [tab, setTab] = useState<Tab>("overview");
   const [error, setError] = useState<string | null>(null);
+  const [conflicts, setConflicts] = useState<FactConflict[]>([]);
 
   useEffect(() => {
     let cancelled = false;
@@ -55,12 +61,28 @@ export function GrantWorkspacePanel({
     return () => { cancelled = true; };
   }, [org.id, projectId, refreshTick]);
 
+  const refreshConflicts = () => {
+    api.listFactConflicts(org.id).then((data) => setConflicts(data.conflicts)).catch(() => undefined);
+  };
+  useEffect(refreshConflicts, [org.id, refreshTick]);
+
   // Land on the most useful tab: a deliverable to view beats an open
   // question beats the default overview.
   useEffect(() => {
     if (autoPreviewDeliverableId) { setTab("package"); return; }
     if (ws?.questions.length) setTab((t) => (t === "overview" ? "questions" : t));
   }, [ws?.questions.length, autoPreviewDeliverableId]);
+
+  // When a build finishes, show the result. Only on an actual version bump —
+  // landing here on every refresh would fight the user's own tab choice.
+  const seenPreview = useRef<number | null>(null);
+  const previewVersion = ws?.site?.preview_version ?? null;
+  useEffect(() => {
+    if (previewVersion === null) return;
+    const prev = seenPreview.current;
+    seenPreview.current = previewVersion;
+    if (prev !== null && previewVersion > prev && !ws?.questions.length) setTab("preview");
+  }, [previewVersion, ws?.questions.length]);
 
   if (error) return <p className="error-text" style={{ padding: 16 }}>{error}</p>;
   if (!ws) return <p className="faint" style={{ padding: 16 }}>Loading workspace…</p>;
@@ -69,6 +91,10 @@ export function GrantWorkspacePanel({
   const gcp = ws.gcp ?? null;
   const tabs: Array<{ key: Tab; label: string; badge?: number }> = [
     { key: "overview", label: "Overview" },
+    // The site itself, right next to the work that produced it.
+    ...(!isGrant && ws.site ? [
+      { key: "preview" as Tab, label: "Preview", badge: ws.site.preview_version ?? undefined },
+    ] : []),
     { key: "activity", label: "Activity", badge: ws.events.length },
     // Research and the requirements matrix are grant-workflow records;
     // website projects surface their QA in the test-report artifact instead.
@@ -80,6 +106,7 @@ export function GrantWorkspacePanel({
     ] : []),
     { key: "questions", label: "Questions", badge: ws.questions.length },
     { key: "documents", label: "Documents", badge: ws.files.length },
+    ...(isGrant ? [{ key: "evidence" as Tab, label: "Evidence", badge: conflicts.length }] : []),
     // Platform-backed applications expose the real persisted work products.
     ...(gcp ? [
       { key: "strategy" as Tab, label: "Strategy", badge: gcp.strategy ? 1 : 0 },
@@ -104,6 +131,7 @@ export function GrantWorkspacePanel({
       </div>
       <div className="ws-body">
         {tab === "overview" && (gcp?.application ? <GcpOverview ws={ws} /> : <Overview ws={ws} />)}
+        {tab === "preview" && ws.site && <SitePreview site={ws.site} />}
         {tab === "activity" && (gcp
           ? <GcpActivityFeed org={org} channelId={channelId} refreshTick={refreshTick} />
           : <Activity ws={ws} teammates={teammates} />)}
@@ -112,21 +140,29 @@ export function GrantWorkspacePanel({
           : <Research ws={ws} />)}
         {tab === "requirements" && <Requirements ws={ws} />}
         {tab === "questions" && (
-          <Questions ws={ws} onSubmit={async (lines) => {
+          <Questions ws={ws} allowSkip={ws.allowSkip} onSubmit={async (facts) => {
             // Same durable state either way: platform questions answer through
-            // the structured endpoint; local workflows through the chat.
+            // the platform endpoint; local workflows through provide-info,
+            // which keeps the typed value intact rather than flattening it
+            // into a line of text the server has to parse back.
             if (gcp) {
-              for (const line of lines.split("\n")) {
-                const i = line.indexOf(": ");
-                if (i > 0) await api.answerGcpQuestion(org.id, projectId, line.slice(0, i), line.slice(i + 2));
+              for (const f of facts) {
+                await api.answerGcpQuestion(org.id, projectId, f.key, String(f.value));
               }
-            } else {
-              await api.sendMessage(org.id, channelId, lines);
+            } else if (ws.run) {
+              await api.provideInfo(org.id, ws.run.id, facts);
             }
             refresh();
           }} />
         )}
         {tab === "documents" && <Documents ws={ws} />}
+        {tab === "evidence" && (
+          <EvidenceConflicts
+            org={org}
+            conflicts={conflicts}
+            onResolved={refreshConflicts}
+          />
+        )}
         {tab === "strategy" && gcp && <GcpStrategy gcp={gcp} />}
         {tab === "sections" && gcp && <GcpSections gcp={gcp} />}
         {tab === "budget" && gcp && <GcpBudget gcp={gcp} />}
@@ -148,21 +184,37 @@ export function GrantWorkspacePanel({
 function Overview({ ws }: { ws: GrantWorkspace }) {
   const p = ws.project;
   const failed = ws.events.find((e) => e.status === "failed");
+  const site = ws.site;
+  // A website project has no funding announcement to upload and no package to
+  // download; telling someone to do either is worse than saying nothing.
   const nextAction = ws.questions.length
     ? `Answer ${ws.questions.length} open question${ws.questions.length > 1 ? "s" : ""} in the Questions tab.`
-    : p.pending_intent
-      ? "Upload the funding announcement in the channel — the application resumes automatically."
-      : ws.run?.status === "waiting_approval"
-        ? "A decision is waiting for you in the channel."
+    : site
+      ? ws.run?.status === "waiting_approval"
+        ? "A decision is waiting for you in the channel — review the preview first."
         : ws.run && !["completed", "cancelled"].includes(ws.run.status)
-          ? "The team is working — follow the Activity tab."
-          : ws.run?.status === "completed"
-            ? "Review and download the package in the Application tab."
-            : "Say what you'd like to do next in the channel.";
+          ? "The team is building — follow along in the Activity tab."
+          : site.preview_version && !site.live_version
+            ? "Review the preview, then approve it in the channel to go live."
+            : site.live_version
+              ? "The site is live. Ask for any change in the channel."
+              : "Say what you'd like the site to say in the channel."
+      : p.pending_intent
+        ? "Upload the funding announcement in the channel — the application resumes automatically."
+        : ws.run?.status === "waiting_approval"
+          ? "A decision is waiting for you in the channel."
+          : ws.run && !["completed", "cancelled"].includes(ws.run.status)
+            ? "The team is working — follow the Activity tab."
+            : ws.run?.status === "completed"
+              ? "Review and download the package in the Application tab."
+              : "Say what you'd like to do next in the channel.";
   return (
     <div>
       <h3 className="ws-title">{p.grant_title ?? p.name}</h3>
       <dl className="ws-facts">
+        {site && <><dt>Address</dt><dd>{site.slug}</dd></>}
+        {site?.preview_version && <><dt>Preview</dt><dd>v{site.preview_version}</dd></>}
+        {site?.live_version && <><dt>Live</dt><dd>v{site.live_version}</dd></>}
         {p.funder && <><dt>Agency</dt><dd>{p.funder}</dd></>}
         {p.opportunity_number && <><dt>Opportunity</dt><dd>{p.opportunity_number}</dd></>}
         {p.deadline && <><dt>Deadline</dt><dd>{p.deadline}</dd></>}
@@ -283,58 +335,108 @@ function Requirements({ ws }: { ws: GrantWorkspace }) {
   );
 }
 
-function Questions({ ws, onSubmit }: { ws: GrantWorkspace; onSubmit: (lines: string) => Promise<void> }) {
-  const [values, setValues] = useState<Record<string, string>>({});
+function Questions({ ws, allowSkip, onSubmit }: {
+  ws: GrantWorkspace;
+  allowSkip?: boolean;
+  onSubmit: (facts: Array<{ key: string; value: FieldValue }>) => Promise<void>;
+}) {
+  const [values, setValues] = useState<Record<string, FieldValue>>({});
   const [busy, setBusy] = useState(false);
   const [sent, setSent] = useState(false);
   if (!ws.questions.length) {
     return <p className="faint">Nothing is needed from you right now. When the team hits a fact it can't verify, a focused form appears here — only for genuinely missing information.</p>;
   }
   if (sent) return <p className="faint">Answers sent — the team resumed automatically.</p>;
+
+  const answered = ws.questions
+    .map((q) => ({ q, v: values[q.key] ?? (q.prefill ?? undefined) }))
+    .filter(({ v }) => hasAnswer(v));
+
+  const post = async (facts: Array<{ key: string; value: FieldValue }>) => {
+    setBusy(true);
+    try { await onSubmit(facts); setSent(true); } finally { setBusy(false); }
+  };
+
   return (
     <form onSubmit={async (e) => {
       e.preventDefault();
-      const lines = ws.questions
-        .map((q) => ({ q, v: (values[q.key] ?? q.prefill ?? "").trim() }))
-        .filter(({ v }) => v)
-        .map(({ q, v }) => `${q.key}: ${v}`);
-      if (!lines.length) return;
-      setBusy(true);
-      try { await onSubmit(lines.join("\n")); setSent(true); } finally { setBusy(false); }
+      if (answered.length) await post(answered.map(({ q, v }) => ({ key: q.key, value: v! })));
     }}>
       <p className="faint" style={{ marginBottom: 10 }}>
-        These are the only facts the team could not verify. Known values are prefilled — confirm or edit. Partial answers are fine.
+        {allowSkip
+          ? "None of these are required — answer what you care about and the team will choose the rest."
+          : "These are the only facts the team could not verify. Known values are prefilled — confirm or edit. Partial answers are fine."}
       </p>
-      {ws.questions.map((q) => {
-        const set = (value: string) => setValues((v) => ({ ...v, [q.key]: value }));
-        return (
-          <div className="field" key={q.key} style={{ marginBottom: 10 }}>
-            <label htmlFor={`wsq-${q.key}`}>{q.label}</label>
-            {q.inputType === "textarea" ? (
-              <textarea id={`wsq-${q.key}`} rows={3} defaultValue={q.prefill ?? ""} onChange={(e) => set(e.target.value)} />
-            ) : q.inputType === "choice" ? (
-              <select id={`wsq-${q.key}`} defaultValue={q.prefill ?? ""} onChange={(e) => set(e.target.value)}>
-                <option value="">Choose…</option>
-                {(q.choices ?? []).map((c) => <option key={c} value={c}>{c}</option>)}
-              </select>
-            ) : q.inputType === "boolean" ? (
-              <select id={`wsq-${q.key}`} defaultValue={q.prefill ?? ""} onChange={(e) => set(e.target.value)}>
-                <option value="">Choose…</option>
-                <option value="yes">Yes</option>
-                <option value="no">No</option>
-              </select>
-            ) : (
-              <input id={`wsq-${q.key}`}
-                type={q.inputType === "number" ? "number" : q.inputType === "date" ? "date" : "text"}
-                defaultValue={q.prefill ?? ""} onChange={(e) => set(e.target.value)} />
-            )}
-            {q.help && <p className="faint" style={{ marginTop: 2 }}>{q.help}</p>}
-            <p className="faint" style={{ marginTop: 2 }}>{q.reasonNeeded}</p>
-          </div>
-        );
-      })}
-      <button className="primary" disabled={busy}>Send answers</button>
+      {ws.questions.map((q) => (
+        <div className="field" key={q.key} style={{ marginBottom: 10 }}>
+          <label htmlFor={`wsq-${q.key}`}>{q.label}</label>
+          <InfoFieldInput
+            field={q}
+            id={`wsq-${q.key}`}
+            value={values[q.key] ?? (q.prefill ?? undefined)}
+            onChange={(v) => setValues((prev) => ({ ...prev, [q.key]: v }))}
+          />
+          {q.help && <p className="faint" style={{ marginTop: 2 }}>{q.help}</p>}
+          <p className="faint" style={{ marginTop: 2 }}>{q.reasonNeeded}</p>
+        </div>
+      ))}
+      <div className="row" style={{ gap: 8 }}>
+        <button className="primary" disabled={busy || !answered.length}>Send answers</button>
+        {allowSkip && (
+          <button type="button" className="ghost" disabled={busy}
+            onClick={() => void post([{ key: "site_intake_skipped", value: true }])}>
+            Let the team decide
+          </button>
+        )}
+      </div>
     </form>
+  );
+}
+
+/**
+ * The site as it actually renders, inside the panel.
+ *
+ * Preview is the default when it is ahead of live: after asking for a change
+ * you want to see the change, not the version that was published last week.
+ */
+function SitePreview({ site }: { site: NonNullable<GrantWorkspace["site"]> }) {
+  const previewAhead = (site.preview_version ?? 0) > (site.live_version ?? 0);
+  const [mode, setMode] = useState<"preview" | "live">(
+    previewAhead || !site.live_version ? "preview" : "live"
+  );
+  const [device, setDevice] = useState<keyof typeof DEVICE_WIDTHS>("desktop");
+  const version = mode === "preview" ? site.preview_version : site.live_version;
+
+  if (!site.preview_version && !site.live_version) {
+    return <p className="faint">Nothing built yet — the first preview appears here as soon as the team finishes a release.</p>;
+  }
+
+  return (
+    <PreviewSurface
+      url={api.siteUrl(site.slug, mode)}
+      reloadKey={`${mode}:${version ?? 0}`}
+      frameWidth={DEVICE_WIDTHS[device] ?? null}
+      toolbarExtra={
+        <div className="device-toggle">
+          {site.live_version ? (
+            <>
+              <button className={mode === "preview" ? "active" : ""} onClick={() => setMode("preview")}>
+                Preview{site.preview_version ? ` v${site.preview_version}` : ""}
+              </button>
+              <button className={mode === "live" ? "active" : ""} onClick={() => setMode("live")}>
+                Live v{site.live_version}
+              </button>
+              <span className="device-sep" />
+            </>
+          ) : null}
+          {(["mobile", "tablet", "desktop"] as const).map((d) => (
+            <button key={d} className={device === d ? "active" : ""} onClick={() => setDevice(d)} title={d}>
+              {d === "mobile" ? "Phone" : d === "tablet" ? "Tablet" : "Desktop"}
+            </button>
+          ))}
+        </div>
+      }
+    />
   );
 }
 
@@ -633,6 +735,62 @@ function GcpPackage({ org, gcp, autoPreviewDeliverableId, onAutoPreviewConsumed 
         );
       })}
       <p className="faint" style={{ marginTop: 8 }}>Downloads are private and authenticated — there are no public links to these files.</p>
+    </div>
+  );
+}
+
+function EvidenceConflicts({
+  org, conflicts, onResolved,
+}: {
+  org: Organization;
+  conflicts: FactConflict[];
+  onResolved: () => void;
+}) {
+  const [busy, setBusy] = useState<string | null>(null);
+
+  if (!conflicts.length) {
+    return <p className="faint">No open conflicts. When two documents disagree on the same fact, it shows up here instead of one silently overwriting the other.</p>;
+  }
+
+  const resolve = async (conflictId: string, resolution: "keep_current" | "use_proposed") => {
+    setBusy(conflictId);
+    try {
+      await api.resolveFactConflict(org.id, conflictId, resolution);
+      onResolved();
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div>
+      {conflicts.map((c) => (
+        <div key={c.id} className="ws-source row" style={{ flexDirection: "column", alignItems: "stretch" }}>
+          <div style={{ fontSize: 13, fontWeight: 600 }}>{c.fact_key.replace(/_/g, " ")}</div>
+          <div className="faint" style={{ margin: "4px 0 8px" }}>Two sources disagree on this fact — pick which one is right.</div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button
+              type="button"
+              className="ghost"
+              disabled={busy === c.id}
+              onClick={() => resolve(c.id, "keep_current")}
+            >
+              Keep current: {c.current_value}
+            </button>
+            <button
+              type="button"
+              className="primary"
+              disabled={busy === c.id}
+              onClick={() => resolve(c.id, "use_proposed")}
+            >
+              Use new: {c.proposed_value}
+            </button>
+          </div>
+          {c.proposed_source_quote && (
+            <div className="faint" style={{ marginTop: 6 }}>&ldquo;{c.proposed_source_quote}&rdquo;</div>
+          )}
+        </div>
+      ))}
     </div>
   );
 }
