@@ -17,6 +17,10 @@ const CONTEXT_REASONS: Record<string, (label: string) => string> = {
     `The website team writes your pages from certified facts — your ${label.toLowerCase()} isn't on record yet.`,
   drafting: (label) =>
     `The writer cites only certified facts; your ${label.toLowerCase()} is needed for a claim in the draft.`,
+  ad_grants_facts: (label) =>
+    `Google Ad Grants requires your ${label.toLowerCase()} before the application can proceed.`,
+  techsoup: (label) =>
+    `Google requires a completed TechSoup nonprofit verification before Google for Nonprofits enrollment — your ${label.toLowerCase()} isn't on record yet.`,
 };
 
 const fieldByKey = new Map(PASSPORT_FIELDS.map((f) => [f.key, f]));

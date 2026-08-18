@@ -27,6 +27,7 @@ import {
   buildWebsiteUpdateWorkflow,
   WEBSITE_AGENTS,
 } from "@deedwell/website-domain";
+import { ALL_AD_GRANTS_AGENTS, buildAdGrantsWorkflow } from "@deedwell/adgrants-domain";
 import { createGcpGrantPlatform, type GcpGrantPlatform } from "./gcp/platform.js";
 
 export interface Deps {
@@ -47,6 +48,7 @@ export async function createDeps(overrides: Partial<{
   storage: StorageAdapter;
   provider: ModelProvider;
   research: GrantServices["research"];
+  google: GrantServices["google"];
   backoffMs: (attempt: number) => number;
   gcp: GcpGrantPlatform | null;
 }> = {}): Promise<Deps> {
@@ -73,7 +75,18 @@ export async function createDeps(overrides: Partial<{
           researchMode === "fetch" ? "fetch" : "browser"
         );
 
-  const services: GrantServices = { provider, gateway, storage, research };
+  // Google Ad Grants browser automation: AD_GRANTS_AUTOMATION=on|off. Off
+  // (the default for tests/CI, and any environment without real Google
+  // credentials configured) makes every browser-touching step park with an
+  // honest "automation isn't connected" wait — it never simulates progress.
+  const adGrantsAutomationOn = (process.env.AD_GRANTS_AUTOMATION ?? "off") === "on";
+  const google = "google" in overrides
+    ? overrides.google
+    : adGrantsAutomationOn
+      ? (await import("@deedwell/browser-automation")).createGoogleAutomation({ appPool, storage })
+      : undefined;
+
+  const services: GrantServices = { provider, gateway, storage, research, google };
   const engine = new PgWorkflowEngine<GrantServices>(
     adminPool,
     appPool,
@@ -84,6 +97,7 @@ export async function createDeps(overrides: Partial<{
   engine.register(buildGrantFullWorkflow());
   engine.register(buildWebsiteBuildWorkflow());
   engine.register(buildWebsiteUpdateWorkflow());
+  engine.register(buildAdGrantsWorkflow());
 
   const deps: Deps = {
     adminPool,
@@ -96,7 +110,9 @@ export async function createDeps(overrides: Partial<{
     gcp: "gcp" in overrides ? (overrides.gcp ?? null) : createGcpGrantPlatform(),
   };
   const { executiveAssistant, attachEngineBridge } = await import("./assistant.js");
-  await seedAgentDefinitions(adminPool, [...ALL_AGENTS, ...WEBSITE_AGENTS, executiveAssistant]);
+  await seedAgentDefinitions(adminPool, [
+    ...ALL_AGENTS, ...WEBSITE_AGENTS, ...ALL_AD_GRANTS_AGENTS, executiveAssistant,
+  ]);
   attachEngineBridge(deps);
   const { attachWorkspaceBridge } = await import("./workspace.js");
   attachWorkspaceBridge(deps);

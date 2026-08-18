@@ -24,6 +24,11 @@ export const PASSPORT_FIELDS: PassportField[] = [
   { key: "headquarters", label: "Headquarters location", section: "Location & Reach", required: true },
   { key: "service_area", label: "Service area", section: "Location & Reach", required: true,
     hint: "The geography you serve, e.g. 'King County, WA' or 'statewide Ohio'" },
+  { key: "website_url", label: "Website URL", section: "Location & Reach", required: false,
+    hint: "Google Ad Grants requires a live, substantial website", inputType: "text" },
+  // Google Ad Grants
+  { key: "techsoup_validation_token", label: "TechSoup validation token", section: "Registration", required: false,
+    hint: "From your completed TechSoup nonprofit verification — required before Google for Nonprofits enrollment" },
   // Finances
   { key: "annual_budget", label: "Annual budget", section: "Finances", required: true,
     hint: "Most recent fiscal year, USD", inputType: "number" },

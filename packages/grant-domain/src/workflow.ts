@@ -35,12 +35,40 @@ export interface ResearchService {
   fetchPage(url: string): Promise<ResearchPageResult>;
 }
 
+/**
+ * Interactive Google-session automation (Google Ad Grants), implemented by
+ * @deedwell/browser-automation; structural here so this package stays free
+ * of a Playwright dependency, same reasoning as ResearchService above.
+ * Every method re-checks live state itself rather than trusting a cached
+ * flag — a step must never guess that a session or a submission is still
+ * good.
+ */
+export interface GoogleAutomationService {
+  checkSession(tenantId: string): Promise<{ connected: boolean; accountHint: string | null }>;
+  runNonprofitsEnrollment(tenantId: string, facts: Record<string, string>): Promise<{ screenshotKey: string }>;
+  /** Re-fills and submits in one call — each service call runs in its own
+   *  fresh headless session (see session.ts), so nothing from the earlier
+   *  "prepare" call's in-page state survives the human approval wait
+   *  between them. Re-deriving the fill from `facts` right before the
+   *  irrevocable click is what makes this both correct and idempotent. */
+  submitNonprofitsEnrollment(tenantId: string, facts: Record<string, string>): Promise<{ submitted: boolean }>;
+  checkGoogleReviewStatus(tenantId: string): Promise<{ status: "pending" | "approved" | "rejected"; reason?: string }>;
+  runAdGrantsActivation(tenantId: string): Promise<{ screenshotKey: string }>;
+  submitAdGrantsActivation(tenantId: string): Promise<{ submitted: boolean }>;
+  publishCampaign(tenantId: string, plan: unknown): Promise<{ campaignId: string }>;
+}
+
 export interface GrantServices {
   provider: ModelProvider;
   gateway: ToolGateway;
   storage: StorageAdapter;
   /** Absent → the research step records an honest skip, never fake sources. */
   research?: ResearchService;
+  /** Absent → Ad Grants browser steps park with an honest "automation is
+   *  off" wait rather than pretending to act. One shared engine instance
+   *  serves every workflow, so this lives on the one services type they
+   *  all share rather than a per-domain variant. */
+  google?: GoogleAutomationService;
 }
 
 export const GRANT_SLICE_WORKFLOW = "grant-application-slice";

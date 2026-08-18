@@ -49,5 +49,6 @@ export {
   type GrantServices,
   type ResearchPageResult,
   type ResearchService,
+  type GoogleAutomationService,
 } from "./workflow.js";
 export { extractDocumentText, stripHtml } from "./documents.js";

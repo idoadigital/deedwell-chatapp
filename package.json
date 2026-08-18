@@ -14,6 +14,7 @@
     "migrate": "tsx packages/database/src/migrate-cli.ts",
     "dev:api": "tsx watch apps/api/src/main.ts",
     "worker": "tsx apps/api/src/worker.ts",
+    "poll:ad-grants": "tsx apps/api/src/ad-grants-poller.ts",
     "site-router": "tsx apps/site-router/src/main.ts"
   },
   "devDependencies": {

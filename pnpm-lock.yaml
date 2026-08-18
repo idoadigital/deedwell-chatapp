@@ -78,6 +78,12 @@ importers:
 
   apps/api:
     dependencies:
+      '@deedwell/adgrants-domain':
+        specifier: workspace:*
+        version: link:../../packages/adgrants-domain
+      '@deedwell/browser-automation':
+        specifier: workspace:*
+        version: link:../../packages/browser-automation
       '@deedwell/browser-research':
         specifier: workspace:*
         version: link:../../packages/browser-research
@@ -112,9 +118,30 @@ importers:
 
   apps/site-router: {}
 
+  packages/adgrants-domain:
+    dependencies:
+      '@deedwell/auth':
+        specifier: workspace:*
+        version: link:../auth
+      '@deedwell/grant-domain':
+        specifier: workspace:*
+        version: link:../grant-domain
+
   packages/agent-runtime: {}
 
   packages/auth: {}
+
+  packages/browser-automation:
+    dependencies:
+      '@deedwell/adgrants-domain':
+        specifier: workspace:*
+        version: link:../adgrants-domain
+      '@deedwell/database':
+        specifier: workspace:*
+        version: link:../database
+      playwright:
+        specifier: ^1.49.0
+        version: 1.62.1
 
   packages/browser-research:
     dependencies:

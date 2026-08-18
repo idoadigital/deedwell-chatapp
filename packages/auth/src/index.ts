@@ -1,4 +1,7 @@
-import { randomBytes, scrypt as scryptCb, timingSafeEqual, createHash } from "node:crypto";
+import {
+  randomBytes, scrypt as scryptCb, timingSafeEqual, createHash,
+  createCipheriv, createDecipheriv,
+} from "node:crypto";
 import { promisify } from "node:util";
 import { ORG_ROLE_ORDER, type OrgRole } from "@deedwell/schemas";
 
@@ -60,3 +63,47 @@ export function roleAtLeast(actual: OrgRole, required: OrgRole): boolean {
 }
 
 export const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
+// ---------------------------------------------------------------------------
+// At-rest secret encryption (Google Ad Grants session storage). AES-256-GCM
+// keyed from a required env var; keyVersion travels alongside the ciphertext
+// so a future key rotation never strands existing rows, the same idea
+// hashPassword already uses for its scrypt parameters.
+// ---------------------------------------------------------------------------
+
+const IV_LEN = 12; // recommended nonce length for GCM
+
+function loadEncryptionKey(keyVersion: number): Buffer {
+  if (keyVersion !== 1) {
+    throw new Error(`No encryption key registered for version ${keyVersion}`);
+  }
+  const b64 = process.env.SESSION_ENCRYPTION_KEY;
+  if (!b64) throw new Error("SESSION_ENCRYPTION_KEY is not set");
+  const key = Buffer.from(b64, "base64");
+  if (key.length !== 32) {
+    throw new Error("SESSION_ENCRYPTION_KEY must decode to exactly 32 bytes");
+  }
+  return key;
+}
+
+export interface EncryptedSecret {
+  ciphertext: Buffer;
+  iv: Buffer;
+  tag: Buffer;
+  keyVersion: number;
+}
+
+export function encryptSecret(plaintext: Buffer, keyVersion = 1): EncryptedSecret {
+  const key = loadEncryptionKey(keyVersion);
+  const iv = randomBytes(IV_LEN);
+  const cipher = createCipheriv("aes-256-gcm", key, iv);
+  const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+  return { ciphertext, iv, tag: cipher.getAuthTag(), keyVersion };
+}
+
+export function decryptSecret(secret: EncryptedSecret): Buffer {
+  const key = loadEncryptionKey(secret.keyVersion);
+  const decipher = createDecipheriv("aes-256-gcm", key, secret.iv);
+  decipher.setAuthTag(secret.tag);
+  return Buffer.concat([decipher.update(secret.ciphertext), decipher.final()]);
+}

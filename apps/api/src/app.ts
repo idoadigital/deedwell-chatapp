@@ -18,6 +18,8 @@ import { registerWebsiteRoutes } from "./routes-website.js";
 import { registerChatRoutes } from "./routes-chat.js";
 import { registerHuddleRoutes } from "./routes-huddle.js";
 import { registerGcpRoutes } from "./routes-gcp.js";
+import { registerAdGrantsRoutes } from "./routes-ad-grants.js";
+import { registerAdGrantsConnectWs } from "./ad-grants-connect-ws.js";
 import { registerRtc } from "./rtc.js";
 
 declare module "fastify" {
@@ -85,7 +87,10 @@ export function buildApp(deps: Deps): FastifyInstance {
     // that); anything else is the static SPA shell (coworkers.deedwell.org
     // serves apps/desktop's build from this same app) or /healthz — public
     // by nature, since the SPA itself is what shows the login screen.
-    if (!url.startsWith("/v1/") || url.startsWith("/v1/auth/") || url.startsWith("/v1/rtc")) return;
+    if (
+      !url.startsWith("/v1/") || url.startsWith("/v1/auth/") || url.startsWith("/v1/rtc") ||
+      url.startsWith("/v1/ad-grants/google-connect")
+    ) return;
 
     // Some reverse proxies (e.g. Google Cloud Shell's web preview) intercept
     // or strip the Authorization header for their own auth. x-deedwell-token
@@ -148,7 +153,9 @@ export function buildApp(deps: Deps): FastifyInstance {
   registerChatRoutes(app, ctx);
   registerHuddleRoutes(app, ctx);
   registerGcpRoutes(app, ctx);
+  registerAdGrantsRoutes(app, ctx);
   registerRtc(app, ctx);
+  registerAdGrantsConnectWs(app, ctx);
 
   // coworkers.deedwell.org is this same origin: the chat app's built static
   // assets ship alongside the API so there's no CORS boundary between them

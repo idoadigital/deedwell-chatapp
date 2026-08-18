@@ -2,6 +2,7 @@ import type { ModelProvider, ModelRequest, ModelResponse } from "./index.js";
 import { siteContent, sitePage, sitePatch, websiteBrief } from "./mock-website.js";
 import { mockIntent } from "./mock-intent.js";
 import type {
+  AdGrantsCampaignPlanOutput,
   BudgetOutput,
   ExtractedFact,
   ExtractedRequirement,
@@ -40,6 +41,7 @@ export class MockModelProvider implements ModelProvider {
       site_page: sitePage,
       site_patch: sitePatch,
       intent: mockIntent,
+      ad_grants_campaign_plan: draftAdGrantsCampaign,
     };
     const text = JSON.stringify(generators[request.outputSchemaRef](request));
     const inputChars =
@@ -328,4 +330,66 @@ function reviewPanel(request: ModelRequest): ReviewPanelOutput {
     recommendations.push(`Address unmet mandatory requirement: ${r.criterion.slice(0, 120)}`);
   }
   return { reviews, revisionRecommendations: recommendations };
+}
+
+// ---------------------------------------------------------------------------
+// Google Ad Grants — deterministic campaign-plan stand-in.
+// ---------------------------------------------------------------------------
+
+function draftAdGrantsCampaign(request: ModelRequest): AdGrantsCampaignPlanOutput {
+  const facts = jsonBlock<OrgFact[]>(request, "org_facts", []);
+  const byKey = new Map(facts.map((f) => [f.key, f.value]));
+  const legalName = byKey.get("legal_name") ?? "Our organization";
+  const mission = byKey.get("mission") ?? "our mission";
+  const website = byKey.get("website_url") ?? "https://example.org";
+  const service = byKey.get("service_area") ?? "the communities we serve";
+
+  return {
+    campaignName: `${legalName} — Mission Awareness`,
+    dailyBudgetUsd: 300,
+    adGroups: [
+      {
+        name: "Programs and Services",
+        keywords: [
+          `${legalName} programs`,
+          `nonprofit ${service}`,
+          `donate to ${legalName}`,
+        ],
+        headlines: [
+          `${legalName}`,
+          `Support ${service}`,
+          `Learn About Our Mission`,
+        ],
+        descriptions: [
+          `${legalName} works to advance ${mission}. [mock provider]`,
+          `Discover how ${legalName} serves ${service}.`,
+        ],
+        finalUrl: website,
+      },
+      {
+        name: "Volunteer and Get Involved",
+        keywords: [
+          `volunteer ${service}`,
+          `${legalName} volunteer`,
+          `help ${service}`,
+        ],
+        headlines: [
+          `Volunteer With Us`,
+          `Get Involved Today`,
+          `Join ${legalName}`,
+        ],
+        descriptions: [
+          `Find volunteer opportunities with ${legalName}. [mock provider]`,
+          `Make a difference in ${service} today.`,
+        ],
+        finalUrl: website,
+      },
+    ],
+    sitelinks: [
+      { text: "Our Programs", url: website },
+      { text: "Donate", url: website },
+    ],
+    geoTargets: [service],
+    notes: "Deterministic mock campaign plan — content quality is not representative of the product.",
+  };
 }

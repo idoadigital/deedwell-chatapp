@@ -196,6 +196,67 @@ const STEP_EVENTS: Record<string, { title: string; summary: string; agent: strin
     summary: "The preview is ready; the site goes live only after your approval.",
     agent: "website.qa_deployment",
   },
+  // ---- ad-grants-application ---------------------------------------------
+  check_ad_grants_facts: {
+    title: "Checking required information",
+    summary: "Reading your organizational facts and asking only for what Google Ad Grants genuinely requires.",
+    agent: "ad_grants.eligibility_analyst",
+  },
+  verify_eligibility: {
+    title: "Checking program eligibility",
+    summary: "Comparing your organization's certified facts against the Google Ad Grants eligibility rules.",
+    agent: "ad_grants.eligibility_analyst",
+  },
+  techsoup_validation: {
+    title: "Waiting on TechSoup validation",
+    summary: "Google Ad Grants requires a completed TechSoup nonprofit verification before enrollment.",
+    agent: "ad_grants.eligibility_analyst",
+  },
+  connect_google_account: {
+    title: "Waiting to connect your Google account",
+    summary: "The agent needs an authenticated session to act on Google for Nonprofits on your behalf.",
+    agent: "ad_grants.application_agent",
+  },
+  enroll_google_nonprofits: {
+    title: "Preparing the Google for Nonprofits enrollment",
+    summary: "Filling the enrollment form from your certified facts, ready for your review.",
+    agent: "ad_grants.application_agent",
+  },
+  submit_enrollment: {
+    title: "Waiting for your enrollment approval",
+    summary: "Nothing is submitted to Google until you approve the prepared enrollment.",
+    agent: "ad_grants.application_agent",
+  },
+  await_google_review: {
+    title: "Waiting on Google's review",
+    summary: "Google (and TechSoup) are reviewing the enrollment; this can take several days.",
+    agent: "ad_grants.application_agent",
+  },
+  handle_review_rejection: {
+    title: "Reviewing Google's feedback",
+    summary: "Google's review did not pass; the reason is shown so it can be fixed before retrying.",
+    agent: "ad_grants.application_agent",
+  },
+  activate_ad_grants_product: {
+    title: "Preparing Ad Grants activation",
+    summary: "Setting up the Ad Grants product inside your approved Google for Nonprofits account.",
+    agent: "ad_grants.application_agent",
+  },
+  submit_activation: {
+    title: "Waiting for your activation approval",
+    summary: "Nothing is activated until you approve it.",
+    agent: "ad_grants.application_agent",
+  },
+  draft_campaign_plan: {
+    title: "Drafting the ad campaign",
+    summary: "Writing a policy-compliant campaign — ad groups, keywords, and ads — from your certified facts.",
+    agent: "ad_grants.campaign_strategist",
+  },
+  publish_campaign: {
+    title: "Waiting for your campaign approval",
+    summary: "The campaign goes live only after your approval.",
+    agent: "ad_grants.application_agent",
+  },
 };
 
 /** Map workflow step to a coarse workspace phase for the Overview tab. */
@@ -212,6 +273,12 @@ export function phaseForStep(step: string): string {
   if (["generate_content", "apply_patch"].includes(step)) return "Writing pages";
   if (["build_release"].includes(step)) return "Building and testing";
   if (["publish_gate"].includes(step)) return "Ready to publish";
+  if (["check_ad_grants_facts", "verify_eligibility", "techsoup_validation"].includes(step)) return "Checking eligibility";
+  if (["connect_google_account"].includes(step)) return "Connecting your Google account";
+  if (["enroll_google_nonprofits", "submit_enrollment"].includes(step)) return "Enrolling in Google for Nonprofits";
+  if (["await_google_review", "handle_review_rejection"].includes(step)) return "Waiting on Google's review";
+  if (["activate_ad_grants_product", "submit_activation"].includes(step)) return "Activating Ad Grants";
+  if (["draft_campaign_plan", "publish_campaign"].includes(step)) return "Building your campaign";
   return step.replace(/_/g, " ");
 }
 
@@ -225,6 +292,11 @@ const DEFINITION_STEPS: Record<string, string[]> = {
   ],
   "website-build": ["discovery", "intake_brief", "brief_gate", "generate_content", "build_release", "publish_gate"],
   "website-update": ["apply_patch", "build_release", "publish_gate"],
+  "ad-grants-application": [
+    "check_ad_grants_facts", "verify_eligibility", "techsoup_validation", "connect_google_account",
+    "enroll_google_nonprofits", "submit_enrollment", "await_google_review", "handle_review_rejection",
+    "activate_ad_grants_product", "submit_activation", "draft_campaign_plan", "publish_campaign",
+  ],
 };
 
 export function completionForRun(currentStep: string, status: string, definition = "grant-application-full"): number {

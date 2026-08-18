@@ -225,6 +225,10 @@ export const ArtifactType = z.enum([
   "compliance_report",
   "website_brief",
   "website_test_report",
+  "ad_grants_eligibility",
+  "ad_grants_enrollment_snapshot",
+  "ad_grants_campaign_plan",
+  "ad_grants_activation_snapshot",
 ]);
 export type ArtifactType = z.infer<typeof ArtifactType>;
 
@@ -236,7 +240,7 @@ export const AgentDefinition = z.object({
   agentKey: z.string().min(1).max(120),
   version: z.number().int().positive(),
   displayName: z.string(),
-  team: z.enum(["core", "grant", "website"]),
+  team: z.enum(["core", "grant", "website", "ad_grants"]),
   role: z.string(),
   instructions: z.string(),
   allowedTools: z.array(z.string()),
@@ -253,6 +257,7 @@ export const AgentDefinition = z.object({
     "site_page",
     "site_patch",
     "intent",
+    "ad_grants_campaign_plan",
     // "none" marks agents whose work is deterministic system logic (e.g. the
     // eligibility engine) — listed in the directory, never sent to a model.
     "none",
@@ -445,6 +450,33 @@ export const ReviewPanelOutput = z.object({
   revisionRecommendations: z.array(z.string()).max(20),
 });
 export type ReviewPanelOutput = z.infer<typeof ReviewPanelOutput>;
+
+// ---------------------------------------------------------------------------
+// Google Ad Grants — campaign plan (agent output contract)
+// ---------------------------------------------------------------------------
+
+/** One ad group: Ad Grants policy requires every campaign to have at least
+ *  two, each with several specific (never single-generic-word) keywords. */
+export const AdGrantsAdGroup = z.object({
+  name: z.string().min(1).max(120),
+  keywords: z.array(z.string().min(1).max(80)).min(3).max(20),
+  headlines: z.array(z.string().min(1).max(30)).min(3).max(15),
+  descriptions: z.array(z.string().min(1).max(90)).min(2).max(4),
+  finalUrl: z.string().url(),
+});
+export type AdGrantsAdGroup = z.infer<typeof AdGrantsAdGroup>;
+
+/** Campaign Strategist output contract. dailyBudgetUsd is capped at 329 —
+ *  the daily-average ceiling implied by the $10k/month Ad Grants limit. */
+export const AdGrantsCampaignPlanOutput = z.object({
+  campaignName: z.string().min(1).max(120),
+  dailyBudgetUsd: z.number().positive().max(329),
+  adGroups: z.array(AdGrantsAdGroup).min(2),
+  sitelinks: z.array(z.object({ text: z.string().max(25), url: z.string().url() })).min(2),
+  geoTargets: z.array(z.string().min(1).max(120)).min(1),
+  notes: z.string().max(2000),
+});
+export type AdGrantsCampaignPlanOutput = z.infer<typeof AdGrantsCampaignPlanOutput>;
 
 // ---------------------------------------------------------------------------
 // Phase 3 — API inputs

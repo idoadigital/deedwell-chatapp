@@ -1,0 +1,13 @@
+{
+  "name": "@deedwell/browser-automation",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "dependencies": {
+    "@deedwell/adgrants-domain": "workspace:*",
+    "@deedwell/database": "workspace:*",
+    "playwright": "^1.49.0"
+  }
+}

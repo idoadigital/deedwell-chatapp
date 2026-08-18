@@ -5,6 +5,8 @@
   "main": "src/main.ts",
   "type": "module",
   "dependencies": {
+    "@deedwell/adgrants-domain": "workspace:*",
+    "@deedwell/browser-automation": "workspace:*",
     "@deedwell/browser-research": "workspace:*"
   }
 }
