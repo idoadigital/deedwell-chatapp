@@ -81,11 +81,11 @@ async function getOpportunity(ctx: Ctx, id: string) {
 
 async function latestApproval(ctx: Ctx, kind: string) {
   const { rows } = await ctx.client.query(
-    `SELECT id, status FROM approvals WHERE run_id = $1 AND kind = $2
+    `SELECT id, status, note FROM approvals WHERE run_id = $1 AND kind = $2
      ORDER BY created_at DESC LIMIT 1`,
     [ctx.runId, kind]
   );
-  return rows[0] as { id: string; status: string } | undefined;
+  return rows[0] as { id: string; status: string; note: string | null } | undefined;
 }
 
 /** Candidate research URLs: the opportunity's own page plus links found in
@@ -436,6 +436,10 @@ export function buildGrantFullWorkflow(): WorkflowDefinition<GrantServices> {
         const applicationId = z.string().uuid().parse(ctx.state.applicationId);
         const requirements = z.array(ExtractedRequirement).parse(ctx.state.requirements);
         const facts = await fetchFacts(ctx, programPlanner);
+        // Feedback from a rejected strategy reaches the planner instead of a
+        // blind re-generation (same mechanism draft_sections uses for a
+        // rejected export's reviewer notes).
+        const strategyFeedback = z.string().nullable().parse(ctx.state.strategyFeedback ?? null);
 
         const result = await runAgentTask<SectionPlanOutput>(
           ctx.services.provider, programPlanner,
@@ -443,6 +447,9 @@ export function buildGrantFullWorkflow(): WorkflowDefinition<GrantServices> {
           [
             { label: "requirements", content: JSON.stringify(requirements) },
             { label: "org_facts", content: JSON.stringify(facts) },
+            ...(strategyFeedback
+              ? [{ label: "strategy_feedback", content: strategyFeedback.slice(0, 2000) }]
+              : []),
           ]
         );
         await recordModelUsage(ctx, programPlanner.agentKey, result.tokensEstimated);
@@ -452,20 +459,33 @@ export function buildGrantFullWorkflow(): WorkflowDefinition<GrantServices> {
             `INSERT INTO application_sections (id, tenant_id, application_id, order_idx, title,
                objective, word_limit, requirement_lines)
              VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-             ON CONFLICT (application_id, order_idx) DO NOTHING`,
+             ON CONFLICT (application_id, order_idx)
+             DO UPDATE SET title = EXCLUDED.title, objective = EXCLUDED.objective,
+               word_limit = EXCLUDED.word_limit, requirement_lines = EXCLUDED.requirement_lines,
+               status = 'planned'`,
             [uuidv7(), ctx.tenantId, applicationId, idx, section.title, section.objective,
              section.wordLimit, JSON.stringify(section.requirementLines)]
           );
         }
-        await upsertArtifactVersion(ctx.client, {
+        const artifact = await upsertArtifactVersion(ctx.client, {
           tenantId: ctx.tenantId, projectId: ctx.projectId, runId: ctx.runId,
           type: "application_plan", title: "Application plan",
           content: { sections: result.output.sections, activities: result.output.activities },
           agentKey: programPlanner.agentKey,
           changeSummary: `Planned ${result.output.sections.length} sections and ${result.output.activities.length} activities`,
         });
+
+        // Strategy checkpoint (spec §13): a human reviews the section plan
+        // and activities before any drafting starts, and can send it back
+        // with feedback rather than only accept/decline drafted prose later.
+        const approvalId = uuidv7();
         await ctx.client.query(
-          "UPDATE grant_applications SET status = 'drafting' WHERE id = $1", [applicationId]
+          `INSERT INTO approvals (id, tenant_id, run_id, kind, payload) VALUES ($1,$2,$3,'strategy',$4)`,
+          [approvalId, ctx.tenantId, ctx.runId, JSON.stringify({
+            artifactId: artifact.artifactId,
+            sections: result.output.sections,
+            activities: result.output.activities,
+          })]
         );
         return {
           state: {
@@ -474,9 +494,32 @@ export function buildGrantFullWorkflow(): WorkflowDefinition<GrantServices> {
             activities: result.output.activities,
             cursor: 0,
             flaggedClaims: 0,
+            wordLimitViolations: [],
           },
-          next: "draft_sections",
+          wait: { kind: "approval", payload: { approvalId, kind: "strategy" }, resumeStep: "strategy_gate" },
         };
+      },
+
+      // ------------------------------------------------------------------
+      async strategy_gate(ctx): Promise<StepResult> {
+        const applicationId = z.string().uuid().parse(ctx.state.applicationId);
+        const approval = await latestApproval(ctx, "strategy");
+        if (!approval || approval.status === "pending") {
+          return {
+            state: ctx.state,
+            wait: { kind: "approval", payload: { approvalId: approval?.id ?? null }, resumeStep: "strategy_gate" },
+          };
+        }
+        if (approval.status === "rejected") {
+          return {
+            state: { ...ctx.state, strategyFeedback: approval.note },
+            next: "plan_application",
+          };
+        }
+        await ctx.client.query(
+          "UPDATE grant_applications SET status = 'drafting' WHERE id = $1", [applicationId]
+        );
+        return { state: { ...ctx.state, strategyFeedback: null }, next: "draft_sections" };
       },
 
       // ------------------------------------------------------------------

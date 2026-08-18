@@ -122,6 +122,13 @@ export function ApprovalsView({
   );
 }
 
+const APPROVAL_LABELS: Record<string, string> = {
+  section_export: "Export drafted grant section",
+  strategy: "Application strategy — review before drafting",
+  bid_decision: "Bid / no-bid decision",
+  final_export: "Final compliance check — ready to export",
+};
+
 function labelFor(kind: string): string {
-  return kind === "section_export" ? "Export drafted grant section" : kind;
+  return APPROVAL_LABELS[kind] ?? kind;
 }

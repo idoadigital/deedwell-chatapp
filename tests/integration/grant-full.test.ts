@@ -96,6 +96,16 @@ describe("full grant workflow — happy path", () => {
     });
     await env.deps.engine.drain("test-worker");
 
+    // Strategy checkpoint: the plan is reviewed before any drafting starts.
+    const { run: planRun, approval: strategyApproval } = await pendingApproval(s.orgId, s.token, runId);
+    expect(planRun.body.run.status).toBe("waiting_approval");
+    expect(strategyApproval.kind).toBe("strategy");
+    expect(strategyApproval.payload.sections.length).toBeGreaterThanOrEqual(2);
+    await api(env.app, "POST", `/v1/orgs/${s.orgId}/approvals/${strategyApproval.id}`, {
+      token: s.token, body: { decision: "approved" },
+    });
+    await env.deps.engine.drain("test-worker");
+
     const { run, approval: finalApproval } = await pendingApproval(s.orgId, s.token, runId);
     expect(run.body.run.status).toBe("waiting_approval");
     expect(finalApproval.kind).toBe("final_export");
@@ -220,6 +230,36 @@ describe("full grant workflow — gates and weak cases", () => {
     const after = await pendingApproval(s.orgId, s.token, runId);
     expect(after.run.body.run.status).toBe("waiting_approval");
     expect(after.approval.kind).toBe("bid_decision");
+  });
+
+  it("rejecting the strategy sends the plan back for revision with feedback, not straight to drafting", async () => {
+    const s = await setupOrgWithOpportunity("full-strategy-reject");
+    const runId = await startFull(s);
+    await env.deps.engine.drain("test-worker");
+
+    const { approval: bidApproval } = await pendingApproval(s.orgId, s.token, runId);
+    await api(env.app, "POST", `/v1/orgs/${s.orgId}/approvals/${bidApproval.id}`, {
+      token: s.token, body: { decision: "approved" },
+    });
+    await env.deps.engine.drain("test-worker");
+
+    const { approval: strategyApproval } = await pendingApproval(s.orgId, s.token, runId);
+    expect(strategyApproval.kind).toBe("strategy");
+    await api(env.app, "POST", `/v1/orgs/${s.orgId}/approvals/${strategyApproval.id}`, {
+      token: s.token, body: { decision: "rejected", note: "Focus more on sustainability, less on Africa." },
+    });
+    await env.deps.engine.drain("test-worker");
+
+    // A fresh strategy approval is created — not sections drafted without review.
+    const { run, approval: secondStrategy } = await pendingApproval(s.orgId, s.token, runId);
+    expect(run.body.run.status).toBe("waiting_approval");
+    expect(secondStrategy.kind).toBe("strategy");
+    expect(secondStrategy.id).not.toBe(strategyApproval.id);
+
+    const { rows: sections } = await env.adminPool.query(
+      `SELECT status FROM application_sections WHERE tenant_id = $1`, [s.orgId]
+    );
+    expect(sections.every((r) => r.status === "planned")).toBe(true);
   });
 });
 
