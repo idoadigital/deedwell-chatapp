@@ -42,8 +42,8 @@ export function registerBillingRoutes(app: FastifyInstance, ctx: AppContext): vo
     const origin = appOrigin();
     const result = await createCheckoutSession(ctx.deps.appPool, config, {
       tenantId: req.orgId!, userId: req.userId!, packageId,
-      successUrl: `${origin}/?settings=billing&billing=success`,
-      cancelUrl: `${origin}/?settings=billing&billing=cancel`,
+      successUrl: `${origin}/dashboard/settings?tab=billing&billing=success`,
+      cancelUrl: `${origin}/dashboard/settings?tab=billing&billing=cancel`,
     });
     return reply.status(201).send(result);
   });
