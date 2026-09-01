@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState } from "react";
 import * as api from "../api";
 import type { ApiKeyRow, WebhookRow } from "../api";
 import { Icon } from "../components/Icon";
+import { AdGrantsOversightCard } from "./AdGrantsOversight";
+import { SupportInboxCard } from "./SupportInbox";
 
 const WEBHOOK_EVENT_TYPES = ["website.created", "website.published"];
 const API_KEY_SCOPES = ["websites:read", "websites:write"];
@@ -312,6 +314,8 @@ export function PlatformAdminView({ onBack }: { onBack: () => void }) {
           integration. This is not per-organization — a key or webhook here can see every
           nonprofit’s site data.
         </p>
+        <AdGrantsOversightCard />
+        <SupportInboxCard />
         <ApiKeysCard />
         <WebhooksCard />
         <StripeConfigCard />

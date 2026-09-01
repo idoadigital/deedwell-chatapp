@@ -471,6 +471,124 @@ export function registerCoreRoutes(app: FastifyInstance, ctx: AppContext): void 
     });
     return reply.status(200).send({ ok: true });
   });
+
+  // ---- notifications: live-computed, no persisted table ---------------------
+  // Always reflects current truth (a resolved item just disappears) rather
+  // than a notification log that could drift out of sync with real state.
+
+  app.get("/v1/orgs/:orgId/notifications", async (req) => {
+    ctx.requireRole(req, "viewer");
+    const items = await ctx.inOrg(req, async (client) => {
+      const waiting = await client.query(
+        `SELECT r.id AS run_id, r.project_id, p.name AS project_name, r.status,
+                r.current_step, r.state->'waiting' AS waiting, r.updated_at
+         FROM workflow_runs r JOIN projects p ON p.id = r.project_id
+         WHERE p.tenant_id = $1 AND r.status IN ('waiting_for_info','waiting_approval')
+         ORDER BY r.updated_at DESC LIMIT 20`,
+        [req.orgId]
+      );
+      const approvals = await client.query(
+        `SELECT a.id, a.kind, a.run_id, r.project_id, p.name AS project_name, a.created_at
+         FROM approvals a JOIN workflow_runs r ON r.id = a.run_id JOIN projects p ON p.id = r.project_id
+         WHERE p.tenant_id = $1 AND a.status = 'pending' ORDER BY a.created_at DESC LIMIT 20`,
+        [req.orgId]
+      );
+      const href = (projectName: string) => (projectName === "Google Ad Grant" ? "/dashboard/ad-grants" : null);
+      return [
+        ...waiting.rows.map((r) => ({
+          id: `run:${r.run_id}`, kind: "waiting_info", projectName: r.project_name,
+          title: `${r.project_name} needs your input`,
+          detail: r.current_step ? r.current_step.replace(/_/g, " ") : null,
+          href: href(r.project_name), createdAt: r.updated_at,
+        })),
+        ...approvals.rows.map((a) => ({
+          id: `approval:${a.id}`, kind: "waiting_approval", projectName: a.project_name,
+          title: `${a.project_name} has something awaiting your approval`,
+          detail: a.kind.replace(/_/g, " "), href: href(a.project_name), createdAt: a.created_at,
+        })),
+      ].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    });
+    return { items };
+  });
+
+  // ---- Co-Workers unread indicator ------------------------------------------
+  // One "last seen" heartbeat per membership, not per-channel read state —
+  // enough signal for a dashboard badge, not a full unread inbox.
+
+  app.post("/v1/orgs/:orgId/coworkers-seen", async (req) => {
+    ctx.requireRole(req, "viewer");
+    await ctx.inOrg(req, (client) =>
+      client.query(
+        `UPDATE organization_memberships SET coworkers_last_seen_at = now() WHERE tenant_id = $1 AND user_id = $2`,
+        [req.orgId, req.userId]
+      )
+    );
+    return { ok: true };
+  });
+
+  app.get("/v1/orgs/:orgId/coworkers-unread", async (req) => {
+    ctx.requireRole(req, "viewer");
+    const { rows } = await ctx.inOrg(req, (client) =>
+      client.query(
+        `SELECT count(*)::int AS count FROM messages m JOIN channels c ON c.id = m.channel_id
+         WHERE c.tenant_id = $1 AND m.author_kind != 'system'
+           AND (m.author_user IS NULL OR m.author_user != $2)
+           AND m.created_at > coalesce(
+             (SELECT coworkers_last_seen_at FROM organization_memberships WHERE tenant_id = $1 AND user_id = $2),
+             '-infinity'
+           )`,
+        [req.orgId, req.userId]
+      )
+    );
+    return { count: rows[0]?.count ?? 0 };
+  });
+
+  // ---- admin<->org support messages (org-facing side) ------------------------
+
+  app.get("/v1/orgs/:orgId/support/messages", async (req) => {
+    ctx.requireRole(req, "viewer");
+    const { rows } = await ctx.inOrg(req, (client) =>
+      client.query(
+        `SELECT m.id, m.author_kind, m.author_user_id, m.body, m.created_at
+         FROM support_messages m JOIN support_threads t ON t.id = m.thread_id
+         WHERE t.tenant_id = $1 ORDER BY m.created_at ASC`,
+        [req.orgId]
+      )
+    );
+    return { messages: rows };
+  });
+
+  app.post("/v1/orgs/:orgId/support/messages", async (req, reply) => {
+    ctx.requireRole(req, "member");
+    const { body } = req.body as { body?: string };
+    if (!body?.trim()) throw new HttpError(400, "Message body is required");
+    const id = await ctx.inOrg(req, async (client) => {
+      const existing = await client.query(`SELECT id FROM support_threads WHERE tenant_id = $1`, [req.orgId]);
+      const threadId = existing.rows[0]?.id ?? uuidv7();
+      if (!existing.rows[0]) {
+        await client.query(`INSERT INTO support_threads (id, tenant_id) VALUES ($1,$2)`, [threadId, req.orgId]);
+      }
+      const messageId = uuidv7();
+      await client.query(
+        `INSERT INTO support_messages (id, tenant_id, thread_id, author_kind, author_user_id, body)
+         VALUES ($1,$2,$3,'org_user',$4,$5)`,
+        [messageId, req.orgId, threadId, req.userId, body.trim()]
+      );
+      return messageId;
+    });
+    return reply.status(201).send({ id });
+  });
+
+  app.post("/v1/orgs/:orgId/support/seen", async (req) => {
+    ctx.requireRole(req, "viewer");
+    await ctx.inOrg(req, (client) =>
+      client.query(
+        `UPDATE organization_memberships SET support_last_seen_at = now() WHERE tenant_id = $1 AND user_id = $2`,
+        [req.orgId, req.userId]
+      )
+    );
+    return { ok: true };
+  });
 }
 
 async function createSession(pool: AppContext["deps"]["appPool"], userId: string): Promise<string> {

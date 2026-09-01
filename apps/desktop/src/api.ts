@@ -512,3 +512,60 @@ export const getBillingTransactions = (orgId: string) =>
 
 export const startCheckout = (orgId: string, packageId: string) =>
   call<{ url: string }>("POST", `/v1/orgs/${orgId}/billing/checkout`, { packageId });
+
+// ---- Platform admin: Ad Grants oversight (routes-admin-ad-grants.ts) ------
+// Cross-tenant — an admin isn't a member of the orgs they're helping, so
+// these are not org-scoped calls.
+
+export interface AdGrantsOversightRow {
+  org_id: string;
+  org_name: string;
+  slug: string;
+  run_id: string;
+  status: string;
+  current_step: string | null;
+  last_error: string | null;
+  waiting: { context?: string } | null;
+  updated_at: string;
+  created_at: string;
+}
+
+export const listAdGrantsOversight = () =>
+  call<{ applications: AdGrantsOversightRow[] }>("GET", "/v1/admin/ad-grants");
+
+export const startAdminGoogleConnect = (orgId: string) =>
+  call<{ token: string; wsPath: string }>("POST", `/v1/admin/orgs/${orgId}/ad-grants/google-connect/session`);
+
+// ---- Platform admin: support inbox (routes-admin-support.ts) --------------
+
+export interface SupportThreadRow {
+  org_id: string;
+  org_name: string;
+  thread_id: string;
+  last_message: string | null;
+  last_message_at: string | null;
+  unread_by_admin: number;
+}
+
+export interface SupportMessageRow {
+  id: string;
+  author_kind: "org_user" | "platform_admin";
+  author_user_id: string;
+  body: string;
+  created_at: string;
+}
+
+export const listSupportThreads = () => call<{ threads: SupportThreadRow[] }>("GET", "/v1/admin/support/threads");
+
+export const getAdminSupportMessages = (orgId: string) =>
+  call<{ messages: SupportMessageRow[] }>("GET", `/v1/admin/support/orgs/${orgId}/messages`);
+
+export const postAdminSupportMessage = (orgId: string, body: string) =>
+  call<{ id: string }>("POST", `/v1/admin/support/orgs/${orgId}/messages`, { body });
+
+// ---- Co-Workers "seen" heartbeat (routes-core.ts) --------------------------
+// Fired once per session so deedwell.org's dashboard can show an unread
+// badge — "opened Co-Workers at all" is the whole signal, not per-channel
+// read tracking.
+
+export const markCoworkersSeen = (orgId: string) => call<{ ok: true }>("POST", `/v1/orgs/${orgId}/coworkers-seen`);

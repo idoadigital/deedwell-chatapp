@@ -168,6 +168,9 @@ export default function App() {
     return () => { cancelled = true; };
   }, [org, refreshTick]);
   useEffect(() => { setWorkspaceLoaded(false); }, [org?.id]);
+  // "Opened Co-Workers at all" is the whole signal deedwell.org's dashboard
+  // unread badge needs — a heartbeat, not per-channel read tracking.
+  useEffect(() => { if (org) void api.markCoworkersSeen(org.id).catch(() => undefined); }, [org?.id]);
 
   // ---- realtime -----------------------------------------------------------
   useEffect(() => {
