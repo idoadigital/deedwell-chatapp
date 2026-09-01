@@ -47,7 +47,7 @@ export class ApiError extends Error {
 }
 
 async function call<T>(
-  method: "GET" | "POST",
+  method: "GET" | "POST" | "DELETE",
   path: string,
   body?: unknown,
   raw = false
@@ -94,7 +94,7 @@ export const login = (email: string, password: string) =>
 export const logout = () => call<{ ok: true }>("POST", "/v1/auth/logout");
 
 export const me = () =>
-  call<{ userId: string; organizations: Organization[] }>("GET", "/v1/me");
+  call<{ userId: string; isPlatformAdmin: boolean; organizations: Organization[] }>("GET", "/v1/me");
 
 // ---- orgs, projects, facts ------------------------------------------------
 
@@ -413,3 +413,44 @@ export const recordOutcome = (
   applicationId: string,
   input: { status: string; awardAmount?: number | null; feedback?: string; lessons?: string }
 ) => call<{ ok: true }>("POST", `/v1/orgs/${orgId}/applications/${applicationId}/outcome`, input);
+
+// ---- Platform admin: the platform-wide developer API (routes-admin.ts) ---
+// Not org-scoped — these manage the single set of keys/webhooks that back
+// the external AI website-building integration's read access across every
+// nonprofit's site data, gated on the current user's isPlatformAdmin flag
+// (see me() above), not any org membership.
+
+export interface ApiKeyRow {
+  id: string;
+  name: string;
+  key_prefix: string;
+  scopes: string[];
+  last_used_at: string | null;
+  revoked_at: string | null;
+  created_at: string;
+}
+
+export interface WebhookRow {
+  id: string;
+  url: string;
+  description: string | null;
+  event_types: string[];
+  is_active: boolean;
+  created_at: string;
+}
+
+export const listApiKeys = () => call<{ apiKeys: ApiKeyRow[] }>("GET", "/v1/admin/api-keys");
+
+export const createApiKey = (name: string) =>
+  call<{ id: string; key: string }>("POST", "/v1/admin/api-keys", { name });
+
+export const revokeApiKey = (id: string) => call<{ ok: true }>("DELETE", `/v1/admin/api-keys/${id}`);
+
+export const listWebhooks = () => call<{ webhooks: WebhookRow[] }>("GET", "/v1/admin/webhooks");
+
+export const createWebhook = (url: string, eventTypes: string[], description?: string) =>
+  call<{ id: string; secret: string }>("POST", "/v1/admin/webhooks", { url, eventTypes, description });
+
+export const deleteWebhook = (id: string) => call<{ ok: true }>("DELETE", `/v1/admin/webhooks/${id}`);
+
+export const testWebhook = (id: string) => call<{ ok: true }>("POST", `/v1/admin/webhooks/${id}/test`);

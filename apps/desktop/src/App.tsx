@@ -20,10 +20,11 @@ import { PassportView } from "./views/Passport";
 import { WebsitesView } from "./views/Websites";
 import { HuddleView } from "./views/Huddle";
 import { ApprovalsView } from "./views/Approvals";
+import { PlatformAdminView } from "./views/PlatformAdmin";
 
 const ORG_KEY = "deedwell.org";
 const SEEN_KEY = "deedwell.seen";
-type Overlay = "grants" | "passport" | "website" | "approvals" | "orgs" | null;
+type Overlay = "grants" | "passport" | "website" | "approvals" | "orgs" | "platform-admin" | null;
 
 const CHANNEL_DESCRIPTIONS: Record<string, string> = {
   general: "Team-wide conversation",
@@ -48,6 +49,7 @@ export default function App() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [sidebarFilter, setSidebarFilter] = useState("");
   const [overlay, setOverlay] = useState<Overlay>(null);
+  const [isPlatformAdmin, setIsPlatformAdmin] = useState(false);
   const [wsMenu, setWsMenu] = useState(false);
   const [profileMenu, setProfileMenu] = useState(false);
   const [huddleNote, setHuddleNote] = useState(false);
@@ -100,10 +102,11 @@ export default function App() {
     if (!authed) { setOrgs(null); setOrg(null); return; }
     let timedOut = false;
     const timeout = setTimeout(() => { timedOut = true; api.setToken(null); setAuthed(false); }, 10000);
-    api.me().then(({ organizations }) => {
+    api.me().then(({ organizations, isPlatformAdmin: platformAdmin }) => {
       if (timedOut) return;
       clearTimeout(timeout);
       setOrgs(organizations);
+      setIsPlatformAdmin(platformAdmin);
       const saved = organizations.find((o) => o.id === localStorage.getItem(ORG_KEY));
       if (saved) setOrg(saved);
       else if (organizations.length === 1) setOrg(organizations[0]!);
@@ -315,6 +318,9 @@ export default function App() {
           {profileMenu && (
             <div className="menu" style={{ left: 50, bottom: 0 }}>
               <button onClick={() => { setProfileMenu(false); setOverlay("orgs"); }}>Switch workspace</button>
+              {isPlatformAdmin && (
+                <button onClick={() => { setProfileMenu(false); setOverlay("platform-admin"); }}>Platform Admin</button>
+              )}
               <div className="sep" />
               <button onClick={() => {
                 void api.logout().catch(() => undefined);
@@ -563,7 +569,7 @@ export default function App() {
         <div className="overlay" onClick={(e) => { if (e.target === e.currentTarget) setOverlay(null); }}>
           <div className="overlay-panel">
             <div className="overlay-head">
-              <strong>{org.name}</strong>
+              <strong>{overlay === "platform-admin" ? "Platform Admin" : org.name}</strong>
               <button className="icon-btn" style={{ marginLeft: "auto" }} aria-label="Close" onClick={() => setOverlay(null)}>
                 <Icon name="x" size={16} />
               </button>
@@ -587,6 +593,7 @@ export default function App() {
                   onCreated={() => api.me().then(({ organizations }) => setOrgs(organizations))}
                 />
               )}
+              {overlay === "platform-admin" && <PlatformAdminView onBack={() => setOverlay(null)} />}
             </div>
           </div>
         </div>

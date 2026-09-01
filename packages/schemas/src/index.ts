@@ -765,3 +765,22 @@ export const RecordOutcomeInput = z.object({
   feedback: z.string().max(4000).optional(),
   lessons: z.string().max(4000).optional(),
 });
+
+// ---------------------------------------------------------------------------
+// Developer platform: API keys & webhooks
+// ---------------------------------------------------------------------------
+
+export const API_KEY_SCOPES = ["websites:read"] as const;
+
+export const CreateApiKeyInput = z.object({
+  name: z.string().min(1).max(120),
+  scopes: z.array(z.enum(API_KEY_SCOPES)).min(1).default(["websites:read"]),
+});
+
+export const WEBHOOK_EVENT_TYPES = ["website.created", "website.published"] as const;
+
+export const CreateWebhookInput = z.object({
+  url: z.string().url().max(500),
+  description: z.string().max(300).nullable().optional(),
+  eventTypes: z.array(z.enum(WEBHOOK_EVENT_TYPES)).min(1),
+});

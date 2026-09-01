@@ -1,6 +1,7 @@
 import { createAdminPool, migrate } from "@deedwell/database";
 import { buildApp } from "./app.js";
 import { createDeps } from "./bootstrap.js";
+import { sweepPendingWebhooks } from "./webhooks.js";
 
 async function main(): Promise<void> {
   // Migrate before createDeps — dependency wiring seeds agent definitions.
@@ -27,6 +28,21 @@ async function main(): Promise<void> {
     const { startGcpBridge } = await import("./gcp/bridge.js");
     startGcpBridge(deps);
   }
+
+  // Webhook deliveries are enqueued transactionally from request handlers
+  // and workflow steps that can't afford to await a slow third-party HTTP
+  // call themselves (see packages/database's enqueueWebhookEvent) — this
+  // sweep is what actually sends them. `busy` skips a tick rather than
+  // overlapping runs against the same 'pending' rows.
+  let webhookSweepBusy = false;
+  const webhookSweep = setInterval(() => {
+    if (webhookSweepBusy || abort.signal.aborted) return;
+    webhookSweepBusy = true;
+    sweepPendingWebhooks(deps.appPool)
+      .catch((err) => console.error("webhook sweep failed:", err))
+      .finally(() => { webhookSweepBusy = false; });
+  }, 15_000);
+  abort.signal.addEventListener("abort", () => clearInterval(webhookSweep));
 
   const port = Number(process.env.PORT ?? 3000);
   await app.listen({ port, host: "0.0.0.0" });

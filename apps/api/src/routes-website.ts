@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { audit, uuidv7 } from "@deedwell/database";
+import { audit, enqueueWebhookEvent, uuidv7 } from "@deedwell/database";
 import { CreateWebsiteInput, RollbackInput, WebsiteUpdateInput } from "@deedwell/schemas";
 import { WEBSITE_BUILD_WORKFLOW, WEBSITE_UPDATE_WORKFLOW } from "@deedwell/website-domain";
 import { HttpError, type AppContext } from "./app.js";
@@ -45,6 +45,13 @@ export function registerWebsiteRoutes(app: FastifyInstance, ctx: AppContext): vo
       await audit(client, {
         tenantId: req.orgId!, actorUser: req.userId, action: "site.created",
         entityType: "site", entityId: siteId, metadata: { slug: input.slug, runId },
+      });
+      // Delivery is a periodic sweep (apps/api/src/main.ts), not inline here
+      // — a slow or dead webhook consumer must never delay this response.
+      // Webhook subscriptions are platform-wide, not per-org, so the payload
+      // carries orgId itself rather than relying on delivery context.
+      await enqueueWebhookEvent(client, "website.created", {
+        orgId: req.orgId, siteId, slug: input.slug, siteName: input.siteName,
       });
       return { siteId, runId };
     });
@@ -154,6 +161,7 @@ export function registerWebsiteRoutes(app: FastifyInstance, ctx: AppContext): vo
         tenantId: req.orgId!, actorUser: req.userId, action: "site.rolled_back",
         entityType: "site_release", entityId: input.releaseId, metadata: { siteId },
       });
+      await enqueueWebhookEvent(client, "website.published", { orgId: req.orgId, siteId, releaseId: input.releaseId });
     });
     return { ok: true };
   });

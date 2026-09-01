@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { audit, uuidv7, type StorageAdapter } from "@deedwell/database";
+import { audit, enqueueWebhookEvent, uuidv7, type StorageAdapter } from "@deedwell/database";
 import { runAgentTask, type ModelProvider } from "@deedwell/agent-runtime";
 import type { ToolGateway } from "@deedwell/tools";
 import type { StepContext, StepResult, WorkflowDefinition } from "@deedwell/workflows";
@@ -351,6 +351,10 @@ async function publishGate(ctx: Ctx, siteId: string): Promise<StepResult> {
     actorAgent: "website.qa_deployment", action: "site.published",
     entityType: "site_release", entityId: releaseId, metadata: { siteId },
   });
+  // Thin payload by design: a webhook payload is a pointer, not the full
+  // resource — GET /v1/public/websites/:siteId has the current, authoritative
+  // shape. Subscriptions are platform-wide, so orgId travels in the payload.
+  await enqueueWebhookEvent(ctx.client, "website.published", { orgId: ctx.tenantId, siteId, releaseId });
   return { state: { ...ctx.state, published: true }, complete: true };
 }
 

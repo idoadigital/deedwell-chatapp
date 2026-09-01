@@ -15,6 +15,8 @@ import { registerCoreRoutes } from "./routes-core.js";
 import { registerGrantRoutes } from "./routes-grant.js";
 import { registerGrantFullRoutes } from "./routes-grants-full.js";
 import { registerWebsiteRoutes } from "./routes-website.js";
+import { registerPublicRoutes } from "./routes-public.js";
+import { registerAdminRoutes } from "./routes-admin.js";
 import { registerChatRoutes } from "./routes-chat.js";
 import { registerHuddleRoutes } from "./routes-huddle.js";
 import { registerGcpRoutes } from "./routes-gcp.js";
@@ -27,6 +29,8 @@ declare module "fastify" {
     userId: string | null;
     orgId: string | null;
     orgRole: OrgRole | null;
+    apiKeyScopes: string[] | null;
+    isPlatformAdmin: boolean;
   }
 }
 
@@ -44,6 +48,8 @@ export interface AppContext {
   /** Run `fn` in a tenant-scoped transaction for the request's org. */
   inOrg<T>(req: FastifyRequest, fn: (client: PoolClient) => Promise<T>): Promise<T>;
   requireRole(req: FastifyRequest, minimum: OrgRole): void;
+  requireApiScope(req: FastifyRequest, scope: string): void;
+  requirePlatformAdmin(req: FastifyRequest): void;
 }
 
 export function buildApp(deps: Deps): FastifyInstance {
@@ -68,6 +74,8 @@ export function buildApp(deps: Deps): FastifyInstance {
   app.decorateRequest("userId", null);
   app.decorateRequest("orgId", null);
   app.decorateRequest("orgRole", null);
+  app.decorateRequest("apiKeyScopes", null);
+  app.decorateRequest("isPlatformAdmin", false);
 
   app.setErrorHandler((err, req, reply) => {
     if (err instanceof HttpError) {
@@ -92,16 +100,36 @@ export function buildApp(deps: Deps): FastifyInstance {
       url.startsWith("/v1/ad-grants/google-connect")
     ) return;
 
+    const header = req.headers.authorization;
+    const bearerToken = header?.startsWith("Bearer ") ? header.slice("Bearer ".length) : null;
+
+    // Public API keys are a distinct credential class from session tokens:
+    // dw_live_-prefixed, platform-wide (not tied to any one org or user),
+    // and only accepted on /v1/public/* routes. There's deliberately no
+    // per-org scoping here — a key is provisioned by a platform admin (see
+    // routes-admin.ts) for one external integration that reads across every
+    // nonprofit's website data, not a credential a nonprofit holds itself.
+    if (bearerToken?.startsWith("dw_live_")) {
+      if (!url.startsWith("/v1/public/")) throw new HttpError(401, "Authentication required");
+      const keyHash = hashSessionToken(bearerToken);
+      const { rows } = await deps.appPool.query(
+        `SELECT scopes FROM api_keys WHERE key_hash = $1 AND revoked_at IS NULL`,
+        [keyHash]
+      );
+      if (!rows[0]) throw new HttpError(401, "Invalid or revoked API key");
+      req.apiKeyScopes = rows[0].scopes;
+      void deps.appPool.query("UPDATE api_keys SET last_used_at = now() WHERE key_hash = $1", [keyHash]);
+      return;
+    }
+    if (url.startsWith("/v1/public/")) throw new HttpError(401, "Authentication required");
+
     // Some reverse proxies (e.g. Google Cloud Shell's web preview) intercept
     // or strip the Authorization header for their own auth. x-deedwell-token
     // carries the same bearer token through those environments. The session
     // cookie is a third, equally valid credential: it's what lets a login on
     // deedwell.org carry over to coworkers.deedwell.org automatically.
-    const header = req.headers.authorization;
     const altToken = req.headers["x-deedwell-token"];
-    const token = header?.startsWith("Bearer ")
-      ? header.slice("Bearer ".length)
-      : typeof altToken === "string" ? altToken : req.cookies[SESSION_COOKIE_NAME];
+    const token = bearerToken ?? (typeof altToken === "string" ? altToken : req.cookies[SESSION_COOKIE_NAME]);
     if (!token) throw new HttpError(401, "Authentication required");
     const tokenHash = hashSessionToken(token);
     const { rows } = await deps.appPool.query(
@@ -111,6 +139,18 @@ export function buildApp(deps: Deps): FastifyInstance {
     );
     if (!rows[0]) throw new HttpError(401, "Invalid or expired session");
     req.userId = rows[0].user_id;
+
+    // Platform admin: a user-level flag, unrelated to any org membership —
+    // gates /v1/admin/* (API key + webhook management for the platform-wide
+    // developer API, routes-admin.ts). Loaded only for that namespace so
+    // every other authenticated request doesn't pay for an extra query.
+    if (url.startsWith("/v1/admin/")) {
+      const admin = await deps.appPool.query(
+        "SELECT is_platform_admin FROM users WHERE id = $1",
+        [req.userId]
+      );
+      req.isPlatformAdmin = admin.rows[0]?.is_platform_admin === true;
+    }
 
     // Org scoping for /v1/orgs/:orgId/... routes. Membership is checked here
     // (API layer); RLS enforces it again at the database layer.
@@ -135,13 +175,25 @@ export function buildApp(deps: Deps): FastifyInstance {
   const ctx: AppContext = {
     deps,
     inOrg(req, fn) {
-      if (!req.orgId || !req.userId) throw new HttpError(404, "Organization not found");
+      // userId is intentionally not required here: an API-key-authenticated
+      // public request resolves req.orgId with no user behind it at all
+      // (see the preHandler above), and still needs the same tenant-scoped
+      // transaction session-authenticated routes use.
+      if (!req.orgId) throw new HttpError(404, "Organization not found");
       return withContext(deps.appPool, { tenantId: req.orgId, userId: req.userId }, fn);
     },
     requireRole(req, minimum) {
       if (!req.orgRole || !roleAtLeast(req.orgRole, minimum)) {
         throw new HttpError(403, `This action requires the ${minimum} role or higher`);
       }
+    },
+    requireApiScope(req, scope) {
+      if (!req.apiKeyScopes?.includes(scope)) {
+        throw new HttpError(403, `This API key does not have the "${scope}" scope`);
+      }
+    },
+    requirePlatformAdmin(req) {
+      if (!req.isPlatformAdmin) throw new HttpError(403, "Platform admin access required");
     },
   };
 
@@ -150,6 +202,8 @@ export function buildApp(deps: Deps): FastifyInstance {
   registerGrantRoutes(app, ctx);
   registerGrantFullRoutes(app, ctx);
   registerWebsiteRoutes(app, ctx);
+  registerPublicRoutes(app, ctx);
+  registerAdminRoutes(app, ctx);
   registerChatRoutes(app, ctx);
   registerHuddleRoutes(app, ctx);
   registerGcpRoutes(app, ctx);

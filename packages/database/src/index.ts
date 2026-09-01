@@ -172,3 +172,34 @@ export async function audit(client: PoolClient, input: AuditInput): Promise<void
     ]
   );
 }
+
+// ---------------------------------------------------------------------------
+// Webhook delivery — enqueue only. Lives here (like audit) rather than in
+// apps/api because it's called from both API route handlers and workflow
+// step code (packages/website-domain), which must never depend on an app.
+// Actual HTTP delivery (needs decryptSecret + fetch) stays in
+// apps/api/src/webhooks.ts and runs from a periodic sweep of 'pending' rows,
+// so a delivery survives a process restart between enqueue and send.
+// ---------------------------------------------------------------------------
+
+export async function enqueueWebhookEvent(
+  client: PoolClient,
+  eventType: string,
+  payload: Record<string, unknown>
+): Promise<string[]> {
+  const { rows } = await client.query(
+    `SELECT id FROM webhook_subscriptions WHERE is_active AND $1 = ANY(event_types)`,
+    [eventType]
+  );
+  const deliveryIds: string[] = [];
+  for (const row of rows as { id: string }[]) {
+    const id = uuidv7();
+    await client.query(
+      `INSERT INTO webhook_deliveries (id, subscription_id, event_type, payload)
+       VALUES ($1,$2,$3,$4::jsonb)`,
+      [id, row.id, eventType, JSON.stringify(payload)]
+    );
+    deliveryIds.push(id);
+  }
+  return deliveryIds;
+}

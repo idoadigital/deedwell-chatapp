@@ -105,7 +105,7 @@ export function registerCoreRoutes(app: FastifyInstance, ctx: AppContext): void 
 
   app.get("/v1/me", async (req) => {
     const [user, orgs] = await Promise.all([
-      deps.appPool.query("SELECT email, display_name FROM users WHERE id = $1", [req.userId]),
+      deps.appPool.query("SELECT email, display_name, is_platform_admin FROM users WHERE id = $1", [req.userId]),
       withContext(deps.appPool, { tenantId: null, userId: req.userId }, (client) =>
         client.query(
           `SELECT o.id, o.slug, o.name, m.role
@@ -120,6 +120,7 @@ export function registerCoreRoutes(app: FastifyInstance, ctx: AppContext): void 
       userId: req.userId,
       email: user.rows[0].email,
       displayName: user.rows[0].display_name,
+      isPlatformAdmin: user.rows[0].is_platform_admin,
       organizations: orgs.rows,
     };
   });

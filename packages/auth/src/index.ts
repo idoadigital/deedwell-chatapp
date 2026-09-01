@@ -58,6 +58,14 @@ export function hashSessionToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
 }
 
+/** Opaque public-API key, `dw_live_`-prefixed so it's visually distinct from
+ *  a session token in logs and client code. Hashed at rest the same way
+ *  (hashSessionToken is a generic SHA-256 hasher, reused as-is). */
+export function generateApiKey(): { key: string; keyHash: string; keyPrefix: string } {
+  const key = `dw_live_${randomBytes(24).toString("base64url")}`;
+  return { key, keyHash: hashSessionToken(key), keyPrefix: key.slice(0, 12) };
+}
+
 export function roleAtLeast(actual: OrgRole, required: OrgRole): boolean {
   return ORG_ROLE_ORDER.indexOf(actual) >= ORG_ROLE_ORDER.indexOf(required);
 }
