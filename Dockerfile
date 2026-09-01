@@ -14,6 +14,7 @@ COPY apps/site-router/package.json apps/site-router/package.json
 COPY packages/agent-runtime/package.json packages/agent-runtime/package.json
 COPY packages/auth/package.json packages/auth/package.json
 COPY packages/adgrants-domain/package.json packages/adgrants-domain/package.json
+COPY packages/billing-domain/package.json packages/billing-domain/package.json
 COPY packages/browser-automation/package.json packages/browser-automation/package.json
 COPY packages/browser-research/package.json packages/browser-research/package.json
 COPY packages/database/package.json packages/database/package.json
