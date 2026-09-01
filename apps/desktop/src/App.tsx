@@ -49,12 +49,13 @@ export default function App() {
   const [approvals, setApprovals] = useState<Approval[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [sidebarFilter, setSidebarFilter] = useState("");
-  // Stripe's Checkout success/cancel redirect lands back on the plain
-  // origin with a query string (apps/desktop has no router) — computed as
-  // an initializer, not set from an effect, so opening straight to
-  // Settings -> Billing on that reload doesn't cascade an extra render.
+  // ?settings=usage|billing opens straight to Settings — used by both the
+  // deedwell.org dashboard's "Settings" nav item (which has no other way to
+  // reach this app's overlay) and Stripe's Checkout success/cancel redirect
+  // (apps/desktop has no router). Computed as an initializer, not set from
+  // an effect, so it doesn't cascade an extra render.
   const [overlay, setOverlay] = useState<Overlay>(() => (
-    new URLSearchParams(window.location.search).get("settings") === "billing" ? "settings" : null
+    new URLSearchParams(window.location.search).has("settings") ? "settings" : null
   ));
   const [isPlatformAdmin, setIsPlatformAdmin] = useState(false);
   const [wsMenu, setWsMenu] = useState(false);
