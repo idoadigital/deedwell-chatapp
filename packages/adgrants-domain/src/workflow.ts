@@ -71,6 +71,25 @@ function needsGoogle(ctx: Ctx): StepResult | null {
   };
 }
 
+/** browser-automation's withSession() marks a session expired and rethrows
+ *  SessionExpiredError the moment a call observes an auth failure mid-step
+ *  — duck-typed by name rather than imported so this package stays free of
+ *  a Playwright dependency (same reasoning as GoogleAutomationService's
+ *  structural typing in grant-domain). Turning it into the same wait shape
+ *  needsGoogle() already produces, but resuming into the step that hit it,
+ *  is what makes an expiry mid-automation an honest pause instead of a
+ *  failed run. */
+function isSessionExpired(err: unknown): boolean {
+  return err instanceof Error && err.name === "SessionExpiredError";
+}
+
+function googleReconnectWait(ctx: Ctx, resumeStep: string): StepResult {
+  return {
+    state: ctx.state,
+    wait: { kind: "info", payload: { context: "google_connect" }, resumeStep },
+  };
+}
+
 export function buildAdGrantsWorkflow(): WorkflowDefinition<GrantServices> {
   return {
     name: AD_GRANTS_WORKFLOW,
@@ -157,7 +176,13 @@ export function buildAdGrantsWorkflow(): WorkflowDefinition<GrantServices> {
         if (blocked) return blocked;
         const facts = await fetchUsableFacts(ctx, applicationAgent.agentKey);
         const factsMap = Object.fromEntries(facts.map((f) => [f.key, f.value]));
-        const { screenshotKey } = await ctx.services.google!.runNonprofitsEnrollment(ctx.tenantId, factsMap);
+        let screenshotKey: string;
+        try {
+          ({ screenshotKey } = await ctx.services.google!.runNonprofitsEnrollment(ctx.tenantId, factsMap));
+        } catch (err) {
+          if (isSessionExpired(err)) return googleReconnectWait(ctx, "enroll_google_nonprofits");
+          throw err;
+        }
         const artifact = await upsertArtifactVersion(ctx.client, {
           tenantId: ctx.tenantId, projectId: ctx.projectId, runId: ctx.runId,
           type: "ad_grants_enrollment_snapshot", title: "Google for Nonprofits enrollment",
@@ -189,7 +214,12 @@ export function buildAdGrantsWorkflow(): WorkflowDefinition<GrantServices> {
         if (blocked) return blocked;
         const facts = await fetchUsableFacts(ctx, applicationAgent.agentKey);
         const factsMap = Object.fromEntries(facts.map((f) => [f.key, f.value]));
-        await ctx.services.google!.submitNonprofitsEnrollment(ctx.tenantId, factsMap);
+        try {
+          await ctx.services.google!.submitNonprofitsEnrollment(ctx.tenantId, factsMap);
+        } catch (err) {
+          if (isSessionExpired(err)) return googleReconnectWait(ctx, "submit_enrollment");
+          throw err;
+        }
         await audit(ctx.client, {
           tenantId: ctx.tenantId, actorAgent: applicationAgent.agentKey, action: "ad_grants.enrollment_submitted",
           entityType: "workflow_run", entityId: ctx.runId, metadata: {},
@@ -206,7 +236,13 @@ export function buildAdGrantsWorkflow(): WorkflowDefinition<GrantServices> {
             wait: { kind: "info", payload: { context: "google_review_pending" }, resumeStep: "await_google_review" },
           };
         }
-        const review = await ctx.services.google!.checkGoogleReviewStatus(ctx.tenantId);
+        let review: Awaited<ReturnType<NonNullable<GrantServices["google"]>["checkGoogleReviewStatus"]>>;
+        try {
+          review = await ctx.services.google!.checkGoogleReviewStatus(ctx.tenantId);
+        } catch (err) {
+          if (isSessionExpired(err)) return googleReconnectWait(ctx, "await_google_review");
+          throw err;
+        }
         if (review.status === "pending") {
           return {
             state: ctx.state,
@@ -250,7 +286,13 @@ export function buildAdGrantsWorkflow(): WorkflowDefinition<GrantServices> {
       async activate_ad_grants_product(ctx): Promise<StepResult> {
         const blocked = needsGoogle(ctx);
         if (blocked) return blocked;
-        const { screenshotKey } = await ctx.services.google!.runAdGrantsActivation(ctx.tenantId);
+        let screenshotKey: string;
+        try {
+          ({ screenshotKey } = await ctx.services.google!.runAdGrantsActivation(ctx.tenantId));
+        } catch (err) {
+          if (isSessionExpired(err)) return googleReconnectWait(ctx, "activate_ad_grants_product");
+          throw err;
+        }
         const artifact = await upsertArtifactVersion(ctx.client, {
           tenantId: ctx.tenantId, projectId: ctx.projectId, runId: ctx.runId,
           type: "ad_grants_activation_snapshot", title: "Ad Grants activation",
@@ -280,7 +322,12 @@ export function buildAdGrantsWorkflow(): WorkflowDefinition<GrantServices> {
         }
         const blocked = needsGoogle(ctx);
         if (blocked) return blocked;
-        await ctx.services.google!.submitAdGrantsActivation(ctx.tenantId);
+        try {
+          await ctx.services.google!.submitAdGrantsActivation(ctx.tenantId);
+        } catch (err) {
+          if (isSessionExpired(err)) return googleReconnectWait(ctx, "submit_activation");
+          throw err;
+        }
         await audit(ctx.client, {
           tenantId: ctx.tenantId, actorAgent: applicationAgent.agentKey, action: "ad_grants.activation_submitted",
           entityType: "workflow_run", entityId: ctx.runId, metadata: {},
@@ -333,7 +380,13 @@ export function buildAdGrantsWorkflow(): WorkflowDefinition<GrantServices> {
            WHERE a.id = $1`,
           [artifactId]
         );
-        const { campaignId } = await ctx.services.google!.publishCampaign(ctx.tenantId, rows[0].content);
+        let campaignId: string;
+        try {
+          ({ campaignId } = await ctx.services.google!.publishCampaign(ctx.tenantId, rows[0].content));
+        } catch (err) {
+          if (isSessionExpired(err)) return googleReconnectWait(ctx, "publish_campaign");
+          throw err;
+        }
         await audit(ctx.client, {
           tenantId: ctx.tenantId, actorAgent: applicationAgent.agentKey, action: "ad_grants.campaign_published",
           entityType: "workflow_run", entityId: ctx.runId, metadata: { campaignId },

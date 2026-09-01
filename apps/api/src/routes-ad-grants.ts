@@ -1,13 +1,36 @@
 import type { FastifyInstance } from "fastify";
 import { randomBytes, createHash } from "node:crypto";
-import { audit, uuidv7 } from "@deedwell/database";
-import { AD_GRANTS_WORKFLOW, revokeGoogleSession } from "@deedwell/adgrants-domain";
+import { audit, uuidv7, withContext } from "@deedwell/database";
+import {
+  AD_GRANTS_WORKFLOW, revokeGoogleSession,
+  loadOAuthConfig, startGoogleOAuth, redeemOAuthState, exchangeGoogleCode,
+  saveOAuthConnection, loadActiveOAuthConnection, revokeOAuthConnection,
+} from "@deedwell/adgrants-domain";
 import { HttpError, type AppContext } from "./app.js";
 import { resolveInfoRequest } from "./fact-fields.js";
 import { completionForRun } from "./workspace.js";
 
 function sha(token: string): string {
   return createHash("sha256").update(token).digest("hex");
+}
+
+// Only ever redirect back to an origin this deployment already trusts
+// (the same allowlist CORS uses) — redirectTo is attacker-controllable
+// input from a query string, so an unvalidated value here would be an
+// open redirect off the Google OAuth callback.
+function trustedOrigins(): string[] {
+  return (process.env.CORS_ORIGINS ?? "http://localhost:5173").split(",");
+}
+
+function resolveRedirectTarget(candidate: string | undefined): string {
+  const fallback = `${trustedOrigins()[0]}/dashboard/ad-grants/apply`;
+  if (!candidate) return fallback;
+  try {
+    const url = new URL(candidate);
+    return trustedOrigins().includes(url.origin) ? candidate : fallback;
+  } catch {
+    return fallback;
+  }
 }
 
 async function findOrCreateProject(
@@ -67,7 +90,7 @@ export function registerAdGrantsRoutes(app: FastifyInstance, ctx: AppContext): v
       if (!project.rows[0]) {
         return {
           project: null, run: null, completion: 0, events: [], artifacts: [],
-          approvals: [], files: [], questions: [], allowSkip: false, googleSession: null,
+          approvals: [], files: [], questions: [], allowSkip: false, googleSession: null, googleOAuth: null,
         };
       }
       const projectId = project.rows[0].id;
@@ -117,6 +140,8 @@ export function registerAdGrantsRoutes(app: FastifyInstance, ctx: AppContext): v
         ? await resolveInfoRequest(client, runRow.id)
         : null;
 
+      const oauthConnection = await loadActiveOAuthConnection(client, req.orgId!);
+
       return {
         project: project.rows[0],
         run: runRow,
@@ -131,6 +156,9 @@ export function registerAdGrantsRoutes(app: FastifyInstance, ctx: AppContext): v
         googleSession: googleSession.rows[0]
           ? { connected: true, accountHint: googleSession.rows[0].google_account_hint, status: googleSession.rows[0].status }
           : { connected: false, accountHint: null, status: null },
+        googleOAuth: oauthConnection
+          ? { connected: true, email: oauthConnection.email, name: oauthConnection.name, avatarUrl: oauthConnection.avatarUrl }
+          : { connected: false, email: null, name: null, avatarUrl: null },
       };
     });
   });
@@ -165,5 +193,83 @@ export function registerAdGrantsRoutes(app: FastifyInstance, ctx: AppContext): v
     const revoked = await ctx.inOrg(req, (client) => revokeGoogleSession(client, req.orgId!, req.userId!));
     if (!revoked) throw new HttpError(404, "No active Google session to revoke");
     return { ok: true };
+  });
+
+  // ---- Google OAuth: identity + permitted API access ----------------------
+  // Structurally separate from google-connect above: this is a standard
+  // OAuth 2.0 grant used to show a connected profile and (later) mint
+  // short-lived API access tokens for the agent — it is never treated as a
+  // substitute for the interactive browser login Google itself requires.
+
+  app.get("/v1/orgs/:orgId/ad-grants/google-oauth/start", async (req, reply) => {
+    ctx.requireRole(req, "member");
+    const config = loadOAuthConfig();
+    if (!config) throw new HttpError(503, "Google sign-in isn't configured yet");
+    const redirectTo = resolveRedirectTarget((req.query as { redirectTo?: string }).redirectTo);
+    const authUrl = await ctx.inOrg(req, (client) =>
+      startGoogleOAuth(client, config, { tenantId: req.orgId!, userId: req.userId!, redirectTo })
+    );
+    return reply.send({ authUrl });
+  });
+
+  // Top-level (not /v1/orgs/:orgId/...): Google redirects the browser here
+  // as a plain top-level navigation, before any org context is resolvable
+  // from the URL — identity comes entirely from the single-use `state` row,
+  // same reasoning as the google-connect WebSocket route. Exempted from
+  // session auth in app.ts's preHandler for the same reason.
+  app.get("/v1/ad-grants/google-oauth/callback", async (req, reply) => {
+    const { code, state, error } = req.query as { code?: string; state?: string; error?: string };
+    const fallback = resolveRedirectTarget(undefined);
+    if (error || !code || !state) {
+      return reply.redirect(`${fallback}?google_oauth=error`);
+    }
+    const redeemed = await redeemOAuthState(ctx.deps.adminPool, state);
+    if (!redeemed) return reply.redirect(`${fallback}?google_oauth=error`);
+    const redirectTo = resolveRedirectTarget(redeemed.redirectTo ?? undefined);
+    const config = loadOAuthConfig();
+    if (!config) return reply.redirect(`${redirectTo}?google_oauth=error`);
+
+    try {
+      const identity = await exchangeGoogleCode(config, code, redeemed.codeVerifier);
+      await withContext(ctx.deps.appPool, { tenantId: redeemed.tenantId, userId: redeemed.userId }, (client) =>
+        saveOAuthConnection(client, { tenantId: redeemed.tenantId, connectedBy: redeemed.userId, identity })
+      );
+      return reply.redirect(`${redirectTo}?google_oauth=connected`);
+    } catch (err) {
+      req.log.error({ err }, "google oauth callback failed");
+      return reply.redirect(`${redirectTo}?google_oauth=error`);
+    }
+  });
+
+  app.delete("/v1/orgs/:orgId/ad-grants/google-oauth", async (req) => {
+    ctx.requireRole(req, "admin");
+    const revoked = await ctx.inOrg(req, (client) => revokeOAuthConnection(client, req.orgId!, req.userId!));
+    if (!revoked) throw new HttpError(404, "No connected Google account to disconnect");
+    return { ok: true };
+  });
+
+  // ---- explicit consent, recorded at the moment "Start My Application" is
+  // clicked — deliberately separate from /start above, which is idempotent
+  // and also fires from earlier wizard steps that auto-create a run; this
+  // is the one write that only ever happens behind the checkbox.
+
+  app.post("/v1/orgs/:orgId/ad-grants/authorize", async (req) => {
+    ctx.requireRole(req, "member");
+    return ctx.inOrg(req, async (client) => {
+      const run = await client.query(
+        `SELECT r.id FROM workflow_runs r JOIN projects p ON p.id = r.project_id
+         WHERE p.tenant_id = $1 AND r.definition = $2 AND r.status NOT IN ('completed','cancelled')
+         ORDER BY r.created_at DESC LIMIT 1`,
+        [req.orgId, AD_GRANTS_WORKFLOW]
+      );
+      if (!run.rows[0]) throw new HttpError(404, "No active Ad Grants application to authorize");
+      const oauth = await loadActiveOAuthConnection(client, req.orgId!);
+      await audit(client, {
+        tenantId: req.orgId!, actorUser: req.userId, action: "ad_grants.authorized",
+        entityType: "workflow_run", entityId: run.rows[0].id,
+        metadata: { googleOAuthConnectionId: oauth?.id ?? null },
+      });
+      return { ok: true };
+    });
   });
 }

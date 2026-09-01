@@ -97,7 +97,7 @@ export function buildApp(deps: Deps): FastifyInstance {
     // by nature, since the SPA itself is what shows the login screen.
     if (
       !url.startsWith("/v1/") || url.startsWith("/v1/auth/") || url.startsWith("/v1/rtc") ||
-      url.startsWith("/v1/ad-grants/google-connect")
+      url.startsWith("/v1/ad-grants/google-connect") || url.startsWith("/v1/ad-grants/google-oauth/callback")
     ) return;
 
     const header = req.headers.authorization;

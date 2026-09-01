@@ -50,7 +50,10 @@ export async function startGoogleConnectFlow(handlers: ConnectFlowHandlers): Pro
   };
 
   try {
-    const context = await browser.newContext();
+    // Fixed viewport matching the screencast's max dimensions — the client
+    // scales its display to this same size, so pointer coordinates it sends
+    // back map onto the real page without any per-client negotiation.
+    const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
     const page = await context.newPage();
     stopScreencast = await startScreencast(page, (frame) => handlers.onFrame(frame.data));
     await page
