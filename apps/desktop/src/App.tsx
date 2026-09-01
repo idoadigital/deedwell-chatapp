@@ -337,6 +337,7 @@ export default function App() {
           {profileMenu && (
             <div className="menu" style={{ left: 50, bottom: 0 }}>
               <button onClick={() => { setProfileMenu(false); setOverlay("orgs"); }}>Switch workspace</button>
+              <button onClick={() => { setProfileMenu(false); setSettingsTab("usage"); setOverlay("settings"); }}>Settings</button>
               {isPlatformAdmin && (
                 <button onClick={() => { setProfileMenu(false); setOverlay("platform-admin"); }}>Platform Admin</button>
               )}
