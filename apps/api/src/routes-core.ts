@@ -334,6 +334,21 @@ export function registerCoreRoutes(app: FastifyInstance, ctx: AppContext): void 
     return reply.status(201).send(result);
   });
 
+  // Org-wide reference material, unambiguously "not tied to any one
+  // application" (project_id IS NULL) — the Knowledge page's list. Distinct
+  // from /files/library below, which answers a different question ("what
+  // could I link to *this* project") and is driven by a projectId query.
+  app.get("/v1/orgs/:orgId/knowledge", async (req) => {
+    ctx.requireRole(req, "viewer");
+    const { rows } = await ctx.inOrg(req, (client) =>
+      client.query(
+        `SELECT id, filename, mime, size_bytes, created_at FROM files
+         WHERE project_id IS NULL ORDER BY created_at DESC`
+      )
+    );
+    return { files: rows };
+  });
+
   app.get("/v1/orgs/:orgId/files/library", async (req) => {
     ctx.requireRole(req, "viewer");
     const { projectId } = req.query as { projectId?: string };
