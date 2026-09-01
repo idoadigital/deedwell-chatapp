@@ -61,7 +61,7 @@ async function recordModelUsage(ctx: Ctx, agentKey: string, tokens: number): Pro
   await ctx.client.query(
     `INSERT INTO usage_ledger (id, tenant_id, run_id, kind, quantity, metadata)
      VALUES ($1,$2,$3,'model_tokens',$4,$5)`,
-    [uuidv7(), ctx.tenantId, ctx.runId, tokens, JSON.stringify({ agentKey })]
+    [uuidv7(), ctx.tenantId, ctx.runId, tokens, JSON.stringify({ agentKey, source: "workflow" })]
   );
 }
 

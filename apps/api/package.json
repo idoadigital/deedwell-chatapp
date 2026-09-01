@@ -6,6 +6,7 @@
   "type": "module",
   "dependencies": {
     "@deedwell/adgrants-domain": "workspace:*",
+    "@deedwell/billing-domain": "workspace:*",
     "@deedwell/browser-automation": "workspace:*",
     "@deedwell/browser-research": "workspace:*"
   }

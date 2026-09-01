@@ -3,6 +3,7 @@ import type { FastifyInstance } from "fastify";
 import { generateApiKey, encryptSecret } from "@deedwell/auth";
 import { uuidv7 } from "@deedwell/database";
 import { CreateApiKeyInput, CreateWebhookInput } from "@deedwell/schemas";
+import { clearStripeConfig, getStripeConfigStatus, saveStripeConfig } from "@deedwell/billing-domain";
 import { HttpError, type AppContext } from "./app.js";
 import { deliverWebhooks } from "./webhooks.js";
 
@@ -105,6 +106,34 @@ export function registerAdminRoutes(app: FastifyInstance, ctx: AppContext): void
       [uuidv7(), id]
     );
     await deliverWebhooks(ctx.deps.appPool, delivery.rows.map((r: { id: string }) => r.id));
+    return { ok: true };
+  });
+
+  // ---- Payments: the one platform-wide Stripe account, not per-org -------
+
+  app.get("/v1/admin/billing/stripe-config", async (req) => {
+    ctx.requirePlatformAdmin(req);
+    return getStripeConfigStatus(ctx.deps.appPool);
+  });
+
+  app.post("/v1/admin/billing/stripe-config", async (req, reply) => {
+    ctx.requirePlatformAdmin(req);
+    const { secretKey, webhookSecret } = req.body as { secretKey?: string; webhookSecret?: string };
+    if (!secretKey?.startsWith("sk_")) throw new HttpError(400, "That doesn't look like a Stripe secret key (should start with sk_)");
+    if (!webhookSecret?.startsWith("whsec_")) throw new HttpError(400, "That doesn't look like a Stripe webhook signing secret (should start with whsec_)");
+    const result = await saveStripeConfig(ctx.deps.appPool, { secretKey, webhookSecret, setBy: req.userId! });
+    // Platform-level audit trail: no tenant_id to attach this to, so it's
+    // logged rather than written through the tenant-scoped audit() helper —
+    // same as api_key.created/webhook.created above.
+    req.log.info({ at: "stripe_config.updated", secretKeyLast4: result.secretKeyLast4, setBy: req.userId });
+    return reply.status(201).send(result);
+  });
+
+  app.delete("/v1/admin/billing/stripe-config", async (req) => {
+    ctx.requirePlatformAdmin(req);
+    const cleared = await clearStripeConfig(ctx.deps.appPool);
+    if (!cleared) throw new HttpError(404, "No Stripe configuration to remove");
+    req.log.info({ at: "stripe_config.removed", removedBy: req.userId });
     return { ok: true };
   });
 }

@@ -219,6 +219,86 @@ function WebhooksCard() {
   );
 }
 
+function StripeConfigCard() {
+  const [status, setStatus] = useState<api.StripeConfigStatus | null>(null);
+  const [secretKey, setSecretKey] = useState("");
+  const [webhookSecret, setWebhookSecret] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = useCallback(() => {
+    api.getStripeConfigStatus().then(setStatus).catch((err) => setError(err instanceof Error ? err.message : "Failed to load"));
+  }, []);
+  useEffect(refresh, [refresh]);
+
+  async function save() {
+    if (!secretKey.trim() || !webhookSecret.trim()) return;
+    setSaving(true);
+    setError(null);
+    try {
+      await api.saveStripeConfig(secretKey.trim(), webhookSecret.trim());
+      setSecretKey("");
+      setWebhookSecret("");
+      refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not save Stripe configuration");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function remove() {
+    try {
+      await api.removeStripeConfig();
+      refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not remove Stripe configuration");
+    }
+  }
+
+  return (
+    <div className="card">
+      <h2>Payments</h2>
+      <p className="muted">
+        One Stripe account for the whole platform — collects prepaid token-credit top-ups across
+        every organization. Not something a nonprofit ever configures itself.
+      </p>
+      {status?.configured && (
+        <div className="row" style={{ justifyContent: "space-between", alignItems: "center", padding: "8px 0" }}>
+          <span>Configured · key ending •••{status.secretKeyLast4}</span>
+          <button className="ghost" onClick={remove}>
+            <Icon name="trash" size={14} /> Remove
+          </button>
+        </div>
+      )}
+      <div className="field" style={{ marginTop: 10 }}>
+        <input
+          type="password"
+          placeholder="Secret key (sk_live_… or sk_test_…)"
+          value={secretKey}
+          onChange={(e) => setSecretKey(e.target.value)}
+        />
+        <input
+          type="password"
+          placeholder="Webhook signing secret (whsec_…)"
+          value={webhookSecret}
+          onChange={(e) => setWebhookSecret(e.target.value)}
+          style={{ marginTop: 8 }}
+        />
+        <button
+          className="primary"
+          disabled={saving || !secretKey.trim() || !webhookSecret.trim()}
+          onClick={save}
+          style={{ marginTop: 10, width: "fit-content" }}
+        >
+          <Icon name="card" size={14} /> {saving ? "Saving…" : status?.configured ? "Replace keys" : "Save keys"}
+        </button>
+      </div>
+      {error && <p className="error-text" role="alert">{error}</p>}
+    </div>
+  );
+}
+
 export function PlatformAdminView({ onBack }: { onBack: () => void }) {
   return (
     <>
@@ -234,6 +314,7 @@ export function PlatformAdminView({ onBack }: { onBack: () => void }) {
         </p>
         <ApiKeysCard />
         <WebhooksCard />
+        <StripeConfigCard />
       </div>
     </>
   );

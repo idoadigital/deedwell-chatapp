@@ -454,3 +454,61 @@ export const createWebhook = (url: string, eventTypes: string[], description?: s
 export const deleteWebhook = (id: string) => call<{ ok: true }>("DELETE", `/v1/admin/webhooks/${id}`);
 
 export const testWebhook = (id: string) => call<{ ok: true }>("POST", `/v1/admin/webhooks/${id}/test`);
+
+// ---- Platform admin: Stripe (routes-admin.ts) ----------------------------
+// One platform-wide Stripe account, not per-org — same "no :orgId" reasoning
+// as the API keys/webhooks above.
+
+export interface StripeConfigStatus {
+  configured: boolean;
+  secretKeyLast4: string | null;
+  updatedAt: string | null;
+}
+
+export const getStripeConfigStatus = () => call<StripeConfigStatus>("GET", "/v1/admin/billing/stripe-config");
+
+export const saveStripeConfig = (secretKey: string, webhookSecret: string) =>
+  call<{ ok: true; secretKeyLast4: string }>("POST", "/v1/admin/billing/stripe-config", { secretKey, webhookSecret });
+
+export const removeStripeConfig = () => call<{ ok: true }>("DELETE", "/v1/admin/billing/stripe-config");
+
+// ---- Settings: usage (routes-core.ts) ------------------------------------
+
+export interface UsageSummary {
+  totals: { thisMonth: { modelTokens: number; steps: number }; allTime: { modelTokens: number; steps: number } };
+  bySource: { chat: { thisMonth: number; allTime: number }; workflow: { thisMonth: number; allTime: number } };
+}
+
+export const getUsageSummary = (orgId: string) => call<UsageSummary>("GET", `/v1/orgs/${orgId}/usage/summary`);
+
+// ---- Settings: billing (routes-billing.ts) -------------------------------
+
+export interface TokenPackage {
+  id: string;
+  label: string;
+  priceCents: number;
+  tokens: number;
+}
+
+export interface BillingTransactionRow {
+  id: string;
+  packageId: string;
+  tokenAmount: number;
+  amountCents: number;
+  currency: string;
+  status: string;
+  createdAt: string;
+  completedAt: string | null;
+}
+
+export const getBillingBalance = (orgId: string) =>
+  call<{ tokenBalance: number; configured: boolean }>("GET", `/v1/orgs/${orgId}/billing/balance`);
+
+export const getBillingPackages = (orgId: string) =>
+  call<{ packages: TokenPackage[] }>("GET", `/v1/orgs/${orgId}/billing/packages`);
+
+export const getBillingTransactions = (orgId: string) =>
+  call<{ transactions: BillingTransactionRow[] }>("GET", `/v1/orgs/${orgId}/billing/transactions`);
+
+export const startCheckout = (orgId: string, packageId: string) =>
+  call<{ url: string }>("POST", `/v1/orgs/${orgId}/billing/checkout`, { packageId });

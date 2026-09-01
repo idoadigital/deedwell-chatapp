@@ -17,6 +17,7 @@ export default defineConfig({
       "@deedwell/website-domain": pkg("website-domain"),
       "@deedwell/adgrants-domain": pkg("adgrants-domain"),
       "@deedwell/browser-automation": pkg("browser-automation"),
+      "@deedwell/billing-domain": pkg("billing-domain"),
       "@deedwell/observability": pkg("observability"),
     },
   },

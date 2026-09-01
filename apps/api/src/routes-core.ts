@@ -227,6 +227,39 @@ export function registerCoreRoutes(app: FastifyInstance, ctx: AppContext): void 
     return reply.status(201).send({ projectId });
   });
 
+  // ---- usage summary (Settings -> Usage) -----------------------------------
+
+  app.get("/v1/orgs/:orgId/usage/summary", async (req) => {
+    ctx.requireRole(req, "member");
+    const { rows } = await ctx.inOrg(req, (client) =>
+      client.query(
+        `SELECT coalesce(metadata->>'source', 'workflow') AS source, kind,
+                sum(quantity) FILTER (WHERE created_at >= date_trunc('month', now())) AS this_month,
+                sum(quantity) AS all_time
+         FROM usage_ledger WHERE tenant_id = $1
+         GROUP BY coalesce(metadata->>'source', 'workflow'), kind`,
+        [req.orgId]
+      )
+    );
+    const totals = { thisMonth: { modelTokens: 0, steps: 0 }, allTime: { modelTokens: 0, steps: 0 } };
+    const bySource = { chat: { thisMonth: 0, allTime: 0 }, workflow: { thisMonth: 0, allTime: 0 } };
+    for (const row of rows) {
+      const thisMonth = Number(row.this_month ?? 0);
+      const allTime = Number(row.all_time ?? 0);
+      if (row.kind === "model_tokens") {
+        totals.thisMonth.modelTokens += thisMonth;
+        totals.allTime.modelTokens += allTime;
+        const source = row.source === "chat" ? "chat" : "workflow";
+        bySource[source].thisMonth += thisMonth;
+        bySource[source].allTime += allTime;
+      } else if (row.kind === "steps") {
+        totals.thisMonth.steps += thisMonth;
+        totals.allTime.steps += allTime;
+      }
+    }
+    return { totals, bySource };
+  });
+
   app.get("/v1/orgs/:orgId/projects", async (req) => {
     ctx.requireRole(req, "viewer");
     const { rows } = await ctx.inOrg(req, (client) =>

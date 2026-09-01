@@ -21,10 +21,11 @@ import { WebsitesView } from "./views/Websites";
 import { HuddleView } from "./views/Huddle";
 import { ApprovalsView } from "./views/Approvals";
 import { PlatformAdminView } from "./views/PlatformAdmin";
+import { SettingsView } from "./views/Settings";
 
 const ORG_KEY = "deedwell.org";
 const SEEN_KEY = "deedwell.seen";
-type Overlay = "grants" | "passport" | "website" | "approvals" | "orgs" | "platform-admin" | null;
+type Overlay = "grants" | "passport" | "website" | "approvals" | "orgs" | "platform-admin" | "settings" | null;
 
 const CHANNEL_DESCRIPTIONS: Record<string, string> = {
   general: "Team-wide conversation",
@@ -48,7 +49,13 @@ export default function App() {
   const [approvals, setApprovals] = useState<Approval[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [sidebarFilter, setSidebarFilter] = useState("");
-  const [overlay, setOverlay] = useState<Overlay>(null);
+  // Stripe's Checkout success/cancel redirect lands back on the plain
+  // origin with a query string (apps/desktop has no router) — computed as
+  // an initializer, not set from an effect, so opening straight to
+  // Settings -> Billing on that reload doesn't cascade an extra render.
+  const [overlay, setOverlay] = useState<Overlay>(() => (
+    new URLSearchParams(window.location.search).get("settings") === "billing" ? "settings" : null
+  ));
   const [isPlatformAdmin, setIsPlatformAdmin] = useState(false);
   const [wsMenu, setWsMenu] = useState(false);
   const [profileMenu, setProfileMenu] = useState(false);
@@ -63,6 +70,18 @@ export default function App() {
     return saved >= 320 ? saved : 460;
   });
   const [panelMax, setPanelMax] = useState(false);
+  const [settingsTab, setSettingsTab] = useState<"usage" | "billing">(() => (
+    new URLSearchParams(window.location.search).get("settings") === "billing" ? "billing" : "usage"
+  ));
+  const [billingBanner, setBillingBanner] = useState<"success" | "cancel" | null>(() => {
+    const b = new URLSearchParams(window.location.search).get("billing");
+    return b === "success" || b === "cancel" ? b : null;
+  });
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).has("settings")) {
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+  }, []);
   useEffect(() => { localStorage.setItem("deedwell.panelW", String(panelWidth)); }, [panelWidth]);
   useEffect(() => {
     if (!panelMax) return;
@@ -344,6 +363,7 @@ export default function App() {
                 <button onClick={() => { setWsMenu(false); setOverlay("grants"); }}>Grants overview</button>
                 <button onClick={() => { setWsMenu(false); setOverlay("website"); }}>Website overview</button>
                 <button onClick={() => { setWsMenu(false); setOverlay("approvals"); }}>Approvals</button>
+                <button onClick={() => { setWsMenu(false); setSettingsTab("usage"); setOverlay("settings"); }}>Settings</button>
                 <div className="sep" />
                 <button onClick={() => setWsMenu(false)}>Members ({members.length})</button>
               </div>
@@ -569,7 +589,7 @@ export default function App() {
         <div className="overlay" onClick={(e) => { if (e.target === e.currentTarget) setOverlay(null); }}>
           <div className="overlay-panel">
             <div className="overlay-head">
-              <strong>{overlay === "platform-admin" ? "Platform Admin" : org.name}</strong>
+              <strong>{overlay === "platform-admin" ? "Platform Admin" : overlay === "settings" ? "Settings" : org.name}</strong>
               <button className="icon-btn" style={{ marginLeft: "auto" }} aria-label="Close" onClick={() => setOverlay(null)}>
                 <Icon name="x" size={16} />
               </button>
@@ -594,6 +614,15 @@ export default function App() {
                 />
               )}
               {overlay === "platform-admin" && <PlatformAdminView onBack={() => setOverlay(null)} />}
+              {overlay === "settings" && (
+                <SettingsView
+                  org={org}
+                  tab={settingsTab}
+                  onTabChange={setSettingsTab}
+                  billingBanner={billingBanner}
+                  onDismissBanner={() => setBillingBanner(null)}
+                />
+              )}
             </div>
           </div>
         </div>
