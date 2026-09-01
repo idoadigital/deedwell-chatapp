@@ -1,5 +1,7 @@
 import type { FastifyInstance } from "fastify";
-import type { AppContext } from "./app.js";
+import { enqueueWebhookEvent } from "@deedwell/database";
+import { CompleteWebsiteRequestInput } from "@deedwell/schemas";
+import { HttpError, type AppContext } from "./app.js";
 
 /** Funding Passport facts that are safe to hand to the platform API — the
  *  ones a website build actually draws on. Mirrors WEBSITE_ESSENTIAL_FACTS
@@ -22,8 +24,8 @@ export function registerPublicRoutes(app: FastifyInstance, ctx: AppContext): voi
     const { limit: limitRaw, cursor } = req.query as { limit?: string; cursor?: string };
     const limit = Math.min(MAX_LIMIT, Math.max(1, Number(limitRaw) || DEFAULT_LIMIT));
     const { rows } = await ctx.deps.adminPool.query(
-      `SELECT s.id, s.slug, s.name, s.status, s.project_id, s.tenant_id AS org_id,
-              o.name AS org_name, s.created_at, s.updated_at
+      `SELECT s.id, s.slug, s.name, s.status, s.source, s.external_build_url,
+              s.project_id, s.tenant_id AS org_id, o.name AS org_name, s.created_at, s.updated_at
        FROM sites s JOIN organizations o ON o.id = s.tenant_id
        WHERE ($1::timestamptz IS NULL OR s.created_at < $1)
        ORDER BY s.created_at DESC
@@ -38,8 +40,8 @@ export function registerPublicRoutes(app: FastifyInstance, ctx: AppContext): voi
     ctx.requireApiScope(req, "websites:read");
     const { siteId } = req.params as { siteId: string };
     const site = await ctx.deps.adminPool.query(
-      `SELECT s.id, s.slug, s.name, s.status, s.theme, s.tenant_id AS org_id,
-              o.name AS org_name, s.created_at, s.updated_at
+      `SELECT s.id, s.slug, s.name, s.status, s.source, s.external_build_url, s.theme,
+              s.tenant_id AS org_id, o.name AS org_name, s.created_at, s.updated_at
        FROM sites s JOIN organizations o ON o.id = s.tenant_id
        WHERE s.id = $1`,
       [siteId]
@@ -66,6 +68,8 @@ export function registerPublicRoutes(app: FastifyInstance, ctx: AppContext): voi
         slug: siteRow.slug,
         name: siteRow.name,
         status: siteRow.status,
+        source: siteRow.source,
+        externalBuildUrl: siteRow.external_build_url,
         theme: siteRow.theme,
         orgId: siteRow.org_id,
         orgName: siteRow.org_name,
@@ -76,6 +80,28 @@ export function registerPublicRoutes(app: FastifyInstance, ctx: AppContext): voi
         updatedAt: siteRow.updated_at,
       },
     };
+  });
+
+  app.post("/v1/public/websites/:siteId/complete", async (req) => {
+    ctx.requireApiScope(req, "websites:write");
+    const { siteId } = req.params as { siteId: string };
+    const input = CompleteWebsiteRequestInput.parse(req.body);
+    const site = await ctx.deps.adminPool.query("SELECT tenant_id, source FROM sites WHERE id = $1", [siteId]);
+    if (!site.rows[0]) throw new HttpError(404, "Website not found");
+    if (site.rows[0].source !== "external_partner") {
+      throw new HttpError(409, "This site isn't part of the external-partner pipeline");
+    }
+    await ctx.deps.adminPool.query(
+      `UPDATE sites SET external_build_url = $2, status = 'published' WHERE id = $1`,
+      [siteId, input.url]
+    );
+    // No transaction is in play here (this writes through the untenanted
+    // admin pool, not a checked-out client) — enqueueWebhookEvent accepts
+    // anything query-capable, so the pool itself works directly.
+    await enqueueWebhookEvent(ctx.deps.adminPool, "website.published", {
+      orgId: site.rows[0].tenant_id, siteId, url: input.url,
+    });
+    return { ok: true };
   });
 
   app.get("/v1/public/websites/:siteId/submissions", async (req) => {

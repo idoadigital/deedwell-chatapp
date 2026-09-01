@@ -183,7 +183,11 @@ export async function audit(client: PoolClient, input: AuditInput): Promise<void
 // ---------------------------------------------------------------------------
 
 export async function enqueueWebhookEvent(
-  client: PoolClient,
+  // Accepts anything query-capable — a transaction's PoolClient (the usual
+  // case: enqueue alongside the state change that caused it) or a bare Pool
+  // (routes-public.ts's /complete callback, which has no transaction of its
+  // own since it writes through the untenanted admin pool).
+  client: Pick<PoolClient, "query">,
   eventType: string,
   payload: Record<string, unknown>
 ): Promise<string[]> {

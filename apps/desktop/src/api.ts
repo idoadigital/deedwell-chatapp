@@ -441,8 +441,8 @@ export interface WebhookRow {
 
 export const listApiKeys = () => call<{ apiKeys: ApiKeyRow[] }>("GET", "/v1/admin/api-keys");
 
-export const createApiKey = (name: string) =>
-  call<{ id: string; key: string }>("POST", "/v1/admin/api-keys", { name });
+export const createApiKey = (name: string, scopes: string[]) =>
+  call<{ id: string; key: string }>("POST", "/v1/admin/api-keys", { name, scopes });
 
 export const revokeApiKey = (id: string) => call<{ ok: true }>("DELETE", `/v1/admin/api-keys/${id}`);
 

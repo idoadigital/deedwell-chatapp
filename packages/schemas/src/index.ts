@@ -770,7 +770,7 @@ export const RecordOutcomeInput = z.object({
 // Developer platform: API keys & webhooks
 // ---------------------------------------------------------------------------
 
-export const API_KEY_SCOPES = ["websites:read"] as const;
+export const API_KEY_SCOPES = ["websites:read", "websites:write"] as const;
 
 export const CreateApiKeyInput = z.object({
   name: z.string().min(1).max(120),
@@ -783,4 +783,39 @@ export const CreateWebhookInput = z.object({
   url: z.string().url().max(500),
   description: z.string().max(300).nullable().optional(),
   eventTypes: z.array(z.enum(WEBHOOK_EVENT_TYPES)).min(1),
+});
+
+// ---------------------------------------------------------------------------
+// External-partner website requests: deedwell.org's intake flow collects
+// answers for a third-party AI website builder to read via the public API
+// and build from — it never starts Deedwell's own internal build workflow.
+// ---------------------------------------------------------------------------
+
+export const CreateWebsiteRequestInput = z.object({
+  siteName: z.string().min(2).max(120),
+  slug: z
+    .string()
+    .min(3)
+    .max(50)
+    .regex(/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/)
+    .refine((s) => !RESERVED_SITE_SLUGS.has(s), { message: "This name is reserved" }),
+});
+
+export const SubmitIntakeInput = z.object({
+  answers: z
+    .array(
+      z.object({
+        key: z.string().min(1).max(120),
+        value: z.union([
+          z.string().min(1).max(4000),
+          z.array(z.string().min(1).max(200)).max(20),
+          z.boolean(),
+        ]),
+      }),
+    )
+    .min(1),
+});
+
+export const CompleteWebsiteRequestInput = z.object({
+  url: z.string().url().max(500),
 });

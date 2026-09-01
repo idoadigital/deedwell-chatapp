@@ -4,6 +4,7 @@ import type { ApiKeyRow, WebhookRow } from "../api";
 import { Icon } from "../components/Icon";
 
 const WEBHOOK_EVENT_TYPES = ["website.created", "website.published"];
+const API_KEY_SCOPES = ["websites:read", "websites:write"];
 
 function CopyOnce({ label, value }: { label: string; value: string }) {
   const [copied, setCopied] = useState(false);
@@ -32,6 +33,7 @@ function CopyOnce({ label, value }: { label: string; value: string }) {
 function ApiKeysCard() {
   const [keys, setKeys] = useState<ApiKeyRow[] | null>(null);
   const [name, setName] = useState("");
+  const [scopes, setScopes] = useState<string[]>(["websites:read"]);
   const [creating, setCreating] = useState(false);
   const [newKey, setNewKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -41,12 +43,15 @@ function ApiKeysCard() {
   }, []);
   useEffect(refresh, [refresh]);
 
+  const toggleScope = (value: string) =>
+    setScopes((prev) => (prev.includes(value) ? prev.filter((v) => v !== value) : [...prev, value]));
+
   async function create() {
-    if (!name.trim()) return;
+    if (!name.trim() || !scopes.length) return;
     setCreating(true);
     setError(null);
     try {
-      const result = await api.createApiKey(name.trim());
+      const result = await api.createApiKey(name.trim(), scopes);
       setNewKey(result.key);
       setName("");
       refresh();
@@ -70,18 +75,26 @@ function ApiKeysCard() {
     <div className="card">
       <h2>API keys</h2>
       <p className="muted">
-        Read-only, platform-wide keys for the website-building integration — not something a
-        nonprofit ever needs of its own. Access to every organization’s site data.
+        Platform-wide keys for the website-building integration — not something a nonprofit
+        ever needs of its own. <code>websites:read</code> lists/reads every organization’s site
+        data; <code>websites:write</code> is required to report a finished site back
+        (POST .../complete).
       </p>
       {newKey && <CopyOnce label="New API key" value={newKey} />}
-      <div className="row" style={{ marginTop: 10 }}>
+      <div className="field" style={{ marginTop: 10 }}>
         <input
           placeholder="Key name, e.g. “Website builder integration”"
           value={name}
           onChange={(e) => setName(e.target.value)}
-          style={{ flex: 1 }}
         />
-        <button className="primary" disabled={creating || !name.trim()} onClick={create}>
+        <div className="row" style={{ gap: 14, marginTop: 8 }}>
+          {API_KEY_SCOPES.map((scope) => (
+            <label key={scope} className="faint" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <input type="checkbox" checked={scopes.includes(scope)} onChange={() => toggleScope(scope)} /> {scope}
+            </label>
+          ))}
+        </div>
+        <button className="primary" disabled={creating || !name.trim() || !scopes.length} onClick={create} style={{ marginTop: 10, width: "fit-content" }}>
           <Icon name="plus" size={14} /> {creating ? "Creating…" : "Create key"}
         </button>
       </div>
@@ -94,7 +107,7 @@ function ApiKeysCard() {
                 <strong>{key.name}</strong>
                 {key.revoked_at && <span className="faint"> (revoked)</span>}
                 <br />
-                <span className="faint">{key.key_prefix}…</span>
+                <span className="faint">{key.key_prefix}… · {key.scopes.join(", ")}</span>
               </span>
               {!key.revoked_at && (
                 <button className="ghost" onClick={() => revoke(key.id)}>
