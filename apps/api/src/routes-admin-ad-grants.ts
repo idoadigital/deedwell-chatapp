@@ -71,4 +71,36 @@ export function registerAdminAdGrantsRoutes(app: FastifyInstance, ctx: AppContex
     );
     return reply.status(201).send({ token, wsPath: `/v1/ad-grants/google-connect?token=${token}` });
   });
+
+  // Step-by-step visibility into one org's run — "what is happening" —
+  // same assembly pattern as the per-org GET .../runs/:runId (routes-grant.ts),
+  // generalized cross-tenant.
+  app.get("/v1/admin/ad-grants/:runId", async (req) => {
+    ctx.requirePlatformAdmin(req);
+    const { runId } = req.params as { runId: string };
+    const run = await ctx.deps.adminPool.query(
+      `SELECT id, status, current_step, steps_used, step_budget, last_error,
+              state->'waiting' AS waiting, created_at, updated_at
+       FROM workflow_runs WHERE id = $1`,
+      [runId]
+    );
+    if (!run.rows[0]) throw new HttpError(404, "Run not found");
+    const [steps, approvals, artifacts] = await Promise.all([
+      ctx.deps.adminPool.query(
+        `SELECT seq, step, attempt, status, error, duration_ms, created_at
+         FROM workflow_steps WHERE run_id = $1 ORDER BY seq`,
+        [runId]
+      ),
+      ctx.deps.adminPool.query(
+        `SELECT id, kind, payload, status, decided_by, decided_at, note, created_at
+         FROM approvals WHERE run_id = $1 ORDER BY created_at DESC`,
+        [runId]
+      ),
+      ctx.deps.adminPool.query(
+        `SELECT id, type, title, current_version, updated_at FROM artifacts WHERE run_id = $1 ORDER BY updated_at DESC`,
+        [runId]
+      ),
+    ]);
+    return { run: run.rows[0], steps: steps.rows, approvals: approvals.rows, artifacts: artifacts.rows };
+  });
 }
