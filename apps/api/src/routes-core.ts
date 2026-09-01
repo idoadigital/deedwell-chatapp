@@ -73,16 +73,39 @@ export function registerCoreRoutes(app: FastifyInstance, ctx: AppContext): void 
   app.post("/v1/auth/login", async (req, reply) => {
     const input = LoginInput.parse(req.body);
     const { rows } = await deps.appPool.query(
-      "SELECT id, password_hash FROM users WHERE email = $1",
+      "SELECT id, password_hash, suspended_at, must_change_password FROM users WHERE email = $1",
       [input.email]
     );
     // Same error for unknown email and wrong password.
     if (!rows[0] || !(await verifyPassword(input.password, rows[0].password_hash))) {
       throw new HttpError(401, "Invalid email or password");
     }
+    if (rows[0].suspended_at) throw new HttpError(403, "This account has been suspended");
     const token = await createSession(deps.appPool, rows[0].id);
     setSessionCookie(reply, token);
-    return { userId: rows[0].id, token };
+    return { userId: rows[0].id, token, mustChangePassword: rows[0].must_change_password };
+  });
+
+  // Deliberately NOT under /v1/auth/ — that whole prefix is exempted from
+  // session resolution in app.ts's preHandler (so login/register can run
+  // before any session exists), which would leave req.userId unset here.
+  // A temp password from an admin still logs in via /v1/auth/login above;
+  // this route is what forces the change afterward, gated by that session.
+  app.post("/v1/me/change-password", async (req) => {
+    if (!req.userId) throw new HttpError(401, "Authentication required");
+    const { currentPassword, newPassword } = req.body as { currentPassword?: string; newPassword?: string };
+    if (!currentPassword || !newPassword || newPassword.length < 8) {
+      throw new HttpError(400, "A new password of at least 8 characters is required");
+    }
+    const { rows } = await deps.appPool.query("SELECT password_hash FROM users WHERE id = $1", [req.userId]);
+    if (!rows[0] || !(await verifyPassword(currentPassword, rows[0].password_hash))) {
+      throw new HttpError(401, "Current password is incorrect");
+    }
+    await deps.appPool.query(
+      "UPDATE users SET password_hash = $2, must_change_password = false WHERE id = $1",
+      [req.userId, await hashPassword(newPassword)]
+    );
+    return { ok: true };
   });
 
   app.post("/v1/auth/logout", async (req, reply) => {
