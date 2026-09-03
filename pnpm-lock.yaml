@@ -90,6 +90,12 @@ importers:
       '@deedwell/browser-research':
         specifier: workspace:*
         version: link:../../packages/browser-research
+      '@deedwell/connectors':
+        specifier: workspace:*
+        version: link:../../packages/connectors
+      '@deedwell/content-domain':
+        specifier: workspace:*
+        version: link:../../packages/content-domain
 
   apps/desktop:
     dependencies:
@@ -163,6 +169,30 @@ importers:
       playwright:
         specifier: ^1.49.0
         version: 1.62.1
+
+  packages/connectors:
+    dependencies:
+      '@deedwell/auth':
+        specifier: workspace:*
+        version: link:../auth
+      '@deedwell/database':
+        specifier: workspace:*
+        version: link:../database
+
+  packages/content-domain:
+    dependencies:
+      '@deedwell/agent-runtime':
+        specifier: workspace:*
+        version: link:../agent-runtime
+      '@deedwell/auth':
+        specifier: workspace:*
+        version: link:../auth
+      '@deedwell/database':
+        specifier: workspace:*
+        version: link:../database
+      '@deedwell/schemas':
+        specifier: workspace:*
+        version: link:../schemas
 
   packages/database: {}
 
