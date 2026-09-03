@@ -43,6 +43,89 @@ export function registerAdminAnalyticsRoutes(app: FastifyInstance, ctx: AppConte
     };
   });
 
+  /* Operational health.
+   *
+   * The overview above answers "how is the business doing". This answers "is
+   * anything broken or waiting on us", which is what an admin opens the page
+   * for. Every figure is a query against tables that already exist — nothing
+   * here needs new instrumentation, and nothing is estimated. Site traffic is
+   * still absent for the reason given at the top of this file. */
+  app.get("/v1/admin/analytics/health", async (req) => {
+    ctx.requirePlatformAdmin(req);
+    const pool = ctx.deps.adminPool;
+    const [runs, failures, approvals, support, sites, deletion, topOrgs, active, content] =
+      await Promise.all([
+        pool.query(
+          `SELECT status, count(*)::int AS n FROM workflow_runs GROUP BY status`
+        ),
+        pool.query(
+          `SELECT r.id, r.definition, r.last_error, r.updated_at, o.name AS org_name, p.name AS project_name
+           FROM workflow_runs r
+           JOIN organizations o ON o.id = r.tenant_id
+           LEFT JOIN projects p ON p.id = r.project_id
+           WHERE r.status = 'failed' ORDER BY r.updated_at DESC LIMIT 6`
+        ),
+        pool.query(
+          `SELECT count(*)::int AS pending,
+                  coalesce(max(extract(epoch FROM now() - created_at)) / 3600, 0) AS oldest_hours
+           FROM approvals WHERE status = 'pending'`
+        ),
+        // A thread is waiting on us when its newest message came from the org.
+        pool.query(
+          `SELECT count(*)::int AS waiting,
+                  coalesce(max(extract(epoch FROM now() - last_at)) / 3600, 0) AS oldest_hours
+           FROM (
+             SELECT m.thread_id, max(m.created_at) AS last_at,
+                    (array_agg(m.author_kind ORDER BY m.created_at DESC))[1] AS last_kind
+             FROM support_messages m GROUP BY m.thread_id
+           ) t WHERE t.last_kind <> 'platform_admin'`
+        ),
+        pool.query(
+          `SELECT count(*)::int AS total,
+                  count(*) FILTER (WHERE external_build_url IS NOT NULL OR active_release_id IS NOT NULL)::int AS live
+           FROM sites`
+        ),
+        pool.query(
+          `SELECT count(*)::int AS pending FROM data_deletion_requests WHERE status <> 'completed'`
+        ),
+        pool.query(
+          `SELECT o.name AS org_name, sum(u.quantity)::bigint AS tokens
+           FROM usage_ledger u JOIN organizations o ON o.id = u.tenant_id
+           WHERE u.kind = 'model_tokens' AND u.created_at >= date_trunc('month', now())
+           GROUP BY o.name ORDER BY tokens DESC LIMIT 5`
+        ),
+        pool.query(
+          `SELECT count(DISTINCT user_id) FILTER (WHERE created_at >= now() - interval '24 hours')::int AS d1,
+                  count(DISTINCT user_id) FILTER (WHERE created_at >= now() - interval '7 days')::int AS d7
+           FROM sessions WHERE revoked_at IS NULL`
+        ),
+        pool.query(
+          `SELECT status, count(*)::int AS n FROM content_projects GROUP BY status`
+        ),
+      ]);
+
+    const byStatus = (rows: Array<{ status: string; n: number }>) =>
+      Object.fromEntries(rows.map((r) => [r.status, r.n]));
+
+    return {
+      runs: byStatus(runs.rows as never),
+      recentFailures: failures.rows,
+      approvals: {
+        pending: approvals.rows[0].pending,
+        oldestHours: Math.round(Number(approvals.rows[0].oldest_hours)),
+      },
+      support: {
+        waiting: support.rows[0].waiting,
+        oldestHours: Math.round(Number(support.rows[0].oldest_hours)),
+      },
+      sites: { total: sites.rows[0].total, live: sites.rows[0].live },
+      deletionRequests: deletion.rows[0].pending,
+      topOrgsByTokens: topOrgs.rows.map((r) => ({ orgName: r.org_name, tokens: Number(r.tokens) })),
+      activeUsers: { last24h: active.rows[0].d1, last7d: active.rows[0].d7 },
+      content: byStatus(content.rows as never),
+    };
+  });
+
   app.get("/v1/admin/analytics/transactions", async (req) => {
     ctx.requirePlatformAdmin(req);
     const { rows } = await ctx.deps.adminPool.query(
