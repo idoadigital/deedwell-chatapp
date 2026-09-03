@@ -108,6 +108,22 @@ export function registerCoreRoutes(app: FastifyInstance, ctx: AppContext): void 
     return { ok: true };
   });
 
+  /* The only profile field a person owns here. Email is the login identity and
+   * changing it would need a re-verification flow this platform does not have,
+   * so it is deliberately not editable — the settings page says as much rather
+   * than offering an input that quietly does nothing. */
+  app.patch("/v1/me", async (req) => {
+    if (!req.userId) throw new HttpError(401, "Authentication required");
+    const { displayName } = req.body as { displayName?: unknown };
+    if (typeof displayName !== "string") throw new HttpError(400, "A display name is required");
+    const name = displayName.trim();
+    if (name.length < 1 || name.length > 120) {
+      throw new HttpError(400, "Your name must be between 1 and 120 characters");
+    }
+    await deps.appPool.query("UPDATE users SET display_name = $2 WHERE id = $1", [req.userId, name]);
+    return { ok: true, displayName: name };
+  });
+
   app.post("/v1/auth/logout", async (req, reply) => {
     const header = req.headers.authorization;
     const altToken = req.headers["x-deedwell-token"];

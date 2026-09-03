@@ -23,6 +23,8 @@
       "@deedwell/workflows": ["packages/workflows/src/index.ts"],
       "@deedwell/grant-domain": ["packages/grant-domain/src/index.ts"],
       "@deedwell/website-domain": ["packages/website-domain/src/index.ts"],
+      "@deedwell/content-domain": ["packages/content-domain/src/index.ts"],
+      "@deedwell/connectors": ["packages/connectors/src/index.ts"],
       "@deedwell/observability": ["packages/observability/src/index.ts"]
     }
   },

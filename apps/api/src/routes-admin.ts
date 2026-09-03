@@ -1,3 +1,4 @@
+import { clearProviderKey, getProviderKeyStatus, saveProviderKey } from "@deedwell/content-domain";
 import { randomBytes } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { generateApiKey, encryptSecret } from "@deedwell/auth";
@@ -127,6 +128,34 @@ export function registerAdminRoutes(app: FastifyInstance, ctx: AppContext): void
     // same as api_key.created/webhook.created above.
     req.log.info({ at: "stripe_config.updated", secretKeyLast4: result.secretKeyLast4, setBy: req.userId });
     return reply.status(201).send(result);
+  });
+
+  // ---- provider API keys (Content Studio's OpenAI credential) -----------
+  // Same shape as the Stripe config above: platform-wide, encrypted at rest,
+  // never returned in full — only ever its last four characters.
+
+  app.get("/v1/admin/integrations/openai", async (req) => {
+    ctx.requirePlatformAdmin(req);
+    return getProviderKeyStatus(ctx.deps.appPool, "openai");
+  });
+
+  app.post("/v1/admin/integrations/openai", async (req, reply) => {
+    ctx.requirePlatformAdmin(req);
+    const { apiKey } = req.body as { apiKey?: string };
+    if (!apiKey?.startsWith("sk-")) {
+      throw new HttpError(400, "That doesn't look like an OpenAI API key (should start with sk-)");
+    }
+    const result = await saveProviderKey(ctx.deps.appPool, { provider: "openai", apiKey, setBy: req.userId! });
+    req.log.info({ at: "provider_key.updated", provider: "openai", last4: result.last4, setBy: req.userId });
+    return reply.status(201).send(result);
+  });
+
+  app.delete("/v1/admin/integrations/openai", async (req) => {
+    ctx.requirePlatformAdmin(req);
+    const cleared = await clearProviderKey(ctx.deps.appPool, "openai");
+    if (!cleared) throw new HttpError(404, "No OpenAI key to remove");
+    req.log.info({ at: "provider_key.removed", provider: "openai", removedBy: req.userId });
+    return { ok: true };
   });
 
   app.delete("/v1/admin/billing/stripe-config", async (req) => {

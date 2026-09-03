@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   AdGrantsCampaignPlanOutput,
+  ContentStrategyOutput,
   BudgetOutput,
   FactExtractionOutput,
   IntentOutput,
@@ -50,7 +51,8 @@ export interface ModelRequest {
     | "site_page"
     | "site_patch"
     | "intent"
-    | "ad_grants_campaign_plan";
+    | "ad_grants_campaign_plan"
+    | "content_strategy";
 }
 
 export interface ModelResponse {
@@ -94,6 +96,7 @@ const OUTPUT_SCHEMAS: Record<ModelRequest["outputSchemaRef"], z.ZodTypeAny> = {
   site_patch: SitePatchOutput,
   intent: IntentOutput,
   ad_grants_campaign_plan: AdGrantsCampaignPlanOutput,
+  content_strategy: ContentStrategyOutput,
 };
 
 /**

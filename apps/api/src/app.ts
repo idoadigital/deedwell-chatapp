@@ -15,6 +15,10 @@ import { registerCoreRoutes } from "./routes-core.js";
 import { registerGrantRoutes } from "./routes-grant.js";
 import { registerGrantFullRoutes } from "./routes-grants-full.js";
 import { registerWebsiteRoutes } from "./routes-website.js";
+import { registerContentRoutes, registerContentPublishingRoutes } from "./routes-content.js";
+import { registerConnectorRoutes } from "./routes-connectors.js";
+import { registerAdminIntegrationRoutes } from "./routes-admin-integrations.js";
+import { registerDataDeletionRoutes } from "./routes-data-deletion.js";
 import { registerPublicRoutes } from "./routes-public.js";
 import { registerAdminRoutes } from "./routes-admin.js";
 import { registerAdminAdGrantsRoutes } from "./routes-admin-ad-grants.js";
@@ -106,7 +110,12 @@ export function buildApp(deps: Deps): FastifyInstance {
     if (
       !url.startsWith("/v1/") || url.startsWith("/v1/auth/") || url.startsWith("/v1/rtc") ||
       url.startsWith("/v1/ad-grants/google-connect") || url.startsWith("/v1/ad-grants/google-oauth/callback") ||
-      url.startsWith("/v1/billing/stripe/webhook")
+      url.startsWith("/v1/billing/stripe/webhook") ||
+      // Provider-initiated: the OAuth redirect and Meta's data-deletion
+      // callback arrive without a session. Both are authenticated by their own
+      // means (single-use state / HMAC signature) rather than by a cookie.
+      // Tenant connector routes live under /v1/orgs/ and are unaffected.
+      url.startsWith("/v1/connectors/")
     ) return;
 
     const header = req.headers.authorization;
@@ -211,6 +220,11 @@ export function buildApp(deps: Deps): FastifyInstance {
   registerGrantRoutes(app, ctx);
   registerGrantFullRoutes(app, ctx);
   registerWebsiteRoutes(app, ctx);
+  registerContentRoutes(app, ctx);
+  registerContentPublishingRoutes(app, ctx);
+  registerConnectorRoutes(app, ctx);
+  registerAdminIntegrationRoutes(app, ctx);
+  registerDataDeletionRoutes(app, ctx);
   registerPublicRoutes(app, ctx);
   registerAdminRoutes(app, ctx);
   registerAdminAdGrantsRoutes(app, ctx);

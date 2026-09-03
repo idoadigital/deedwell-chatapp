@@ -1,0 +1,13 @@
+{
+  "name": "@deedwell/content-domain",
+  "version": "0.1.0",
+  "private": true,
+  "main": "src/index.ts",
+  "type": "module",
+  "dependencies": {
+    "@deedwell/agent-runtime": "workspace:*",
+    "@deedwell/auth": "workspace:*",
+    "@deedwell/database": "workspace:*",
+    "@deedwell/schemas": "workspace:*"
+  }
+}

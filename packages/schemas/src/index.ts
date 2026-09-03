@@ -666,6 +666,30 @@ export const WebsiteBriefOutput = z.object({
 export type WebsiteBriefOutput = z.infer<typeof WebsiteBriefOutput>;
 
 /** Website Copywriter output contract. */
+/** What the Content page posts to start a campaign. The kind list is the same
+ *  closed set the DB CHECK enforces. */
+export const CreateContentInput = z.object({
+  kind: z.enum(["social", "flyer", "buying_guide", "event_promo"]),
+  prompt: z.string().trim().min(4).max(2000),
+  title: z.string().trim().min(1).max(120).optional(),
+});
+export type CreateContentInput = z.infer<typeof CreateContentInput>;
+
+/** Content Studio: the strategy the model settles on before any image is
+ *  drawn, plus the 4-6 design briefs that come out of it. Bounded at 6 so a
+ *  runaway response cannot queue an unbounded number of image generations. */
+export const ContentStrategyOutput = z.object({
+  audience: z.string().min(1),
+  message: z.string().min(1),
+  tone: z.string().min(1),
+  palette: z.string().min(1),
+  designs: z.array(z.object({
+    caption: z.string().min(1),
+    prompt: z.string().min(1),
+  })).min(4).max(6),
+});
+export type ContentStrategyOutput = z.infer<typeof ContentStrategyOutput>;
+
 export const SiteContentOutput = z.object({
   pages: z.array(SitePage).min(1).max(10),
   placeholders: z.array(z.string().max(300)).max(20),

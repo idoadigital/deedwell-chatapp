@@ -1,6 +1,7 @@
 import { createAdminPool, migrate } from "@deedwell/database";
 import { buildApp } from "./app.js";
 import { createDeps } from "./bootstrap.js";
+import { startPublishWorker } from "@deedwell/connectors";
 import { sweepPendingWebhooks } from "./webhooks.js";
 
 async function main(): Promise<void> {
@@ -45,6 +46,21 @@ async function main(): Promise<void> {
   abort.signal.addEventListener("abort", () => clearInterval(webhookSweep));
 
   const port = Number(process.env.PORT ?? 3000);
+  // Scheduled social publishing runs in-process alongside the API. It claims
+  // work with SKIP LOCKED, so running several API instances is safe; set
+  // PUBLISH_WORKER=off on instances that should not publish.
+  const stopPublishWorker = process.env.PUBLISH_WORKER === "off" ? null : startPublishWorker({
+    pool: deps.appPool,
+    mediaUrlFor: (tenantId, fileId) =>
+      `${process.env.API_ORIGIN ?? "https://coworkers.deedwell.org"}/v1/orgs/${tenantId}/files/${fileId}/content`,
+    log: app.log,
+  });
+  if (stopPublishWorker) {
+    for (const signal of ["SIGTERM", "SIGINT"] as const) {
+      process.once(signal, () => stopPublishWorker());
+    }
+  }
+
   await app.listen({ port, host: "0.0.0.0" });
 
   const shutdown = async () => {

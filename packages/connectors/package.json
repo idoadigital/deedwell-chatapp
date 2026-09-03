@@ -1,0 +1,11 @@
+{
+  "name": "@deedwell/connectors",
+  "version": "0.1.0",
+  "private": true,
+  "main": "src/index.ts",
+  "type": "module",
+  "dependencies": {
+    "@deedwell/auth": "workspace:*",
+    "@deedwell/database": "workspace:*"
+  }
+}

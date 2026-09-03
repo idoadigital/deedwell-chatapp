@@ -6,6 +6,22 @@ import {
 import { WEBSITE_BUILD_WORKFLOW, WEBSITE_UPDATE_WORKFLOW, websiteIntakeField } from "@deedwell/website-domain";
 import { HttpError, type AppContext } from "./app.js";
 
+/** Where the site-router serves a site, so the dashboard can link to it and
+ *  frame it. Derived from the same env the router reads, never guessed by the
+ *  browser. A partner-built site reports its own URL and that always wins. */
+function siteUrls(row: { slug: string; external_build_url: string | null; live_version: number | null; preview_version: number | null }) {
+  const base = process.env.SITES_BASE_DOMAIN ?? null;
+  const scheme = process.env.SITES_SCHEME ?? "https";
+  if (row.external_build_url) {
+    return { live_url: row.external_build_url, preview_url: null };
+  }
+  if (!base) return { live_url: null, preview_url: null };
+  return {
+    live_url: row.live_version ? `${scheme}://${row.slug}.${base}` : null,
+    preview_url: row.preview_version ? `${scheme}://${row.slug}.preview.${base}` : null,
+  };
+}
+
 /** Subdomain labels that can never be claimed as site slugs. */
 const RESERVED_SLUGS = new Set([
   "www", "api", "app", "admin", "preview", "sites", "mail", "status", "docs", "assets",
@@ -150,7 +166,7 @@ export function registerWebsiteRoutes(app: FastifyInstance, ctx: AppContext): vo
          ORDER BY s.created_at DESC`
       )
     );
-    return { sites: rows };
+    return { sites: rows.map((row) => ({ ...row, ...siteUrls(row as never) })) };
   });
 
   app.get("/v1/orgs/:orgId/sites/:siteId", async (req) => {
@@ -173,8 +189,68 @@ export function registerWebsiteRoutes(app: FastifyInstance, ctx: AppContext): vo
          FROM site_releases WHERE site_id = $1 ORDER BY version DESC`,
         [siteId]
       );
-      return { site: site.rows[0], pages: pages.rows, releases: releases.rows };
+      // The answers behind this site. The partner-facing endpoint has always
+      // returned these; the owner of the site could not read their own until
+      // now, which made "edit your details" impossible to prefill.
+      const intake = await client.query(
+        "SELECT question_key, value FROM site_intake_answers WHERE site_id = $1",
+        [siteId]
+      );
+      const versions = await client.query(
+        `SELECT (SELECT version FROM site_releases r WHERE r.id = s.active_release_id)  AS live_version,
+                (SELECT version FROM site_releases r WHERE r.id = s.preview_release_id) AS preview_version
+         FROM sites s WHERE s.id = $1`,
+        [siteId]
+      );
+      return {
+        site: { ...site.rows[0], ...siteUrls({ ...site.rows[0], ...versions.rows[0] } as never) },
+        pages: pages.rows,
+        releases: releases.rows,
+        intake: Object.fromEntries(intake.rows.map((r) => [r.question_key, r.value])),
+      };
     });
+  });
+
+  // ---- generate (brief first, then the build) -----------------------------
+  // The build workflow already does what the dashboard needs: it writes a
+  // website brief, raises a `website_brief` approval and refuses to generate a
+  // single page until that approval is decided. Until now the only way to
+  // start it was to create a NEW site; this runs it for a site that already
+  // exists, so "Generate" on a row means that row.
+
+  app.post("/v1/orgs/:orgId/sites/:siteId/generate", async (req, reply) => {
+    ctx.requireRole(req, "member");
+    const { siteId } = req.params as { siteId: string };
+    const result = await ctx.inOrg(req, async (client) => {
+      const site = await client.query(
+        "SELECT id, project_id, name, source FROM sites WHERE id = $1",
+        [siteId]
+      );
+      if (!site.rows[0]) throw new HttpError(404, "Site not found");
+      const { activeRunFor } = await import("./assistant.js");
+      const inFlight = await activeRunFor(client, site.rows[0].project_id, "website");
+      if (inFlight) {
+        throw new HttpError(409, `A website run is already active for this site (${inFlight.status})`);
+      }
+      const donate = await client.query(
+        "SELECT value FROM site_intake_answers WHERE site_id = $1 AND question_key = 'site_donate_url'",
+        [siteId]
+      );
+      const donateUrl = typeof donate.rows[0]?.value === "string" ? donate.rows[0].value : null;
+      const runId = await ctx.deps.engine.start(client, {
+        tenantId: req.orgId!,
+        projectId: site.rows[0].project_id,
+        definition: WEBSITE_BUILD_WORKFLOW,
+        createdBy: req.userId!,
+        input: { siteId, siteName: site.rows[0].name, donateUrl },
+      });
+      await audit(client, {
+        tenantId: req.orgId!, actorUser: req.userId, action: "site.generate_requested",
+        entityType: "site", entityId: siteId, metadata: { runId, source: site.rows[0].source },
+      });
+      return { runId, siteId };
+    });
+    return reply.status(201).send(result);
   });
 
   // ---- conversational update ---------------------------------------------

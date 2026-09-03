@@ -13,6 +13,10 @@ import { TEAMMATES } from "./teammates.js";
 import { HttpError, type AppContext } from "./app.js";
 import { resolveInfoRequest } from "./fact-fields.js";
 
+/** The reaction bar. Deliberately short — a fixed set keeps rendering
+ *  predictable and stops the column becoming a free-text field. */
+export const ALLOWED_REACTIONS = ["👍", "🎉", "❤️", "👀", "✅", "🙏"];
+
 export function registerChatRoutes(app: FastifyInstance, ctx: AppContext): void {
   // Cancel a run that hasn't finished (safe: steps are transactional).
   app.post("/v1/orgs/:orgId/runs/:runId/cancel", async (req) => {
@@ -358,10 +362,26 @@ export function registerChatRoutes(app: FastifyInstance, ctx: AppContext): void 
       if (!channel.rows[0]) throw new HttpError(404, "Channel not found");
       const messages = await client.query(
         `SELECT m.id, m.author_kind, m.author_user, m.author_agent, u.display_name AS author_name,
-                m.body, m.metadata, m.created_at
+                m.body, m.metadata, m.created_at,
+                -- Grouped in SQL rather than in the client: the counts and the
+                -- "did I react" flag are the same question, and answering them
+                -- here keeps one round trip instead of N.
+                COALESCE((
+                  SELECT jsonb_agg(r ORDER BY r.emoji)
+                    FROM (
+                      SELECT mr.emoji,
+                             count(*)::int AS count,
+                             bool_or(mr.user_id = $2) AS reacted,
+                             array_agg(ru.display_name ORDER BY ru.display_name) AS names
+                        FROM message_reactions mr
+                        JOIN users ru ON ru.id = mr.user_id
+                       WHERE mr.message_id = m.id
+                       GROUP BY mr.emoji
+                    ) r
+                ), '[]'::jsonb) AS reactions
          FROM messages m LEFT JOIN users u ON u.id = m.author_user
          WHERE m.channel_id = $1 ORDER BY m.created_at ASC LIMIT 300`,
-        [channelId]
+        [channelId, req.userId]
       );
 
       // Whether each info-request form is still worth showing. Computed here
@@ -393,6 +413,50 @@ export function registerChatRoutes(app: FastifyInstance, ctx: AppContext): void 
       return messages;
     });
     return { messages: rows };
+  });
+
+  /** Toggle one reaction. Idempotent by construction: the unique constraint
+   *  means "react twice" cannot happen, so a second call removes instead. */
+  app.post("/v1/orgs/:orgId/messages/:messageId/reactions", async (req) => {
+    ctx.requireRole(req, "member");
+    const { messageId } = req.params as { messageId: string };
+    const { emoji } = req.body as { emoji?: string };
+    // A closed set, not free text: this is a reaction bar, not a place to
+    // paste arbitrary strings into every teammate's view.
+    if (!emoji || !ALLOWED_REACTIONS.includes(emoji)) {
+      throw new HttpError(400, "That reaction is not available.");
+    }
+    return ctx.inOrg(req, async (client) => {
+      // RLS scopes this to the tenant, so a message id from another workspace
+      // simply is not found.
+      const message = await client.query(
+        "SELECT id, channel_id FROM messages WHERE id = $1", [messageId]
+      );
+      if (!message.rows[0]) throw new HttpError(404, "Message not found");
+
+      const removed = await client.query(
+        `DELETE FROM message_reactions
+          WHERE message_id = $1 AND user_id = $2 AND emoji = $3 RETURNING id`,
+        [messageId, req.userId, emoji]
+      );
+      if (!removed.rows[0]) {
+        await client.query(
+          `INSERT INTO message_reactions (id, tenant_id, message_id, user_id, emoji)
+           VALUES ($1,$2,$3,$4,$5)`,
+          [uuidv7(), req.orgId, messageId, req.userId, emoji]
+        );
+      }
+      const { rows } = await client.query(
+        `SELECT emoji, count(*)::int AS count, bool_or(user_id = $2) AS reacted
+           FROM message_reactions WHERE message_id = $1 GROUP BY emoji ORDER BY emoji`,
+        [messageId, req.userId]
+      );
+      // Wake everyone else looking at this channel.
+      ctx.deps.engine.events.emit("event", {
+        type: "reaction_changed", tenantId: req.orgId, channelId: message.rows[0].channel_id,
+      } as never);
+      return { reactions: rows, reacted: !removed.rows[0] };
+    });
   });
 
   app.post("/v1/orgs/:orgId/channels/:channelId/messages", async (req, reply) => {

@@ -473,7 +473,14 @@ export function buildWebsiteBuildWorkflow(): WorkflowDefinition<WebsiteServices>
         await ctx.client.query(
           `INSERT INTO approvals (id, tenant_id, run_id, kind, payload) VALUES ($1,$2,$3,'website_brief',$4)`,
           [approvalId, ctx.tenantId, ctx.runId, JSON.stringify({
-            artifactId, sitemap: result.output.sitemap.map((s) => s.title),
+            artifactId,
+            siteId: input.siteId,
+            siteName: input.siteName,
+            objectives: result.output.objectives,
+            audiences: result.output.audiences,
+            tone: result.output.tone,
+            theme: result.output.theme,
+            sitemap: result.output.sitemap,
           })]
         );
         return {

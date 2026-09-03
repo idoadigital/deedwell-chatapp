@@ -29,6 +29,7 @@ export class MockModelProvider implements ModelProvider {
 
   async complete(request: ModelRequest): Promise<ModelResponse> {
     const generators: Record<ModelRequest["outputSchemaRef"], (r: ModelRequest) => unknown> = {
+      content_strategy: contentStrategy,
       requirements_extraction: extractRequirements,
       fact_extraction: extractFacts,
       section_draft: draftSection,
@@ -391,5 +392,22 @@ function draftAdGrantsCampaign(request: ModelRequest): AdGrantsCampaignPlanOutpu
     ],
     geoTargets: [service],
     notes: "Deterministic mock campaign plan — content quality is not representative of the product.",
+  };
+}
+
+/** Deterministic stand-in so the Content Studio pipeline is exercisable end to
+ *  end without a paid key. Four briefs, because four is the contract's floor. */
+function contentStrategy(request: ModelRequest): unknown {
+  const ask = request.dataBlocks.find((b) => b.label === "staff request")?.content ?? "your campaign";
+  const angles = ["Portrait-led", "Typographic", "Botanical", "Documentary"];
+  return {
+    audience: "Local supporters and volunteers",
+    message: ask.slice(0, 140),
+    tone: "Warm, plain-spoken, unhurried",
+    palette: "Deep green ground, cream type, one warm accent",
+    designs: angles.map((angle) => ({
+      caption: `${angle} treatment`,
+      prompt: `${angle} design for: ${ask}. Editorial serif headline, generous margins, restrained palette.`,
+    })),
   };
 }
