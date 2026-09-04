@@ -4,6 +4,7 @@ import { ApprovalDecisionInput, ProvideInfoInput, StartGrantSliceInput } from "@
 import { GRANT_SLICE_WORKFLOW, writeOrgFact } from "@deedwell/grant-domain";
 import type { WorkflowEvent } from "@deedwell/workflows";
 import { HttpError, type AppContext } from "./app.js";
+import { resolveInfoRequest } from "./fact-fields.js";
 import { PASSPORT_FIELDS } from "@deedwell/grant-domain";
 import { WEBSITE_INTAKE_KEYS } from "@deedwell/website-domain";
 
@@ -125,11 +126,17 @@ export function registerGrantRoutes(app: FastifyInstance, ctx: AppContext): void
          FROM artifacts WHERE run_id = $1 ORDER BY created_at`,
         [runId]
       );
+      // What a parked run is actually asking for, in field form, so a client
+      // can render the questions instead of guessing from the raw payload.
+      const infoRequest = run.rows[0].status === "waiting_for_info"
+        ? await resolveInfoRequest(client, runId)
+        : null;
       return {
         run: run.rows[0],
         steps: steps.rows,
         approvals: approvals.rows,
         artifacts: artifacts.rows,
+        infoRequest,
       };
     });
   });

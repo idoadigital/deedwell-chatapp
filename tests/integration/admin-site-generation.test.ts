@@ -174,6 +174,12 @@ describe("Platform Admin → Site Generation Settings", () => {
     // Discovery asks its optional direction questions first; skip them the
     // way the chat UI does, then let the run reach the brief.
     await env.deps.engine.drain("test-worker");
+    const parked = await api(env.app, "GET", `/v1/orgs/${orgId}/runs/${runId}`, { token: admin.token });
+    expect(parked.body.run.status).toBe("waiting_for_info");
+    // The dashboard renders these; they must be real fields, and skippable.
+    expect(parked.body.infoRequest.allowSkip).toBe(true);
+    expect(parked.body.infoRequest.fields.length).toBeGreaterThan(0);
+    expect(parked.body.infoRequest.fields[0]).toHaveProperty("label");
     await api(env.app, "POST", `/v1/orgs/${orgId}/runs/${runId}/provide-info`, {
       token: admin.token, body: { facts: [{ key: "site_intake_skipped", value: true }] },
     });
