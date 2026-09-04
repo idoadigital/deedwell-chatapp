@@ -71,6 +71,8 @@ export interface GrantServices {
   google?: GoogleAutomationService;
   /** The model that designs web pages; absent → the shared provider. */
   designer?: ModelProvider;
+  /** Image generation for site photography; absent → sites have no images. */
+  images?: () => Promise<import("@deedwell/content-domain").ImageGenerator>;
 }
 
 export const GRANT_SLICE_WORKFLOW = "grant-application-slice";

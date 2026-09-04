@@ -5,6 +5,7 @@
   "main": "src/index.ts",
   "type": "module",
   "dependencies": {
+    "@deedwell/content-domain": "workspace:^",
     "sanitize-html": "2.17.7"
   },
   "devDependencies": {

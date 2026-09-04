@@ -8,7 +8,7 @@ export {
   WEBSITE_AGENTS,
 } from "./agents.js";
 export { renderSite, esc, pageUrl, type RenderedFile, type RenderSiteInput } from "./renderer.js";
-export { runSiteChecks, blockingFailures, type SiteCheck } from "./checks.js";
+export { runSiteChecks, blockingFailures, type SiteCheck, type CheckOrg } from "./checks.js";
 export {
   WEBSITE_INTAKE_FIELDS,
   WEBSITE_INTAKE_KEYS,
@@ -37,5 +37,7 @@ export {
   type ReferenceTemplate,
 } from "./site-generation.js";
 export { findPlaceholders, stripPlaceholderBlocks, PLACEHOLDER_RE } from "./placeholders.js";
-export { sanitizePage, sanitizeCss, extractSharedDesign, looksLikeAPage, normalizeInternalLinks, ensureNavCoverage, capHeaderNav } from "./sanitize.js";
-export { designPage, pageContentHash, type DesignPageArgs, type DesignedPage, type SharedDesign } from "./design.js";
+export { sanitizePage, sanitizeCss, extractSharedDesign, looksLikeAPage, normalizeInternalLinks, ensureNavCoverage, capHeaderNav, ensureFooterStatus } from "./sanitize.js";
+export { SECTION_CONTRACT, REQUIRED_STYLE_HOOKS } from "./contract.js";
+export { planSiteImages, generateSiteImages, siteImageStorageKey, type SiteImage, type ImagePlanItem } from "./images.js";
+export { designSystem, designPageMain, assemblePage, pageContentHash, type SiteDesignSystem, type Organization } from "./design.js";

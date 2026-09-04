@@ -20,7 +20,9 @@ import {
   WEBSITE_ESSENTIAL_FACTS,
 } from "./intake.js";
 import { findPlaceholders, stripPlaceholderBlocks } from "./placeholders.js";
-import { designPage, pageContentHash, type SharedDesign } from "./design.js";
+import { assemblePage, designPageMain, designSystem, pageContentHash, type Organization, type SiteDesignSystem } from "./design.js";
+import { generateSiteImages, planSiteImages, type SiteImage } from "./images.js";
+import { createHash } from "node:crypto";
 import { capHeaderNav, ensureNavCoverage, normalizeInternalLinks } from "./sanitize.js";
 import {
   ensureRequiredSections,
@@ -39,6 +41,8 @@ export interface WebsiteServices {
   storage: StorageAdapter;
   /** Designs pages from the reference; absent → the shared provider. */
   designer?: ModelProvider;
+  /** Image generation for site photography; absent → sites have no images. */
+  images?: () => Promise<import("@deedwell/content-domain").ImageGenerator>;
 }
 
 type Ctx = StepContext<WebsiteServices>;
@@ -71,13 +75,13 @@ async function recordModelUsage(ctx: Ctx, agentKey: string, tokens: number): Pro
 
 async function getSite(ctx: Ctx, siteId: string) {
   const { rows } = await ctx.client.query(
-    "SELECT id, slug, name, theme, status, active_release_id FROM sites WHERE id = $1",
+    "SELECT id, slug, name, theme, status, active_release_id, images FROM sites WHERE id = $1",
     [siteId]
   );
   if (!rows[0]) throw new Error(`Site ${siteId} not found in tenant scope`);
   return rows[0] as {
     id: string; slug: string; name: string; theme: Record<string, unknown>;
-    status: string; active_release_id: string | null;
+    status: string; active_release_id: string | null; images: SiteImage[];
   };
 }
 
@@ -294,37 +298,49 @@ async function writePage(ctx: Ctx, args: {
 }
 
 /**
- * Design the next page that needs it. Shared by the build and update
- * workflows: a page whose design still matches its copy is skipped, so an
- * update only re-designs what changed. `after` is the step to go to once
- * every page is done.
+ * Photography for the site, generated once per build in the reference's
+ * style and kept on the site row. Absent image service → no images, and the
+ * designer works without them. A failed image is left out, never faked.
+ */
+async function makeSiteImages(
+  ctx: Ctx, siteId: string, siteName: string, brief: WebsiteBriefOutput | null,
+  sitemap: Array<{ slug: string; title: string }>, facts: OrgFact[],
+  reference: Awaited<ReturnType<typeof loadReferenceTemplate>>
+): Promise<void> {
+  if (!ctx.services.images) return;
+  const fact = (key: string) => facts.find((f) => f.key === key)?.value ?? null;
+  try {
+    const generator = await ctx.services.images();
+    const plan = planSiteImages({
+      brief, pages: sitemap.map((p, i) => ({ slug: i === 0 ? "home" : p.slug, title: p.title })),
+      org: {
+        siteName, mission: fact("mission"), beneficiaries: fact("beneficiaries"),
+        programs: fact("programs"), serviceArea: fact("service_area"),
+        referenceStyle: reference ? `${reference.title}. ${reference.description}`.trim() : null,
+      },
+    });
+    const images = await generateSiteImages({
+      generator, plan, storage: ctx.services.storage, tenantId: ctx.tenantId, siteId,
+      onError: (item, err) => console.log(JSON.stringify({ at: "site_image_failed", key: item.key, error: String((err as Error).message ?? err).slice(0, 200) })),
+    });
+    await ctx.client.query("UPDATE sites SET images = $2 WHERE id = $1", [siteId, JSON.stringify(images)]);
+  } catch (err) {
+    console.log(JSON.stringify({ at: "site_images_skipped", error: String((err as Error).message ?? err).slice(0, 200) }));
+  }
+}
+
+/**
+ * The design step, shared by the build and update workflows. Two phases:
+ * first the site's design system from the reference (once), then every
+ * page concurrently on that system. A page whose copy, images and system
+ * are unchanged keeps its rendering. Anything that fails falls back to the
+ * template with an event saying why, so a build always completes.
  */
 async function designNextPage(ctx: Ctx, siteId: string, after: string): Promise<StepResult> {
   const site = await getSite(ctx, siteId);
   const pages = await loadPages(ctx, siteId);
-  const cursor = typeof ctx.state.designCursor === "number" ? ctx.state.designCursor : 0;
-  if (cursor >= pages.length) return { state: ctx.state, next: after };
-
-  const existing = await loadDesignedPages(ctx, siteId);
-  let shared = (ctx.state.sharedDesign as SharedDesign | null | undefined) ?? null;
-
-  // The home page goes alone first: it sets the shared design. Everything
-  // after it is designed in one go, concurrently, against that design.
-  const batch = cursor === 0 ? [pages[0]!] : pages.slice(cursor);
-  const nextCursor = cursor === 0 ? 1 : pages.length;
-  const advance = (next: SharedDesign | null): StepResult => ({
-    state: { ...ctx.state, designCursor: nextCursor, sharedDesign: next },
-    next: nextCursor >= pages.length ? after : "design_pages",
-  });
-
-  if (cursor === 0) {
-    const current = existing.get(pages[0]!.slug);
-    if (current && current.hash === pageContentHash(pages[0]!)) {
-      // Already designed from this exact copy; it still seeds the shared design.
-      const { extractSharedDesign } = await import("./sanitize.js");
-      return advance(shared ?? extractSharedDesign(current.html));
-    }
-  }
+  const phase = (ctx.state.designPhase as string | undefined) ?? "system";
+  if (phase === "done") return { state: ctx.state, next: after };
 
   const settings = await loadSiteGenerationSettings(ctx.client);
   const referenceId = (ctx.state.referenceTemplate as { id?: string } | null | undefined)?.id
@@ -337,49 +353,69 @@ async function designNextPage(ctx: Ctx, siteId: string, after: string): Promise<
   const brief = (ctx.state.brief as WebsiteBriefOutput | undefined) ?? null;
   const donateUrl = typeof intake.site_donate_url === "string" ? intake.site_donate_url
     : (BuildInput.safeParse(ctx.state.input).data?.donateUrl ?? null);
-
-  const organization = {
+  const status = fact("entity_type") ?? fact("registration_status");
+  const organization: Organization = {
     name: site.name,
     legalName: fact("legal_name"),
     mission: fact("mission"),
     headquarters: fact("headquarters"),
-    registration: fact("registration_status"),
-    contactEmail: typeof intake.site_contact_email === "string" ? intake.site_contact_email : null,
+    status: status ? (/nonprofit|non-profit|charity/i.test(status) ? status : `${status} nonprofit`) : null,
+    ein: fact("ein"),
+    contactEmail: typeof intake.site_contact_email === "string" ? intake.site_contact_email : (fact("contact_email") ?? fact("email")),
+    contactPhone: fact("phone") ?? fact("contact_phone"),
   };
   const nav = pages.map((p) => ({ title: p.title, href: pageUrl(p.slug) }));
+  const images = Array.isArray(site.images) ? site.images : [];
+  const common = {
+    provider: ctx.services.designer ?? ctx.services.provider,
+    site: { name: site.name, slug: site.slug }, nav, brief, reference,
+    guidance: settings.guidance, organization, donateUrl, images,
+  };
 
-  const designOne = async (page: SitePage): Promise<SharedDesign | null> => {
-    const hash = pageContentHash(page);
-    const current = existing.get(page.slug);
-    if (current && current.hash === hash) return null;
+  if (phase === "system") {
     try {
-      const result = await designPage({
-        provider: ctx.services.designer ?? ctx.services.provider,
-        site: { name: site.name, slug: site.slug },
-        page, nav, brief, reference, guidance: settings.guidance, organization, donateUrl, shared,
-      });
-      await recordModelUsage(ctx, "website.designer", result.tokensEstimated);
+      const { system, tokensEstimated } = await designSystem(common);
+      await recordModelUsage(ctx, "website.designer", tokensEstimated);
+      await recordDesignEvent(ctx, "system", "design system", true,
+        reference ? `Styled after the reference design "${reference.title}".` : "Styled from the brief.");
+      return { state: { ...ctx.state, designPhase: "pages", designSystem: system }, next: "design_pages" };
+    } catch (err) {
+      await recordDesignEvent(ctx, "system", "design system", false,
+        `The designer's style guide could not be used (${String((err as Error).message ?? err).slice(0, 160)}); the standard layout is used for this build.`);
+      return { state: { ...ctx.state, designPhase: "done", designSystem: null }, next: after };
+    }
+  }
+
+  const system = ctx.state.designSystem as SiteDesignSystem | null;
+  if (!system) return { state: { ...ctx.state, designPhase: "done" }, next: after };
+  const systemHash = createHash("sha256").update(system.styles + system.header + system.footer).digest("hex");
+  const existing = await loadDesignedPages(ctx, siteId);
+
+  await Promise.all(pages.map(async (page) => {
+    // Content hash first, so the release can match on the copy alone; the
+    // system and image parts decide whether a re-design is needed.
+    const hash = `${pageContentHash(page)}:${systemHash}:${createHash("sha256").update(images.map((i) => i.path).join(",")).digest("hex")}`;
+    const current = existing.get(page.slug);
+    if (current && current.hash === hash) return;
+    try {
+      const { main, tokensEstimated } = await designPageMain({ ...common, page, system });
+      await recordModelUsage(ctx, "website.designer", tokensEstimated);
+      const html = assemblePage({ site: common.site, page, nav, system, main, organization });
       await ctx.client.query(
         "UPDATE site_pages SET rendered_html = $3, rendered_hash = $4 WHERE site_id = $1 AND slug = $2",
-        [siteId, page.slug, result.html, hash]
+        [siteId, page.slug, html, hash]
       );
-      await recordDesignEvent(ctx, page.slug, page.title, true,
-        reference ? `Laid out from the reference design "${reference.title}".` : "Laid out from the brief.");
-      return result.shared;
+      await recordDesignEvent(ctx, page.slug, page.title, true, "Composed on the site's design system.");
     } catch (err) {
-      // The template still knows how to render this page; say why it will.
       await ctx.client.query(
         "UPDATE site_pages SET rendered_html = NULL, rendered_hash = NULL WHERE site_id = $1 AND slug = $2",
         [siteId, page.slug]
       );
       await recordDesignEvent(ctx, page.slug, page.title, false,
         `The designer's page could not be used (${String((err as Error).message ?? err).slice(0, 160)}); the standard layout is used for it.`);
-      return null;
     }
-  };
-
-  const outcomes = await Promise.all(batch.map(designOne));
-  return advance(shared ?? outcomes.find((o) => o) ?? null);
+  }));
+  return { state: { ...ctx.state, designPhase: "done" }, next: after };
 }
 
 // ---------------------------------------------------------------------------
@@ -411,7 +447,7 @@ async function buildRelease(ctx: Ctx, siteId: string): Promise<StepResult> {
   let designedCount = 0;
   for (const page of pages) {
     const d = designed.get(page.slug);
-    if (!d || d.hash !== pageContentHash(page)) continue;
+    if (!d || d.hash.split(":")[0] !== pageContentHash(page)) continue;
     const file = files.find((f) => f.path === (page.slug === "home" ? "index.html" : `${page.slug}/index.html`));
     // Renderings made before link normalisation existed are fixed here too.
     if (file) {
@@ -422,7 +458,12 @@ async function buildRelease(ctx: Ctx, siteId: string): Promise<StepResult> {
       designedCount += 1;
     }
   }
-  const checks = runSiteChecks(files, pages);
+  const checkFacts = (key: string) => facts.find((f) => f.key === key)?.value ?? null;
+  const checks = runSiteChecks(files, pages, {
+    mission: checkFacts("mission"),
+    ein: checkFacts("ein"),
+    status: checkFacts("entity_type") ?? checkFacts("registration_status"),
+  });
 
   const { rows: versionRow } = await ctx.client.query(
     "SELECT COALESCE(MAX(version), 0) + 1 AS next FROM site_releases WHERE site_id = $1",
@@ -432,6 +473,17 @@ async function buildRelease(ctx: Ctx, siteId: string): Promise<StepResult> {
   const prefix = `tenants/${ctx.tenantId}/sites/${siteId}/releases/v${version}`;
   for (const file of files) {
     await ctx.services.storage.put(`${prefix}/${file.path}`, Buffer.from(file.content, "utf8"));
+  }
+
+  // The site's generated photography travels with every release.
+  const siteImages = Array.isArray(site.images) ? site.images : [];
+  for (const image of siteImages) {
+    try {
+      const bytes = await ctx.services.storage.get(image.storageKey);
+      await ctx.services.storage.put(`${prefix}/images/${image.key}.png`, bytes);
+    } catch (err) {
+      console.log(JSON.stringify({ at: "site_image_copy_failed", key: image.key, error: String((err as Error).message ?? err).slice(0, 160) }));
+    }
   }
 
   const releaseId = uuidv7();
@@ -769,15 +821,18 @@ export function buildWebsiteBuildWorkflow(): WorkflowDefinition<WebsiteServices>
         const facts = await fetchFacts(ctx, websiteCopywriter);
         const referenceId = (ctx.state.referenceTemplate as { id?: string } | null | undefined)?.id ?? null;
         const reference = await loadReferenceTemplate(ctx.client, ctx.services.storage, referenceId);
-        const results = await Promise.all(sitemap.map((plan, i) =>
-          writePage(ctx, { input, brief, plan, slug: i === 0 ? "home" : plan.slug, orderIdx: i, facts, reference })
-        ));
+        const [results] = await Promise.all([
+          Promise.all(sitemap.map((plan, i) =>
+            writePage(ctx, { input, brief, plan, slug: i === 0 ? "home" : plan.slug, orderIdx: i, facts, reference })
+          )),
+          makeSiteImages(ctx, input.siteId, input.siteName, brief ?? null, sitemap, facts, reference),
+        ]);
         const placeholders = [
           ...((ctx.state.placeholders as string[] | undefined) ?? []),
           ...results.flatMap((r) => r.placeholders),
         ];
         return {
-          state: { ...ctx.state, cursor: sitemap.length, placeholders, designCursor: 0, sharedDesign: null },
+          state: { ...ctx.state, cursor: sitemap.length, placeholders, designPhase: "system", designSystem: null },
           next: "design_pages",
         };
       },

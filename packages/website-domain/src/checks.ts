@@ -21,7 +21,13 @@ export function blockingFailures(checks: SiteCheck[]): SiteCheck[] {
   return checks.filter((c) => !c.pass && c.severity === "blocking");
 }
 
-export function runSiteChecks(files: RenderedFile[], pages: SitePage[]): SiteCheck[] {
+export interface CheckOrg {
+  mission: string | null;
+  ein: string | null;
+  status: string | null;
+}
+
+export function runSiteChecks(files: RenderedFile[], pages: SitePage[], org: CheckOrg | null = null): SiteCheck[] {
   const checks: SiteCheck[] = [];
   const validUrls = new Set([...pages.map((p) => pageUrl(p.slug)), "/thanks/"]);
   const htmlFiles = files.filter((f) => f.contentType.startsWith("text/html"));
@@ -193,6 +199,11 @@ export function runSiteChecks(files: RenderedFile[], pages: SitePage[]): SiteChe
       : "No placeholders",
     severity: "blocking",
   });
+  // ---- Google Ad Grants website policy ------------------------------------
+  // Advisory rather than blocking: these are what a reviewer checks, and the
+  // fix is usually a fact the organization has not supplied yet.
+  if (org) adGrantsChecks(checks, files, htmlFiles, pages, org);
+
   checks.push({
     name: "Sitemap generated",
     page: null,
@@ -201,4 +212,74 @@ export function runSiteChecks(files: RenderedFile[], pages: SitePage[]): SiteChe
     severity: "advisory",
   });
   return checks;
+}
+
+function adGrantsChecks(checks: SiteCheck[], files: RenderedFile[], htmlFiles: RenderedFile[], pages: SitePage[], org: CheckOrg): void {
+  const text = (html: string) => html.replace(/<style[\s\S]*?<\/style>/gi, " ").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").toLowerCase();
+  const home = htmlFiles.find((f) => f.path === "index.html");
+  const homeText = home ? text(home.content) : "";
+  const allText = htmlFiles.map((f) => text(f.content)).join(" ");
+  if (org?.mission) {
+    const opening = org.mission.toLowerCase().split(/\s+/).slice(0, 6).join(" ");
+    checks.push({
+      name: "Mission stated on the home page (Ad Grants)",
+      page: "/",
+      pass: homeText.includes(opening),
+      detail: homeText.includes(opening) ? "The mission appears on the home page" : "Ad Grants requires the mission to be clear and prominent, not buried",
+      severity: "advisory",
+    });
+  }
+  checks.push({
+    name: "Nonprofit status and EIN shown (Ad Grants)",
+    page: null,
+    pass: Boolean(org?.ein && allText.includes(org.ein.toLowerCase())) || Boolean(org?.status && allText.includes(org.status.toLowerCase())),
+    detail: org?.ein || org?.status
+      ? "Registration details are on the site"
+      : "Add the registration status and EIN to the organization profile so the site can state them",
+    severity: "advisory",
+  });
+  checks.push({
+    name: "Contact details present (Ad Grants)",
+    page: null,
+    pass: /href="mailto:|href="tel:/.test(files.map((f) => f.content).join(" ")),
+    detail: "A reviewer looks for a way to reach a person: email or phone",
+    severity: "advisory",
+  });
+  checks.push({
+    name: "Privacy policy page (Ad Grants)",
+    page: null,
+    pass: pages.some((p) => /privacy/.test(p.slug)),
+    detail: "A privacy policy is expected on any site collecting form submissions",
+    severity: "advisory",
+  });
+  const insecureDonate = htmlFiles.flatMap((f) => [...f.content.matchAll(/href="(http:\/\/[^"]*)"/g)].map((m) => m[1]!))
+    .filter((u) => /donat|give|pay/i.test(u));
+  checks.push({
+    name: "Donation links secure (Ad Grants)",
+    page: null,
+    pass: insecureDonate.length === 0,
+    detail: insecureDonate.length ? `Insecure donation link(s): ${insecureDonate.join(", ")}` : "Donation links use HTTPS",
+    severity: "blocking",
+  });
+  for (const p of pages) {
+    if (p.slug === "privacy-policy" || p.slug === "contact") continue;
+    const file = htmlFiles.find((f) => f.path === (p.slug === "home" ? "index.html" : `${p.slug}/index.html`));
+    if (!file) continue;
+    const mainText = text(/<main[\s\S]*?<\/main>/i.exec(file.content)?.[0] ?? file.content);
+    const words = mainText.split(" ").filter(Boolean).length;
+    checks.push({
+      name: "Substantial content (Ad Grants)",
+      page: pageUrl(p.slug),
+      pass: words >= 120,
+      detail: words >= 120 ? `${words} words` : `${words} words — thin pages are a common Ad Grants rejection; add real content or facts`,
+      severity: "advisory",
+    });
+  }
+  checks.push({
+    name: "No third-party embeds or ads (Ad Grants)",
+    page: null,
+    pass: !/<iframe|adsbygoogle|doubleclick/i.test(files.map((f) => f.content).join(" ")),
+    detail: "Ad Grants sites may not carry third-party ads or rely on embedded content",
+    severity: "blocking",
+  });
 }

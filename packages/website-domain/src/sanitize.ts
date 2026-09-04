@@ -59,7 +59,7 @@ export function sanitizeCss(css: string): { css: string; warnings: string[] } {
   // that would fetch from the network is dropped.
   out = out.replace(/url\(\s*(['"]?)([^'")]*)\1\s*\)/gi, (m, _q, target: string) => {
     const t = target.trim().toLowerCase();
-    if (t.startsWith("data:image/") || t.startsWith("#")) return m;
+    if (t.startsWith("data:image/") || t.startsWith("#") || /^\/images\/[a-z0-9_-]+\.(png|jpe?g|webp)$/.test(t)) return m;
     warnings.push(`external url() removed: ${target.slice(0, 60)}`);
     return "none";
   });
@@ -80,22 +80,30 @@ export interface SanitizeOptions {
 const escapeText = (v: string) => v.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]!));
 
 /**
- * The header menu stays short by rule: at most `max` links in the header's
- * first <nav>. Extra links (with their <li> wrappers) are dropped; the footer
- * nav, which lists every page, is untouched.
+ * The header menu stays short by rule: at most `max` page links anywhere in
+ * the <header>, counted once per destination. The brand link (href="/") and
+ * button-styled links (the header CTA) do not count. Extra links, with their
+ * <li> wrappers, are dropped; the footer nav lists every page anyway.
  */
 export function capHeaderNav(html: string, max = 5): string {
   const header = /<header\b[\s\S]*?<\/header>/i.exec(html);
   if (!header) return html;
-  const nav = /<nav\b[\s\S]*?<\/nav>/i.exec(header[0]);
-  if (!nav) return html;
-  let seen = 0;
-  const trimmed = nav[0].replace(/<li\b[^>]*>\s*<a\b[^>]*>[\s\S]*?<\/a>\s*<\/li>|<a\b[^>]*href="[^"]*"[^>]*>[\s\S]*?<\/a>/gi, (m) => {
-    seen += 1;
-    return seen <= max ? m : "";
+  const seen = new Set<string>();
+  let brandSeen = false;
+  let kept = 0;
+  const trimmed = header[0].replace(/<li\b[^>]*>\s*<a\b[^>]*>[\s\S]*?<\/a>\s*<\/li>|<a\b[^>]*>[\s\S]*?<\/a>/gi, (m) => {
+    const href = /\bhref="([^"]*)"/i.exec(m)?.[1] ?? "";
+    const cls = /\bclass="([^"]*)"/i.exec(m)?.[1] ?? "";
+    if (/\bbtn\b/.test(cls)) return m;
+    if (href === "/" && !brandSeen) { brandSeen = true; return m; }
+    if (!href.startsWith("/")) return m;
+    if (seen.has(href)) return "";
+    if (kept >= max) return "";
+    seen.add(href);
+    kept += 1;
+    return m;
   });
-  if (trimmed === nav[0]) return html;
-  return html.replace(header[0], header[0].replace(nav[0], trimmed));
+  return trimmed === header[0] ? html : html.replace(header[0], trimmed);
 }
 
 /**
@@ -199,6 +207,14 @@ export function sanitizePage(input: string, opts: SanitizeOptions): SanitizedPag
     },
   });
 
+  // Images are the site's own generated ones or inline data; nothing fetched.
+  html = html.replace(/<img\b[^>]*>/gi, (tag) => {
+    const src = /\bsrc="([^"]*)"/i.exec(tag)?.[1] ?? "";
+    if (src.startsWith("data:image/") || /^\/images\/[a-z0-9_-]+\.(png|jpe?g|webp)$/i.test(src)) return tag;
+    warnings.push(`image with a disallowed src removed: ${src.slice(0, 60)}`);
+    return "";
+  });
+
   // Every form posts to this site's own endpoint with the honeypot field the
   // router expects — whatever the model wrote.
   html = html.replace(/<form\b([^>]*)>([\s\S]*?)<\/form>/gi, (_m, attrs: string, inner: string) => {
@@ -222,6 +238,27 @@ export function sanitizePage(input: string, opts: SanitizeOptions): SanitizedPag
   if (!/^\s*<!doctype html>/i.test(html)) html = `<!doctype html>\n${html}`;
 
   return { html, warnings: [...new Set(warnings)] };
+}
+
+/** Ad Grants asks that the site state its nonprofit status and EIN. If the
+ *  footer does not already, a legal line is added to it. */
+export function ensureFooterStatus(html: string, org: { legalName: string | null; status: string | null; ein: string | null }): string {
+  const parts: string[] = [];
+  if (org.legalName && org.status) parts.push(`${escapeText(org.legalName)} is a registered ${escapeText(org.status)}.`);
+  else if (org.status) parts.push(`A registered ${escapeText(org.status)}.`);
+  if (org.ein) parts.push(`EIN ${escapeText(org.ein)}.`);
+  if (!parts.length) return html;
+  const footer = /<footer\b[\s\S]*?<\/footer>/i.exec(html);
+  const present = (t: string) => footer && footer[0].includes(t);
+  if (footer && (org.ein ? present(org.ein) : true) && (org.status ? present(org.status) : true)) return html;
+  const line = `<p class="footer__status">${parts.join(" ")}</p>`;
+  if (footer) {
+    const withLegal = /<div class="footer__legal">/i.test(footer[0])
+      ? footer[0].replace(/<div class="footer__legal">/i, `<div class="footer__legal">${line}`)
+      : footer[0].replace(/<\/footer>$/i, `<div class="footer__legal">${line}</div></footer>`);
+    return html.replace(footer[0], withLegal);
+  }
+  return html.replace(/<\/body>/i, `<footer class="site-footer"><div class="container"><div class="footer__legal">${line}</div></div></footer></body>`);
 }
 
 /** The pieces later pages must reuse so the site reads as one design. */

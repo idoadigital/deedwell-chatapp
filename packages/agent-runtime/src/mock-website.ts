@@ -265,6 +265,38 @@ export function siteHtml(request: ModelRequest): string {
   const forms = jsonBlock<Array<{ formKey: string; action: string }>>(request, "site_forms", []);
   const site = jsonBlock<{ siteName?: string }>(request, "site", {});
   const escape = (v: unknown) => String(v ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]!));
+  const isStyleGuide = !request.dataBlocks.some((b) => b.label === "page");
+  const isPageMain = request.dataBlocks.some((b) => b.label === "site_styles");
+
+  if (isStyleGuide) {
+    // Every contract hook styled, header with five links, footer with all.
+    const hooks = [
+      ".container", ".btn", ".btn--primary", ".skip-link", ".site-header", ".site-nav", ".hero", ".hero__title",
+      ".section", ".section__title", ".cards", ".card", ".stats", ".stat__value", ".split", ".quote", ".steps",
+      ".faq", ".team", ".cta-band", ".donate", ".donate__amounts", ".contact", ".field", ".site-footer", ".footer__legal",
+    ];
+    const css = `:root{--accent:#2b6cb0}body{font-family:system-ui;margin:0}${hooks.map((h) => `${h}{display:block}`).join("")}`;
+    return `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Style guide</title><style>${css}</style></head>
+<body data-designed="mock"><a class="skip-link" href="#main">Skip</a>
+<header class="site-header"><div class="container site-header__inner"><a class="brand" href="/">${escape(site.siteName)}</a><nav class="site-nav" aria-label="Main"><ul>${nav.slice(1, 5).map((n) => `<li><a href="${n.href}">${escape(n.title)}</a></li>`).join("")}</ul></nav></div></header>
+<main id="main"><section class="hero"><div class="container"><h1 class="hero__title">Sample</h1></div></section></main>
+<footer class="site-footer"><div class="container"><nav class="footer__nav" aria-label="Footer"><ul>${nav.map((n) => `<li><a href="${n.href}">${escape(n.title)}</a></li>`).join("")}</ul></nav><div class="footer__legal"><p>© ${escape(site.siteName)}</p></div></div></footer></body></html>`;
+  }
+  if (isPageMain) {
+    const blocks = page.blocks ?? [];
+    const hasHero = blocks.some((b) => b.kind === "hero");
+    const sections = blocks.map((b) => {
+      if (b.kind === "hero") return `<section class="hero"><div class="container hero__inner"><div class="hero__copy"><h1 class="hero__title">${escape(b.heading)}</h1><p class="hero__lead">${escape(b.tagline)}</p></div></div></section>`;
+      if (b.kind === "form") {
+        const action = forms.find((f) => f.formKey === b.formKey)?.action ?? "/forms/site/contact";
+        const fields = ((b.fields as Array<{ key: string; label: string; type: string }>) ?? []).map((f) =>
+          `<div class="field"><label for="f-${f.key}">${escape(f.label)}</label>${f.type === "textarea" ? `<textarea id="f-${f.key}" name="${f.key}"></textarea>` : `<input id="f-${f.key}" name="${f.key}" type="${f.type}">`}</div>`).join("");
+        return `<section class="section"><div class="container"><h2 class="section__title">${escape(b.heading)}</h2><form class="form" method="post" action="${action}"><input type="hidden" name="website" value="">${fields}<button class="btn btn--primary" type="submit">Send</button></form></div></section>`;
+      }
+      return `<section class="section"><div class="container"><div class="section__head"><h2 class="section__title">${escape(b.heading ?? "Section")}</h2></div><div class="prose"><p>${escape(b.body ?? b.quote ?? JSON.stringify(b).slice(0, 120))}</p></div></div></section>`;
+    });
+    return `<main id="main" data-designed="mock">${hasHero ? "" : `<section class="hero"><div class="container"><h1 class="hero__title">${escape(page.title)}</h1></div></section>`}${sections.join("\n")}</main>`;
+  }
   const sections = (page.blocks ?? []).map((b, i) => {
     if (b.kind === "hero") return `<section class="hero"><h1>${escape(b.heading)}</h1><p>${escape(b.tagline)}</p></section>`;
     if (b.kind === "form") {

@@ -29,7 +29,7 @@ import {
   WEBSITE_AGENTS,
 } from "@deedwell/website-domain";
 import { ALL_AD_GRANTS_AGENTS, buildAdGrantsWorkflow } from "@deedwell/adgrants-domain";
-import { readProviderKey } from "@deedwell/content-domain";
+import { createImageGenerator, readProviderKey } from "@deedwell/content-domain";
 import { createGcpGrantPlatform, type GcpGrantPlatform } from "./gcp/platform.js";
 
 export interface Deps {
@@ -92,7 +92,12 @@ export async function createDeps(overrides: Partial<{
       ? (await import("@deedwell/browser-automation")).createGoogleAutomation({ appPool, storage })
       : undefined;
 
-  const services: GrantServices = { provider, gateway, storage, research, google, designer };
+  const services: GrantServices = {
+    provider, gateway, storage, research, google, designer,
+    // Site photography uses the image model behind Content Studio, with the
+    // key Platform Admin keeps; "mock" in tests.
+    images: async () => createImageGenerator({ apiKey: await readProviderKey(appPool, "openai") }),
+  };
   const engine = new PgWorkflowEngine<GrantServices>(
     adminPool,
     appPool,

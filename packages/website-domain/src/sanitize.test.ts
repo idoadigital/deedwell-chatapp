@@ -60,8 +60,13 @@ describe("capHeaderNav", () => {
     const html = `<header><nav aria-label="Main"><ul>${items.map((h) => `<li><a href="${h}">x</a></li>`).join("")}</ul></nav></header><footer><nav aria-label="Footer">${items.map((h) => `<a href="${h}">x</a>`).join("")}</nav></footer>`;
     const out = capHeaderNav(html);
     const header = /<header[\s\S]*<\/header>/.exec(out)![0];
-    expect([...header.matchAll(/href="([^"]+)"/g)].map((m) => m[1])).toEqual(["/", "/a/", "/b/", "/c/", "/d/"]);
+    expect([...header.matchAll(/href="([^"]+)"/g)].map((m) => m[1])).toEqual(["/", "/a/", "/b/", "/c/", "/d/", "/e/"]);
     expect((out.match(/<footer[\s\S]*<\/footer>/)![0].match(/href=/g) ?? []).length).toBe(7);
+  });
+  it("counts links across the whole header once each, and never the brand or the CTA", () => {
+    const html = `<header><a class="brand" href="/">Org</a><nav><ul><li><a href="/a/">a</a></li><li><a href="/b/">b</a></li><li><a href="/c/">c</a></li><li><a href="/d/">d</a></li><li><a href="/e/">e</a></li><li><a href="/f/">f</a></li></ul></nav><details><summary>Menu</summary><a href="/a/">a</a><a href="/f/">f</a></details><a class="btn btn--primary" href="/donate/">Donate</a></header>`;
+    const out = capHeaderNav(html);
+    expect([...out.matchAll(/href="([^"]+)"/g)].map((m) => m[1])).toEqual(["/", "/a/", "/b/", "/c/", "/d/", "/e/", "/donate/"]);
   });
   it("leaves a short menu alone", () => {
     const html = `<header><nav><a href="/">a</a><a href="/b/">b</a></nav></header>`;
