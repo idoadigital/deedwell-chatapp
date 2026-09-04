@@ -45,6 +45,15 @@ describe("sanitizePage", () => {
   });
 });
 
+describe("normalizeInternalLinks", () => {
+  it("puts the site's own links into directory form and leaves everything else", () => {
+    const { html } = sanitizePage(page(
+      `<main><h1>x</h1><a href="/about">a</a><a href="/about/index.html">b</a><a href="/about/#team">c</a><a href="/">d</a><a href="/nope">e</a><a href="https://x.org/about">f</a></main>`
+    ), { slug: "s", pageUrls: ["/", "/about/"] });
+    expect([...html.matchAll(/href="([^"]+)"/g)].map((m) => m[1])).toEqual(["/about/", "/about/", "/about/#team", "/", "/nope", "https://x.org/about"]);
+  });
+});
+
 describe("sanitizeCss", () => {
   it("keeps data URIs and fragment references", () => {
     const { css, warnings } = sanitizeCss(`.a{background:url("data:image/svg+xml,%3Csvg%3E")}.b{fill:url(#grad)}`);

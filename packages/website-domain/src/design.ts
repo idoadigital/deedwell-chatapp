@@ -87,7 +87,7 @@ export async function designPage(args: DesignPageArgs): Promise<DesignedPage> {
     outputSchemaRef: "site_html",
   });
 
-  const cleaned = sanitizePage(response.text, { slug: args.site.slug });
+  const cleaned = sanitizePage(response.text, { slug: args.site.slug, pageUrls: args.nav.map((n) => n.href) });
   if (!looksLikeAPage(cleaned.html)) {
     throw new Error(`Designed page for "${args.page.slug}" is not a usable document (${cleaned.html.length} chars)`);
   }

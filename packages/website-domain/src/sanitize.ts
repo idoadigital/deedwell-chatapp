@@ -69,6 +69,23 @@ export function sanitizeCss(css: string): { css: string; warnings: string[] } {
 export interface SanitizeOptions {
   /** The site's slug: every form must post to /forms/<slug>/<formKey>. */
   slug: string;
+  /** The site's page URLs (e.g. "/", "/about/"): internal links are
+   *  normalised onto them, so "/about" or "/about/index.html" become "/about/". */
+  pageUrls?: string[];
+}
+
+/** Links to the site's own pages in their canonical directory form. Models
+ *  drop the trailing slash more often than not; the router would redirect,
+ *  but the release check wants links that resolve as written. */
+export function normalizeInternalLinks(html: string, pageUrls: string[]): string {
+  const valid = new Set(pageUrls);
+  return html.replace(/\bhref="(\/[^"#?]*)([#?][^"]*)?"/g, (m, path: string, tail: string | undefined) => {
+    if (path.startsWith("/forms/")) return m;
+    let p = path.replace(/\/index\.html$/, "/");
+    if (!p.endsWith("/")) p = `${p}/`;
+    if (p === "//") p = "/";
+    return valid.has(p) ? `href="${p}${tail ?? ""}"` : m;
+  });
 }
 
 export function sanitizePage(input: string, opts: SanitizeOptions): SanitizedPage {
@@ -148,6 +165,8 @@ export function sanitizePage(input: string, opts: SanitizeOptions): SanitizedPag
     const body = inner.replace(/<input\b[^>]*\bname="website"[^>]*>/gi, "");
     return `<form method="post" action="/forms/${opts.slug}/${key}"${rest}><input type="hidden" name="website" value="" tabindex="-1" autocomplete="off" aria-hidden="true">${body}</form>`;
   });
+
+  if (opts.pageUrls?.length) html = normalizeInternalLinks(html, opts.pageUrls);
 
   // Document scaffolding the checks and browsers rely on.
   if (!/<html\b[^>]*\blang=/i.test(html)) html = html.replace(/<html\b/i, '<html lang="en"');

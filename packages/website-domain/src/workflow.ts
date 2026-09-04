@@ -21,6 +21,7 @@ import {
 } from "./intake.js";
 import { findPlaceholders, stripPlaceholderBlocks } from "./placeholders.js";
 import { designPage, pageContentHash, type SharedDesign } from "./design.js";
+import { normalizeInternalLinks } from "./sanitize.js";
 import {
   ensureRequiredSections,
   loadReferenceTemplate,
@@ -339,7 +340,8 @@ async function buildRelease(ctx: Ctx, siteId: string): Promise<StepResult> {
     const d = designed.get(page.slug);
     if (!d || d.hash !== pageContentHash(page)) continue;
     const file = files.find((f) => f.path === (page.slug === "home" ? "index.html" : `${page.slug}/index.html`));
-    if (file) { file.content = d.html; designedCount += 1; }
+    // Renderings made before link normalisation existed are fixed here too.
+    if (file) { file.content = normalizeInternalLinks(d.html, [...pages.map((p) => pageUrl(p.slug)), "/thanks/"]); designedCount += 1; }
   }
   const checks = runSiteChecks(files, pages);
 
