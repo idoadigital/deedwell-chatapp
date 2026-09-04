@@ -19,6 +19,7 @@ import {
   WEBSITE_DIRECTION_KEYS,
   WEBSITE_ESSENTIAL_FACTS,
 } from "./intake.js";
+import { findPlaceholders, stripPlaceholderBlocks } from "./placeholders.js";
 import {
   ensureRequiredSections,
   loadReferenceTemplate,
@@ -592,19 +593,56 @@ export function buildWebsiteBuildWorkflow(): WorkflowDefinition<WebsiteServices>
         );
         await recordModelUsage(ctx, websiteCopywriter.agentKey, result.tokensEstimated);
 
-        const page = SitePage.parse({ ...result.output.page, slug });
+        // Markers in the page are a broken page, and the release checker
+        // would block publishing for them. One corrective pass names exactly
+        // what was wrong; whatever still carries a marker after that is
+        // dropped, so a release can never contain one.
+        let output = result.output;
+        let markers = findPlaceholders(SitePage.parse({ ...output.page, slug }));
+        if (markers.length) {
+          const retry = await runAgentTask<SitePageOutput>(
+            ctx.services.provider, websiteCopywriter,
+            `Write the "${plan.title}" page. Write only this page.`,
+            [
+              { label: "org_facts", content: JSON.stringify(facts) },
+              { label: "intake", content: JSON.stringify({ siteName: input.siteName, donateUrl: input.donateUrl }) },
+              { label: "intake_preferences", content: JSON.stringify(ctx.state.intake ?? {}) },
+              { label: "brief", content: JSON.stringify(brief ?? {}) },
+              { label: "page_plan", content: JSON.stringify({ ...plan, slug }) },
+              { label: "revision_note", content:
+                `Your previous draft of this page contained placeholder markers: ${markers.join("; ")}. ` +
+                "Remove every block or field that needs a fact you do not have, and list those facts in \"placeholders\" instead. No marker may remain." },
+              ...siteGenerationDataBlocks({ requiredSections: [], guidance: "" }, reference),
+            ]
+          );
+          await recordModelUsage(ctx, websiteCopywriter.agentKey, retry.tokensEstimated);
+          output = retry.output;
+          markers = findPlaceholders(SitePage.parse({ ...output.page, slug }));
+        }
+        let page = SitePage.parse({ ...output.page, slug });
+        let reportedGaps = output.placeholders;
+        if (markers.length) {
+          const stripped = stripPlaceholderBlocks(page, plan);
+          page = SitePage.parse(stripped.page);
+          reportedGaps = [...new Set([...reportedGaps, ...markers.map((m) => m.replace(/^\[\s*placeholder:?\s*/i, "").replace(/\]$/, "").trim())])];
+          await audit(ctx.client, {
+            tenantId: ctx.tenantId, actorAgent: websiteCopywriter.agentKey,
+            action: "site.placeholder_blocks_removed", entityType: "site", entityId: input.siteId,
+            metadata: { page: slug, removed: stripped.removed, markers },
+          });
+        }
         await upsertPage(ctx, input.siteId, page, cursor);
         await recordPageEvent(ctx, slug, plan.title);
 
         const placeholders = [
           ...((ctx.state.placeholders as string[] | undefined) ?? []),
-          ...result.output.placeholders,
+          ...reportedGaps.map((g) => `${plan.title}: ${g}`),
         ];
-        if (result.output.placeholders.length) {
+        if (reportedGaps.length) {
           await audit(ctx.client, {
             tenantId: ctx.tenantId, actorAgent: websiteCopywriter.agentKey,
             action: "site.placeholders_flagged", entityType: "site", entityId: input.siteId,
-            metadata: { page: slug, placeholders: result.output.placeholders },
+            metadata: { page: slug, placeholders: reportedGaps },
           });
         }
 

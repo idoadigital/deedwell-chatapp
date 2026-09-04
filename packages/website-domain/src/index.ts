@@ -35,3 +35,4 @@ export {
   ensureRequiredSections,
   type ReferenceTemplate,
 } from "./site-generation.js";
+export { findPlaceholders, stripPlaceholderBlocks, PLACEHOLDER_RE } from "./placeholders.js";

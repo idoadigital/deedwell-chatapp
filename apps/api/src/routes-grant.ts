@@ -106,6 +106,8 @@ export function registerGrantRoutes(app: FastifyInstance, ctx: AppContext): void
                 step_budget, last_error, state->'waiting' AS waiting,
                 state->'applied' AS applied, state->'reason' AS reason,
                 state->'changeSummary' AS change_summary, state->'published' AS published,
+                state->'placeholders' AS placeholders, state->'blockingChecks' AS blocking_checks,
+                state->'version' AS release_version,
                 created_at, updated_at
          FROM workflow_runs WHERE id = $1`,
         [runId]
