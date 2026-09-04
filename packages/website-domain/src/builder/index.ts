@@ -82,7 +82,16 @@ export async function buildSite(args: BuildSiteArgs): Promise<{ language: Design
 
   // Stages 4-11 — per page, concurrently.
   const used: ComponentName[] = [];
-  const pages = await Promise.all(args.pages.map(async (page): Promise<BuiltPage> => {
+  const limit = Number(process.env.SITE_DESIGN_CONCURRENCY ?? 4);
+  const queue = [...args.pages];
+  const built: BuiltPage[] = [];
+  const worker = async (): Promise<void> => {
+    while (queue.length) {
+      const page = queue.shift()!;
+      built.push(await buildOne(page));
+    }
+  };
+  const buildOne = async (page: SitePage): Promise<BuiltPage> => {
     const planInput = { page, language, images: args.images.map((i) => i.key), donateUrl: args.donateUrl };
     const planned = (await runStage(args.stage, { stage: "page_plan", scope: page.slug, input: planInput, model: args.planner.name },
       () => planPage({ provider: args.planner, page, language, brief: args.brief, images: args.images, donateUrl: args.donateUrl, siteSlug: args.site.slug, usedComponents: used }))).output;
@@ -97,7 +106,7 @@ export async function buildSite(args: BuildSiteArgs): Promise<{ language: Design
     let critique: CriticReport | null = null;
     const repairs: string[] = [];
     try {
-      const review = (await runStage(args.stage, { stage: "critique", scope: page.slug, input: { html, composition }, model: args.critic.name }, async () => {
+      const review = (await runStage(args.stage, { stage: "critique", scope: page.slug, input: { html, composition, visualQa: Boolean(args.visualQa) }, model: args.critic.name }, async () => {
         const shots = await screenshotPage(html, { enabled: args.visualQa });
         return { report: await critiquePage({ provider: args.critic, page, composition, language, html, screenshots: shots }), screenshots: shots.length };
       })).output;
@@ -119,7 +128,9 @@ export async function buildSite(args: BuildSiteArgs): Promise<{ language: Design
       await say("critique", page.slug, false, `Critique skipped (${String((err as Error).message ?? err).slice(0, 120)}).`);
     }
     return { slug: page.slug, html, composition, critique, repairs };
-  }));
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, args.pages.length) }, worker));
+  const pages = args.pages.map((p) => built.find((b) => b.slug === p.slug)!).filter(Boolean);
 
   return { language, tokens, pages };
 }

@@ -80,9 +80,10 @@ export class MockImageGenerator implements ImageGenerator {
 /** `apiKey` comes from the admin key store. Without one, and outside mock
  *  mode, this throws rather than silently producing nothing. */
 /**
- * Google Imagen on Vertex AI, the same project and credentials the Gemini
- * text provider uses. The fallback when the OpenAI image account cannot
- * serve, and a full generator in its own right.
+ * Gemini's image model on Vertex AI (gemini-2.5-flash-image), the same
+ * project and credentials the Gemini text provider uses. The fallback when
+ * the OpenAI image account cannot serve, and a full generator in its own
+ * right. (Imagen model ids are not enabled for this project; this one is.)
  */
 export class VertexImageGenerator implements ImageGenerator {
   readonly model: string;
@@ -95,34 +96,34 @@ export class VertexImageGenerator implements ImageGenerator {
     if (!project) throw new Error("VertexImageGenerator requires GCP_PROJECT");
     this.project = project;
     this.region = opts.region ?? process.env.VERTEX_REGION ?? "us-central1";
-    this.model = opts.model ?? process.env.VERTEX_IMAGE_MODEL ?? "imagen-3.0-generate-002";
+    this.model = opts.model ?? process.env.VERTEX_IMAGE_MODEL ?? "gemini-2.5-flash-image";
   }
 
   async generate(prompt: string, size: string): Promise<GeneratedImage> {
-    // Imagen takes an aspect ratio, not pixels; landscape → 4:3, portrait → 3:4.
+    // The model takes an aspect ratio, not pixels.
     const [w, h] = size.split("x").map(Number);
-    const aspectRatio = !w || !h || w === h ? "1:1" : w > h ? (w / h > 1.6 ? "16:9" : "4:3") : (h / w > 1.6 ? "9:16" : "3:4");
+    const aspectRatio = !w || !h || w === h ? "1:1" : w > h ? (w / h > 1.6 ? "16:9" : "3:2") : (h / w > 1.6 ? "9:16" : "2:3");
     const token = await this.tokens.get();
     const res = await fetch(
-      `https://${this.region}-aiplatform.googleapis.com/v1/projects/${this.project}/locations/${this.region}/publishers/google/models/${this.model}:predict`,
+      `https://${this.region}-aiplatform.googleapis.com/v1/projects/${this.project}/locations/${this.region}/publishers/google/models/${this.model}:generateContent`,
       {
         method: "POST",
         headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
         body: JSON.stringify({
-          instances: [{ prompt }],
-          parameters: { sampleCount: 1, aspectRatio, personGeneration: "allow_adult", safetySetting: "block_medium_and_above", addWatermark: false, outputOptions: { mimeType: "image/png" } },
+          contents: [{ role: "user", parts: [{ text: prompt }] }],
+          generationConfig: { responseModalities: ["IMAGE"], imageConfig: { aspectRatio } },
         }),
         signal: AbortSignal.timeout(120_000),
       }
     );
     if (!res.ok) {
       const body = await res.text().catch(() => "");
-      throw new Error(`Vertex Imagen request failed (${res.status}): ${body.slice(0, 300)}`);
+      throw new Error(`Vertex image request failed (${res.status}): ${body.slice(0, 300)}`);
     }
-    const json = (await res.json()) as { predictions?: Array<{ bytesBase64Encoded?: string; mimeType?: string }> };
-    const p = json.predictions?.[0];
-    if (!p?.bytesBase64Encoded) throw new Error("Vertex Imagen returned no image (possibly filtered)");
-    return { bytes: Buffer.from(p.bytesBase64Encoded, "base64"), mime: p.mimeType ?? "image/png" };
+    const json = (await res.json()) as { candidates?: Array<{ content?: { parts?: Array<{ inlineData?: { mimeType?: string; data?: string } }> } }> };
+    const part = json.candidates?.[0]?.content?.parts?.find((p) => p.inlineData?.data);
+    if (!part?.inlineData?.data) throw new Error("Vertex image model returned no image (possibly filtered)");
+    return { bytes: Buffer.from(part.inlineData.data, "base64"), mime: part.inlineData.mimeType ?? "image/png" };
   }
 }
 

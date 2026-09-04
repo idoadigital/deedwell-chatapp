@@ -180,12 +180,12 @@ export class GeminiProvider implements ModelProvider {
     // (research worker + local chat engine sharing the same project/model) —
     // this is expected, transient pressure, not a real failure. Back off and
     // retry rather than surfacing it as a hard error on the first burst.
-    const RATE_LIMIT_MAX_RETRIES = 4;
+    const RATE_LIMIT_MAX_RETRIES = 7;
     if ((res.status === 429 || res.status === 503) && rateLimitAttempt < RATE_LIMIT_MAX_RETRIES) {
       const retryAfterHeader = Number(res.headers.get("retry-after"));
       const backoffMs = Number.isFinite(retryAfterHeader) && retryAfterHeader > 0
         ? retryAfterHeader * 1000
-        : Math.min(1000 * 2 ** rateLimitAttempt, 20_000) + Math.floor(Math.random() * 500);
+        : Math.min(1500 * 2 ** rateLimitAttempt, 45_000) + Math.floor(Math.random() * 1500);
       console.log(JSON.stringify({
         at: "model_request_backoff", requestId, provider: "gemini", model: this.model,
         status: res.status, attempt: rateLimitAttempt + 1, backoffMs,

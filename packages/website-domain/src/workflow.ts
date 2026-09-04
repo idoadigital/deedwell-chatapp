@@ -230,6 +230,21 @@ async function recordDesignEvent(ctx: Ctx, slug: string, title: string, ok: bool
   );
 }
 
+/** Run tasks at most `limit` at a time — Vertex quotas are per minute, and
+ *  ten simultaneous page drafts plus their retries were enough to exhaust
+ *  them. Order of results matches the input. */
+async function mapLimited<T, R>(items: T[], limit: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await fn(items[i]!, i);
+    }
+  }));
+  return results;
+}
+
 /** Write one page's copy from its plan: model call, the placeholder
  *  backstop, storage, and the timeline event. Safe to run concurrently. */
 async function writePage(ctx: Ctx, args: {
@@ -801,9 +816,9 @@ export function buildWebsiteBuildWorkflow(): WorkflowDefinition<WebsiteServices>
         const referenceId = (ctx.state.referenceTemplate as { id?: string } | null | undefined)?.id ?? null;
         const reference = await loadReferenceTemplate(ctx.client, ctx.services.storage, referenceId);
         const [results] = await Promise.all([
-          Promise.all(sitemap.map((plan, i) =>
+          mapLimited(sitemap, Number(process.env.SITE_COPY_CONCURRENCY ?? 3), (plan, i) =>
             writePage(ctx, { input, brief, plan, slug: i === 0 ? "home" : plan.slug, orderIdx: i, facts, reference })
-          )),
+          ),
           makeSiteImages(ctx, input.siteId, input.siteName, brief ?? null, sitemap, facts, reference),
         ]);
         const placeholders = [
