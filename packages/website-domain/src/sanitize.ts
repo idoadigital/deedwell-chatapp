@@ -58,8 +58,9 @@ export function sanitizeCss(css: string): { css: string; warnings: string[] } {
   // url() may only point at data: URIs (inline SVG backgrounds); anything
   // that would fetch from the network is dropped.
   out = out.replace(/url\(\s*(['"]?)([^'")]*)\1\s*\)/gi, (m, _q, target: string) => {
-    const t = target.trim().toLowerCase();
-    if (t.startsWith("data:image/") || t.startsWith("#") || /^\/images\/[a-z0-9_-]+\.(png|jpe?g|webp)$/.test(t)) return m;
+    const t = target.trim().toLowerCase().replace(/^(\.\/)?images\//, "/images/");
+    if (t.startsWith("data:image/") || t.startsWith("#")) return m;
+    if (/^\/images\/[a-z0-9_-]+\.(png|jpe?g|webp)$/.test(t)) return `url(${t})`;
     warnings.push(`external url() removed: ${target.slice(0, 60)}`);
     return "none";
   });
@@ -208,8 +209,13 @@ export function sanitizePage(input: string, opts: SanitizeOptions): SanitizedPag
   });
 
   // Images are the site's own generated ones or inline data; nothing fetched.
+  // Models write the site's images as "images/x.png" or "./images/x.png"
+  // about as often as "/images/x.png"; all three mean the same file.
+  const siteImage = (src: string) => src.replace(/^(\.\/)?images\//, "/images/");
   html = html.replace(/<img\b[^>]*>/gi, (tag) => {
-    const src = /\bsrc="([^"]*)"/i.exec(tag)?.[1] ?? "";
+    const raw = /\bsrc="([^"]*)"/i.exec(tag)?.[1] ?? "";
+    const src = siteImage(raw);
+    if (src !== raw) tag = tag.replace(`src="${raw}"`, `src="${src}"`);
     if (src.startsWith("data:image/") || /^\/images\/[a-z0-9_-]+\.(png|jpe?g|webp)$/i.test(src)) return tag;
     warnings.push(`image with a disallowed src removed: ${src.slice(0, 60)}`);
     return "";

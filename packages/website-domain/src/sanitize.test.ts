@@ -92,6 +92,20 @@ describe("ensureNavCoverage", () => {
   });
 });
 
+describe("site images", () => {
+  it("accepts the site's own images in any of the three path forms and nothing else", () => {
+    const { html, warnings } = sanitizePage(
+      `<html><head><title>t</title><style>.a{background:url(images/community.png)}</style></head><body><main><h1>x</h1><img src="/images/hero.png" alt="a"><img src="images/hero.png" alt="b"><img src="./images/programs.png" alt="c"><img src="https://x/y.png" alt="d"></main></body></html>`,
+      { slug: "s" }
+    );
+    expect(html.match(/<img[^>]*>/g)).toEqual([
+      '<img src="/images/hero.png" alt="a" />', '<img src="/images/hero.png" alt="b" />', '<img src="/images/programs.png" alt="c" />',
+    ]);
+    expect(html).toContain("url(/images/community.png)");
+    expect(warnings).toEqual(["image without an allowed src removed"]);
+  });
+});
+
 describe("sanitizeCss", () => {
   it("keeps data URIs and fragment references", () => {
     const { css, warnings } = sanitizeCss(`.a{background:url("data:image/svg+xml,%3Csvg%3E")}.b{fill:url(#grad)}`);

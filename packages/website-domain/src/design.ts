@@ -134,6 +134,15 @@ export async function designPageMain(args: CommonArgs & { page: SitePage; system
 
 const escapeText = (v: string) => v.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]!));
 
+/** What the sanitizer removed or rewrote in the most recent assemblePage
+ *  call, for the build event. Cleared on each call. */
+let lastAssemblyWarnings: string[] = [];
+export function takeAssemblyWarnings(): string[] {
+  const w = lastAssemblyWarnings;
+  lastAssemblyWarnings = [];
+  return w;
+}
+
 /** The deterministic shell around a designed <main>. */
 export function assemblePage(args: {
   site: { name: string; slug: string };
@@ -170,6 +179,7 @@ ${mark(args.system.footer)}
 </body>
 </html>`;
   const cleaned = sanitizePage(doc, { slug: args.site.slug, pageUrls: [...args.nav.map((n) => n.href), "/thanks/"], nav: args.nav });
+  lastAssemblyWarnings = cleaned.warnings;
   const html = ensureFooterStatus(
     ensureNavCoverage(capHeaderNav(normalizeInternalLinks(cleaned.html, [...args.nav.map((n) => n.href), "/thanks/"])), args.nav),
     { legalName: args.organization.legalName ?? args.organization.name, status: args.organization.status, ein: args.organization.ein }

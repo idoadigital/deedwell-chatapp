@@ -20,7 +20,7 @@ import {
   WEBSITE_ESSENTIAL_FACTS,
 } from "./intake.js";
 import { findPlaceholders, stripPlaceholderBlocks } from "./placeholders.js";
-import { assemblePage, designPageMain, designSystem, pageContentHash, type Organization, type SiteDesignSystem } from "./design.js";
+import { assemblePage, designPageMain, designSystem, pageContentHash, takeAssemblyWarnings, type Organization, type SiteDesignSystem } from "./design.js";
 import { generateSiteImages, planSiteImages, type SiteImage } from "./images.js";
 import { createHash } from "node:crypto";
 import { capHeaderNav, ensureNavCoverage, normalizeInternalLinks } from "./sanitize.js";
@@ -401,11 +401,13 @@ async function designNextPage(ctx: Ctx, siteId: string, after: string): Promise<
       const { main, tokensEstimated } = await designPageMain({ ...common, page, system });
       await recordModelUsage(ctx, "website.designer", tokensEstimated);
       const html = assemblePage({ site: common.site, page, nav, system, main, organization });
+      const warnings = takeAssemblyWarnings();
       await ctx.client.query(
         "UPDATE site_pages SET rendered_html = $3, rendered_hash = $4 WHERE site_id = $1 AND slug = $2",
         [siteId, page.slug, html, hash]
       );
-      await recordDesignEvent(ctx, page.slug, page.title, true, "Composed on the site's design system.");
+      await recordDesignEvent(ctx, page.slug, page.title, true,
+        warnings.length ? `Composed on the site's design system. Cleaned up: ${warnings.slice(0, 3).join("; ")}.` : "Composed on the site's design system.");
     } catch (err) {
       await ctx.client.query(
         "UPDATE site_pages SET rendered_html = NULL, rendered_hash = NULL WHERE site_id = $1 AND slug = $2",
