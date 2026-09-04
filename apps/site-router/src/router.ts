@@ -148,7 +148,7 @@ export function buildSiteRouter(deps: SiteRouterDeps): FastifyInstance {
   ) {
     const site = await resolve(slug, mode);
     if (!site?.releasePrefix) {
-      return reply.status(404).type("text/html; charset=utf-8").send(NOT_FOUND_PAGE);
+      return reply.status(404).header("cache-control", "no-store").type("text/html; charset=utf-8").send(NOT_FOUND_PAGE);
     }
     const clean = rest.replace(/^\/+|\/+$/g, "");
     const path = clean === "" ? "index.html" : /\.[a-z0-9]+$/i.test(clean) ? clean : `${clean}/index.html`;
@@ -164,9 +164,9 @@ export function buildSiteRouter(deps: SiteRouterDeps): FastifyInstance {
       // Serve the site's own 404 page (real 404 status — never redirect home).
       try {
         const custom = await deps.storage.get(`${site.releasePrefix}/404.html`);
-        return reply.status(404).type("text/html; charset=utf-8").send(custom);
+        return reply.status(404).header("cache-control", "no-store").type("text/html; charset=utf-8").send(custom);
       } catch {
-        return reply.status(404).type("text/html; charset=utf-8").send(NOT_FOUND_PAGE);
+        return reply.status(404).header("cache-control", "no-store").type("text/html; charset=utf-8").send(NOT_FOUND_PAGE);
       }
     }
   }
@@ -258,7 +258,7 @@ export function buildSiteRouter(deps: SiteRouterDeps): FastifyInstance {
     if (target) return serve(reply, target.slug, target.mode, rest);
     const [slug, ...restParts] = rest.split("/");
     if (!slug || RESERVED_ROOT_SEGMENTS.has(slug)) {
-      return reply.status(404).type("text/html; charset=utf-8").send(NOT_FOUND_PAGE);
+      return reply.status(404).header("cache-control", "no-store").type("text/html; charset=utf-8").send(NOT_FOUND_PAGE);
     }
     const prefix = mountPrefix(headersOf(req), `/${slug}`);
     // Directory URLs get the trailing slash, so the page's relative links
