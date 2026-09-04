@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ensureNavCoverage, extractSharedDesign, looksLikeAPage, sanitizeCss, sanitizePage } from "./sanitize.js";
+import { capHeaderNav, ensureNavCoverage, extractSharedDesign, looksLikeAPage, sanitizeCss, sanitizePage } from "./sanitize.js";
 
 const page = (body: string, head = "") => `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>T</title>${head}</head><body>${body}</body></html>`;
 
@@ -51,6 +51,21 @@ describe("normalizeInternalLinks", () => {
       `<main><h1>x</h1><a href="/about">a</a><a href="/about/index.html">b</a><a href="/about/#team">c</a><a href="/">d</a><a href="/nope">e</a><a href="https://x.org/about">f</a></main>`
     ), { slug: "s", pageUrls: ["/", "/about/"] });
     expect([...html.matchAll(/href="([^"]+)"/g)].map((m) => m[1])).toEqual(["/about/", "/about/", "/about/#team", "/", "/nope", "https://x.org/about"]);
+  });
+});
+
+describe("capHeaderNav", () => {
+  it("keeps the first five header links and drops the rest, footer untouched", () => {
+    const items = ["/", "/a/", "/b/", "/c/", "/d/", "/e/", "/f/"];
+    const html = `<header><nav aria-label="Main"><ul>${items.map((h) => `<li><a href="${h}">x</a></li>`).join("")}</ul></nav></header><footer><nav aria-label="Footer">${items.map((h) => `<a href="${h}">x</a>`).join("")}</nav></footer>`;
+    const out = capHeaderNav(html);
+    const header = /<header[\s\S]*<\/header>/.exec(out)![0];
+    expect([...header.matchAll(/href="([^"]+)"/g)].map((m) => m[1])).toEqual(["/", "/a/", "/b/", "/c/", "/d/"]);
+    expect((out.match(/<footer[\s\S]*<\/footer>/)![0].match(/href=/g) ?? []).length).toBe(7);
+  });
+  it("leaves a short menu alone", () => {
+    const html = `<header><nav><a href="/">a</a><a href="/b/">b</a></nav></header>`;
+    expect(capHeaderNav(html)).toBe(html);
   });
 });
 

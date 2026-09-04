@@ -21,7 +21,7 @@ import {
 } from "./intake.js";
 import { findPlaceholders, stripPlaceholderBlocks } from "./placeholders.js";
 import { designPage, pageContentHash, type SharedDesign } from "./design.js";
-import { ensureNavCoverage, normalizeInternalLinks } from "./sanitize.js";
+import { capHeaderNav, ensureNavCoverage, normalizeInternalLinks } from "./sanitize.js";
 import {
   ensureRequiredSections,
   loadReferenceTemplate,
@@ -416,7 +416,7 @@ async function buildRelease(ctx: Ctx, siteId: string): Promise<StepResult> {
     // Renderings made before link normalisation existed are fixed here too.
     if (file) {
       file.content = ensureNavCoverage(
-        normalizeInternalLinks(d.html, [...pages.map((p) => pageUrl(p.slug)), "/thanks/"]),
+        capHeaderNav(normalizeInternalLinks(d.html, [...pages.map((p) => pageUrl(p.slug)), "/thanks/"])),
         pages.map((p) => ({ title: p.title, href: pageUrl(p.slug) }))
       );
       designedCount += 1;

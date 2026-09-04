@@ -80,6 +80,25 @@ export interface SanitizeOptions {
 const escapeText = (v: string) => v.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]!));
 
 /**
+ * The header menu stays short by rule: at most `max` links in the header's
+ * first <nav>. Extra links (with their <li> wrappers) are dropped; the footer
+ * nav, which lists every page, is untouched.
+ */
+export function capHeaderNav(html: string, max = 5): string {
+  const header = /<header\b[\s\S]*?<\/header>/i.exec(html);
+  if (!header) return html;
+  const nav = /<nav\b[\s\S]*?<\/nav>/i.exec(header[0]);
+  if (!nav) return html;
+  let seen = 0;
+  const trimmed = nav[0].replace(/<li\b[^>]*>\s*<a\b[^>]*>[\s\S]*?<\/a>\s*<\/li>|<a\b[^>]*href="[^"]*"[^>]*>[\s\S]*?<\/a>/gi, (m) => {
+    seen += 1;
+    return seen <= max ? m : "";
+  });
+  if (trimmed === nav[0]) return html;
+  return html.replace(header[0], header[0].replace(nav[0], trimmed));
+}
+
+/**
  * Every page must be reachable from a navigation element. The header keeps
  * to a few links by design, so anything the designer left out of both navs
  * is appended to the footer nav (or a footer "All pages" nav is created).
@@ -192,7 +211,7 @@ export function sanitizePage(input: string, opts: SanitizeOptions): SanitizedPag
   });
 
   if (opts.pageUrls?.length) html = normalizeInternalLinks(html, opts.pageUrls);
-  if (opts.nav?.length) html = ensureNavCoverage(html, opts.nav);
+  if (opts.nav?.length) html = ensureNavCoverage(capHeaderNav(html), opts.nav);
 
   // Document scaffolding the checks and browsers rely on.
   if (!/<html\b[^>]*\blang=/i.test(html)) html = html.replace(/<html\b/i, '<html lang="en"');
