@@ -72,6 +72,31 @@ export interface SanitizeOptions {
   /** The site's page URLs (e.g. "/", "/about/"): internal links are
    *  normalised onto them, so "/about" or "/about/index.html" become "/about/". */
   pageUrls?: string[];
+  /** The site's pages with titles: any page no <nav> links to is added to
+   *  the footer navigation, so every page stays reachable. */
+  nav?: Array<{ title: string; href: string }>;
+}
+
+const escapeText = (v: string) => v.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]!));
+
+/**
+ * Every page must be reachable from a navigation element. The header keeps
+ * to a few links by design, so anything the designer left out of both navs
+ * is appended to the footer nav (or a footer "All pages" nav is created).
+ */
+export function ensureNavCoverage(html: string, nav: Array<{ title: string; href: string }>): string {
+  const navHtml = [...html.matchAll(/<nav\b[\s\S]*?<\/nav>/gi)].map((m) => m[0]).join("\n");
+  const missing = nav.filter((n) => !navHtml.includes(`href="${n.href}"`));
+  if (!missing.length) return html;
+  const links = missing.map((n) => `<li><a href="${n.href}">${escapeText(n.title)}</a></li>`).join("");
+  const footerNav = /<nav\b[^>]*aria-label="Footer"[^>]*>[\s\S]*?<\/nav>/i.exec(html);
+  if (footerNav) {
+    const patched = footerNav[0].replace(/<\/nav>$/i, `<ul class="nav-more">${links}</ul></nav>`);
+    return html.replace(footerNav[0], patched);
+  }
+  const block = `<nav aria-label="All pages"><ul class="nav-more">${links}</ul></nav>`;
+  if (/<\/footer>/i.test(html)) return html.replace(/<\/footer>/i, `${block}</footer>`);
+  return html.replace(/<\/body>/i, `<footer>${block}</footer></body>`);
 }
 
 /** Links to the site's own pages in their canonical directory form. Models
@@ -167,6 +192,7 @@ export function sanitizePage(input: string, opts: SanitizeOptions): SanitizedPag
   });
 
   if (opts.pageUrls?.length) html = normalizeInternalLinks(html, opts.pageUrls);
+  if (opts.nav?.length) html = ensureNavCoverage(html, opts.nav);
 
   // Document scaffolding the checks and browsers rely on.
   if (!/<html\b[^>]*\blang=/i.test(html)) html = html.replace(/<html\b/i, '<html lang="en"');

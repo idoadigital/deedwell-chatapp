@@ -37,5 +37,5 @@ export {
   type ReferenceTemplate,
 } from "./site-generation.js";
 export { findPlaceholders, stripPlaceholderBlocks, PLACEHOLDER_RE } from "./placeholders.js";
-export { sanitizePage, sanitizeCss, extractSharedDesign, looksLikeAPage, normalizeInternalLinks } from "./sanitize.js";
+export { sanitizePage, sanitizeCss, extractSharedDesign, looksLikeAPage, normalizeInternalLinks, ensureNavCoverage } from "./sanitize.js";
 export { designPage, pageContentHash, type DesignPageArgs, type DesignedPage, type SharedDesign } from "./design.js";

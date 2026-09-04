@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { extractSharedDesign, looksLikeAPage, sanitizeCss, sanitizePage } from "./sanitize.js";
+import { ensureNavCoverage, extractSharedDesign, looksLikeAPage, sanitizeCss, sanitizePage } from "./sanitize.js";
 
 const page = (body: string, head = "") => `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>T</title>${head}</head><body>${body}</body></html>`;
 
@@ -51,6 +51,24 @@ describe("normalizeInternalLinks", () => {
       `<main><h1>x</h1><a href="/about">a</a><a href="/about/index.html">b</a><a href="/about/#team">c</a><a href="/">d</a><a href="/nope">e</a><a href="https://x.org/about">f</a></main>`
     ), { slug: "s", pageUrls: ["/", "/about/"] });
     expect([...html.matchAll(/href="([^"]+)"/g)].map((m) => m[1])).toEqual(["/about/", "/about/", "/about/#team", "/", "/nope", "https://x.org/about"]);
+  });
+});
+
+describe("ensureNavCoverage", () => {
+  const nav = [{ title: "Home", href: "/" }, { title: "About", href: "/about/" }, { title: "Donate", href: "/donate/" }];
+  it("appends pages missing from every nav to the footer nav", () => {
+    const html = `<body><header><nav aria-label="Main"><a href="/">Home</a></nav></header><main></main><footer><nav aria-label="Footer"><ul><li><a href="/about/">About</a></li></ul></nav></footer></body>`;
+    const out = ensureNavCoverage(html, nav);
+    expect(out).toContain('<ul class="nav-more"><li><a href="/donate/">Donate</a></li></ul></nav></footer>');
+    expect(out).not.toContain('href="/">Home</a></li>'); // already covered, not duplicated
+  });
+  it("creates a footer nav when there is none", () => {
+    const out = ensureNavCoverage(`<body><header><nav><a href="/">Home</a></nav></header><footer><p>x</p></footer></body>`, nav);
+    expect(out).toContain('<nav aria-label="All pages"><ul class="nav-more"><li><a href="/about/">About</a></li><li><a href="/donate/">Donate</a></li></ul></nav></footer>');
+  });
+  it("leaves a complete page alone", () => {
+    const html = `<body><nav><a href="/">a</a><a href="/about/">b</a><a href="/donate/">c</a></nav></body>`;
+    expect(ensureNavCoverage(html, nav)).toBe(html);
   });
 });
 
