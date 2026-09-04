@@ -100,6 +100,39 @@ describe("Platform Admin → Site Generation Settings", () => {
     expect(list.body.templates.map((t: { id: string }) => t.id)).toContain(id);
   });
 
+  it("edits a template: metadata by PATCH, the picture by a replacement upload", async () => {
+    const created = await api(env.app, "POST", "/v1/admin/site-generation/templates", {
+      token: admin.token,
+      body: { filename: "v1.png", mime: "image/png", contentBase64: PNG_BASE64, title: "Draft", description: "" },
+    });
+    const id = created.body.template.id as string;
+
+    const renamed = await api(env.app, "PATCH", `/v1/admin/site-generation/templates/${id}`, {
+      token: admin.token, body: { title: "Final", description: "Bold hero." },
+    });
+    expect(renamed.body.template).toMatchObject({ title: "Final", description: "Bold hero.", filename: "v1.png" });
+
+    // A different (still valid) PNG: one pixel, opaque black.
+    const replacement = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNgYGD4DwABBAEAX+XjJQAAAABJRU5ErkJggg==";
+    const swapped = await api(env.app, "POST", `/v1/admin/site-generation/templates/${id}/image`, {
+      token: admin.token, body: { filename: "v2.png", mime: "image/png", contentBase64: replacement },
+    });
+    expect(swapped.status).toBe(200);
+    expect(swapped.body.template).toMatchObject({ title: "Final", filename: "v2.png" });
+
+    const content = await env.app.inject({
+      method: "GET", url: `/v1/admin/site-generation/templates/${id}/content`,
+      headers: { authorization: `Bearer ${admin.token}` },
+    });
+    expect(content.rawPayload.equals(Buffer.from(replacement, "base64"))).toBe(true);
+
+    const missing = await api(env.app, "POST", "/v1/admin/site-generation/templates/01a00000-0000-7000-8000-000000000000/image", {
+      token: admin.token, body: { filename: "x.png", mime: "image/png", contentBase64: replacement },
+    });
+    expect(missing.status).toBe(404);
+    await api(env.app, "PATCH", `/v1/admin/site-generation/templates/${id}`, { token: admin.token, body: { status: "archived" } });
+  });
+
   it("refuses non-image uploads", async () => {
     const res = await api(env.app, "POST", "/v1/admin/site-generation/templates", {
       token: admin.token,

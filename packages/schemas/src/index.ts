@@ -697,6 +697,12 @@ export const UploadSiteTemplateInput = z.object({
 });
 export type UploadSiteTemplateInput = z.infer<typeof UploadSiteTemplateInput>;
 
+/** Swap the picture behind an existing template; title and notes stay. */
+export const ReplaceSiteTemplateImageInput = UploadSiteTemplateInput.pick({
+  filename: true, contentBase64: true, mime: true,
+});
+export type ReplaceSiteTemplateImageInput = z.infer<typeof ReplaceSiteTemplateImageInput>;
+
 export const UpdateSiteTemplateInput = z.object({
   title: z.string().min(1).max(120).optional(),
   description: z.string().max(600).optional(),

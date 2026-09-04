@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { platformFileKey, uuidv7 } from "@deedwell/database";
 import {
-  SiteGenerationSettings, UpdateSiteTemplateInput, UploadSiteTemplateInput,
+  ReplaceSiteTemplateImageInput, SiteGenerationSettings, UpdateSiteTemplateInput, UploadSiteTemplateInput,
 } from "@deedwell/schemas";
 import { SITE_GENERATION_SETTINGS_KEY, loadSiteGenerationSettings } from "@deedwell/website-domain";
 import { HttpError, type AppContext } from "./app.js";
@@ -89,6 +89,34 @@ export function registerAdminSiteGenerationRoutes(app: FastifyInstance, ctx: App
       [templateId, input.title ?? null, input.description ?? null, input.status ?? null]
     );
     if (!rows[0]) throw new HttpError(404, "Template not found");
+    return { template: rows[0] };
+  });
+
+  /** Replace the picture behind a template. The new bytes get a new key —
+   *  the storage seam has no delete, and the old URL is cached immutably —
+   *  so the row simply points at the new object from here on. */
+  app.post("/v1/admin/site-generation/templates/:templateId/image", async (req) => {
+    ctx.requirePlatformAdmin(req);
+    const { templateId } = req.params as { templateId: string };
+    const input = ReplaceSiteTemplateImageInput.parse(req.body);
+    const content = Buffer.from(input.contentBase64, "base64");
+    if (content.length === 0) throw new HttpError(400, "Image is empty");
+    if (content.length > MAX_IMAGE_BYTES) throw new HttpError(413, "Image exceeds the 8 MB limit");
+
+    const existing = await deps.appPool.query("SELECT id FROM site_reference_templates WHERE id = $1", [templateId]);
+    if (!existing.rows[0]) throw new HttpError(404, "Template not found");
+
+    const storageKey = platformFileKey("site-templates", `${templateId}-${uuidv7()}`, input.filename);
+    await deps.storage.put(storageKey, content);
+    const { rows } = await deps.appPool.query(
+      `UPDATE site_reference_templates
+          SET filename = $2, mime = $3, size_bytes = $4, sha256 = $5, storage_key = $6
+        WHERE id = $1
+        RETURNING ${TEMPLATE_COLUMNS}`,
+      [templateId, input.filename, input.mime, content.length,
+       createHash("sha256").update(content).digest("hex"), storageKey]
+    );
+    req.log.info({ at: "admin.site_generation.template_image_replaced", userId: req.userId, templateId }, "reference template image replaced");
     return { template: rows[0] };
   });
 
