@@ -19,6 +19,8 @@ import {
 import { MockModelProvider } from "./mock-provider.js";
 import { OpenAiProvider } from "./openai-provider.js";
 import { GeminiProvider } from "./gemini-provider.js";
+import { FallbackProvider } from "./fallback-provider.js";
+export { FallbackProvider } from "./fallback-provider.js";
 
 export { MockModelProvider } from "./mock-provider.js";
 export { GeminiProvider } from "./gemini-provider.js";
@@ -97,11 +99,17 @@ export function createDesignProvider(opts: { openaiKey?: () => Promise<string | 
   const kind = process.env.DESIGN_MODEL_PROVIDER ?? process.env.MODEL_PROVIDER ?? "mock";
   if (kind === "openai") {
     // The key lives with Platform Admin, not in the environment, and "auto"
-    // means the newest general model the account can see.
-    return new OpenAiProvider({
+    // means the newest general model the account can see. When the OpenAI
+    // account cannot serve (no credit, bad key), design falls back to the
+    // strong Gemini tier rather than to the template.
+    const openai = new OpenAiProvider({
       apiKey: opts.openaiKey ?? process.env.OPENAI_API_KEY,
       model: process.env.DESIGN_MODEL ?? "auto",
     });
+    const fallbackKind = process.env.DESIGN_FALLBACK_PROVIDER ?? (process.env.MODEL_PROVIDER === "gemini" ? "gemini" : null);
+    if (!fallbackKind || fallbackKind === "none") return openai;
+    const fallback = createModelProvider(fallbackKind, fallbackKind === "gemini" ? { model: process.env.DESIGN_FALLBACK_MODEL ?? "gemini-2.5-pro" } : {});
+    return new FallbackProvider(openai, fallback);
   }
   const model = process.env.DESIGN_MODEL ?? (kind === "gemini" ? "gemini-2.5-pro" : undefined);
   return createModelProvider(kind, model ? { model } : {});
