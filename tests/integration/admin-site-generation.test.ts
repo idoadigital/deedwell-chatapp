@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { api, createOrg, createTestEnv, registerUser, type TestEnv } from "../helpers.js";
 import { loadSiteGenerationSettings, pickReferenceTemplate } from "@deedwell/website-domain";
+import { buildSiteRouter } from "../../apps/site-router/src/router.js";
 
 // A 1x1 transparent PNG — enough to be a real image without being a fixture file.
 const PNG_BASE64 =
@@ -197,5 +198,38 @@ describe("Platform Admin → Site Generation Settings", () => {
       "SELECT reference_template_id FROM sites WHERE tenant_id = $1", [orgId]
     );
     expect(rows[0]?.reference_template_id).toBe(templateId);
+
+    // Approve the brief and let the mock provider write and build the site,
+    // then read it back the way deedwell.org/preview/<slug>/ does: by path,
+    // with links rewritten to stay inside the mount.
+    await api(env.app, "POST", `/v1/orgs/${orgId}/approvals/${brief.id}`, { token: admin.token, body: { decision: "approved" } });
+    await env.deps.engine.drain("test-worker");
+    const router = buildSiteRouter({ adminPool: env.deps.adminPool, storage: env.deps.storage, baseDomain: "deedwell.test" });
+    await router.ready();
+    try {
+      const home = await router.inject({ method: "GET", url: "/preview/riverbend-sitegen/" });
+      expect(home.statusCode).toBe(200);
+      expect(home.body).toContain('href="/preview/riverbend-sitegen/');
+      expect(home.body).not.toMatch(/href="\/(?!preview\/)/);
+      const bare = await router.inject({ method: "GET", url: "/preview/riverbend-sitegen" });
+      expect(bare.statusCode).toBe(308);
+      expect(bare.headers.location).toBe("/preview/riverbend-sitegen/");
+      // Mounted somewhere else by a proxy: links follow the proxy's mount.
+      const mounted = await router.inject({
+        method: "GET", url: "/preview/riverbend-sitegen/", headers: { "x-forwarded-prefix": "/sites/riverbend-sitegen" },
+      });
+      expect(mounted.body).toContain('href="/sites/riverbend-sitegen/');
+      // Host form is untouched.
+      const host = await router.inject({ method: "GET", url: "/", headers: { host: "preview-riverbend-sitegen.deedwell.test" } });
+      expect(host.statusCode).toBe(200);
+      expect(host.body).not.toContain('href="/preview/');
+      // A form posts back through the prefix and thanks the visitor inside it.
+      const posted = await router.inject({
+        method: "POST", url: "/preview/riverbend-sitegen/forms/riverbend-sitegen/contact",
+        headers: { "content-type": "application/x-www-form-urlencoded" }, payload: "email=a%40b.org&message=hi",
+      });
+      expect(posted.statusCode).toBe(303);
+      expect(posted.headers.location).toBe("/preview/riverbend-sitegen/thanks/");
+    } finally { await router.close(); }
   });
 });

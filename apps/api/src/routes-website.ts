@@ -15,6 +15,9 @@ function siteUrls(row: { slug: string; external_build_url: string | null; live_v
   // Without a wildcard domain, the router's own origin still serves every
   // site by path — so a preview is reachable the moment it is built.
   const routerUrl = (process.env.SITES_ROUTER_URL ?? "").replace(/\/+$/, "") || null;
+  // The dashboard's own origin proxying the router: deedwell.org/preview/<slug>/
+  // for previews and deedwell.org/sites/<slug>/ for published sites.
+  const publicOrigin = (process.env.SITES_PUBLIC_ORIGIN ?? "").replace(/\/+$/, "") || null;
   if (row.external_build_url) {
     return { live_url: row.external_build_url, preview_url: null };
   }
@@ -22,6 +25,12 @@ function siteUrls(row: { slug: string; external_build_url: string | null; live_v
     return {
       live_url: row.live_version ? `${scheme}://${row.slug}.${base}` : null,
       preview_url: row.preview_version ? `${scheme}://preview-${row.slug}.${base}` : null,
+    };
+  }
+  if (publicOrigin) {
+    return {
+      live_url: row.live_version ? `${publicOrigin}/sites/${row.slug}/` : null,
+      preview_url: row.preview_version ? `${publicOrigin}/preview/${row.slug}/` : null,
     };
   }
   if (routerUrl) {

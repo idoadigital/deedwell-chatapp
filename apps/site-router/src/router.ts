@@ -18,6 +18,12 @@ import { summarize } from "@deedwell/observability";
  * *.<base> covers every site and every preview. Path forms: /<slug>/* serves the published release
  * (the production form behind e.g. sites.deedwell.org); /preview/:slug/* the
  * preview; /live/:slug/* is kept as an alias for previously stored links.
+ *
+ * Pages link to each other with root-relative URLs, which is right for the
+ * host forms and wrong for the path forms. In path form the router rewrites
+ * those links on the way out so a site served under /preview/<slug>/ stays
+ * inside /preview/<slug>/. An edge proxy in front (deedwell.org/preview/…)
+ * says where it mounted the site with X-Forwarded-Prefix.
  */
 
 export interface SiteRouterDeps {
@@ -65,6 +71,9 @@ export function buildSiteRouter(deps: SiteRouterDeps): FastifyInstance {
   const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? "info" } });
   void app.register(formbody);
   const baseDomain = deps.baseDomain ?? process.env.SITES_BASE_DOMAIN ?? "deedwell.local";
+  // First-path segments the router owns; never valid site slugs. Kept in
+  // sync with RESERVED_SITE_SLUGS in @deedwell/schemas (enforced at creation).
+  const RESERVED_ROOT_SEGMENTS = new Set(["live", "preview", "forms", "healthz", "thanks"]);
 
   app.addHook("onSend", async (_req, reply) => {
     for (const [header, value] of Object.entries(SECURITY_HEADERS)) reply.header(header, value);
@@ -108,11 +117,31 @@ export function buildSiteRouter(deps: SiteRouterDeps): FastifyInstance {
     return String(headers.host ?? "");
   }
 
+  /** Where the site is mounted, as the visitor sees it: "" for the host
+   *  forms, "/preview/<slug>" or "/<slug>" for the path forms, or whatever an
+   *  edge proxy in front says it used. */
+  function mountPrefix(headers: Record<string, unknown>, own: string): string {
+    const forwarded = headers["x-forwarded-prefix"];
+    const first = Array.isArray(forwarded) ? forwarded[0] : forwarded;
+    if (typeof first === "string" && /^\/[A-Za-z0-9._~\/-]*$/.test(first.trim())) {
+      return first.trim().replace(/\/+$/, "");
+    }
+    return own;
+  }
+
+  /** Root-relative links become prefix-relative. Protocol-relative ("//cdn")
+   *  and absolute URLs are untouched. */
+  function rewriteForPrefix(html: string, prefix: string): string {
+    if (!prefix) return html;
+    return html.replace(/\b(href|src|action)="\/(?!\/)/g, `$1="${prefix}/`);
+  }
+
   async function serve(
     reply: FastifyReply,
     slug: string,
     mode: "preview" | "live",
-    rest: string
+    rest: string,
+    prefix = ""
   ) {
     const site = await resolve(slug, mode);
     if (!site?.releasePrefix) {
@@ -123,10 +152,11 @@ export function buildSiteRouter(deps: SiteRouterDeps): FastifyInstance {
     try {
       const content = await deps.storage.get(`${site.releasePrefix}/${path}`);
       const ext = path.split(".").pop() ?? "html";
+      const body = ext === "html" ? rewriteForPrefix(content.toString("utf8"), prefix) : content;
       return reply
         .type(CONTENT_TYPES[ext] ?? "application/octet-stream")
         .header("cache-control", mode === "live" ? "public, max-age=60" : "no-store")
-        .send(content);
+        .send(body);
     } catch {
       // Serve the site's own 404 page (real 404 status — never redirect home).
       try {
@@ -140,27 +170,52 @@ export function buildSiteRouter(deps: SiteRouterDeps): FastifyInstance {
 
   app.get("/healthz", async () => ({ ok: true }));
 
-  // Dev/test path-based access.
+  // Path-based access: previews always, and the published site by path for
+  // deployments without a wildcard domain.
+  const headersOf = (req: { headers: unknown }) => req.headers as Record<string, unknown>;
   app.get("/preview/:slug", async (req, reply) => {
     const { slug } = req.params as { slug: string };
-    return serve(reply, slug, "preview", "");
+    // Directory URL, so the page's prefixed links resolve inside the site.
+    return reply.redirect(308, `${mountPrefix(headersOf(req), `/preview/${slug}`)}/`);
   });
   app.get("/preview/:slug/*", async (req, reply) => {
     const { slug, "*": rest } = req.params as { slug: string; "*": string };
-    return serve(reply, slug, "preview", rest);
+    return serve(reply, slug, "preview", rest, mountPrefix(headersOf(req), `/preview/${slug}`));
   });
   app.get("/live/:slug", async (req, reply) => {
     const { slug } = req.params as { slug: string };
-    return serve(reply, slug, "live", "");
+    return serve(reply, slug, "live", "", mountPrefix(headersOf(req), `/live/${slug}`));
   });
   app.get("/live/:slug/*", async (req, reply) => {
     const { slug, "*": rest } = req.params as { slug: string; "*": string };
-    return serve(reply, slug, "live", rest);
+    return serve(reply, slug, "live", rest, mountPrefix(headersOf(req), `/live/${slug}`));
   });
 
   // Form submissions (shared API with strict tenant identification — BRD §10.1).
+  // The prefixed forms are what a rewritten page under /preview/<slug>/ or
+  // /<slug>/ posts to; they land in the same handler and thank the visitor
+  // inside the same mount.
   app.post("/forms/:slug/:formKey", async (req, reply) => {
     const { slug, formKey } = req.params as { slug: string; formKey: string };
+    return submitForm(req, reply, slug, formKey, "");
+  });
+  app.post("/preview/:slug/forms/:formSlug/:formKey", async (req, reply) => {
+    const { slug, formKey } = req.params as { slug: string; formKey: string };
+    return submitForm(req, reply, slug, formKey, mountPrefix(headersOf(req), `/preview/${slug}`));
+  });
+  app.post("/:slug/forms/:formSlug/:formKey", async (req, reply) => {
+    const { slug, formKey } = req.params as { slug: string; formKey: string };
+    if (RESERVED_ROOT_SEGMENTS.has(slug)) return reply.status(404).send({ error: "Unknown form" });
+    return submitForm(req, reply, slug, formKey, mountPrefix(headersOf(req), `/${slug}`));
+  });
+
+  async function submitForm(
+    req: { body: unknown; log: { info: (o: unknown, m: string) => void } },
+    reply: FastifyReply,
+    slug: string,
+    formKey: string,
+    prefix: string
+  ) {
     if (!/^[a-z0-9-]{1,40}$/.test(formKey)) return reply.status(404).send({ error: "Unknown form" });
     const site = await resolve(slug, "live") ?? await resolve(slug, "preview");
     if (!site) return reply.status(404).send({ error: "Unknown site" });
@@ -168,7 +223,7 @@ export function buildSiteRouter(deps: SiteRouterDeps): FastifyInstance {
     const body = (req.body ?? {}) as Record<string, unknown>;
     // Honeypot: real visitors never fill the hidden "website" field.
     if (typeof body.website === "string" && body.website.trim() !== "") {
-      return reply.redirect(303, "/thanks/");
+      return reply.redirect(303, `${prefix}/thanks/`);
     }
     const payload: Record<string, string> = {};
     let size = 0;
@@ -189,29 +244,26 @@ export function buildSiteRouter(deps: SiteRouterDeps): FastifyInstance {
       [uuidv7(), site.tenantId, site.siteId, formKey, JSON.stringify(payload)]
     );
     req.log.info({ siteId: site.siteId, formKey, summary: summarize(payload, 200) }, "form submission");
-    return reply.redirect(303, "/thanks/");
-  });
-
-  // First-path segments the router owns; never valid site slugs. Kept in
-  // sync with RESERVED_SITE_SLUGS in @deedwell/schemas (enforced at creation).
-  const RESERVED_ROOT_SEGMENTS = new Set(["live", "preview", "forms", "healthz", "thanks"]);
+    return reply.redirect(303, `${prefix}/thanks/`);
+  }
 
   // Any other GET: host-based routing when the Host matches the base domain,
   // otherwise the bare path form /<slug>/* serving the published release.
   app.get("/*", async (req, reply) => {
     const rest = ((req.params as { "*": string })["*"] ?? "").replace(/^\/+/, "");
-    const target = hostToTarget(visitorHost(req.headers as Record<string, unknown>));
+    const target = hostToTarget(visitorHost(headersOf(req)));
     if (target) return serve(reply, target.slug, target.mode, rest);
     const [slug, ...restParts] = rest.split("/");
     if (!slug || RESERVED_ROOT_SEGMENTS.has(slug)) {
       return reply.status(404).type("text/html; charset=utf-8").send(NOT_FOUND_PAGE);
     }
+    const prefix = mountPrefix(headersOf(req), `/${slug}`);
     // Directory URLs get the trailing slash, so the page's relative links
     // resolve inside the site instead of at the router root.
     if (!rest.endsWith("/") && !/\.[a-z0-9]+$/i.test(rest)) {
-      return reply.redirect(308, `/${rest}/`);
+      return reply.redirect(308, `${prefix}/${restParts.join("/")}${restParts.length ? "/" : ""}`);
     }
-    return serve(reply, slug, "live", restParts.join("/"));
+    return serve(reply, slug, "live", restParts.join("/"), prefix);
   });
 
   return app;
