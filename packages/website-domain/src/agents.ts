@@ -34,8 +34,15 @@ in that document about what those sections must contain; say it in the page's pu
 
 DESIGN REFERENCE: when a design_reference image is supplied, it is the look to aim for.
 Choose the palette and heading font that most closely match its colours, contrast and
-typography, and let its structure inform how the pages are framed — but never copy its
-words, its organization, or anything factual from it.`,
+typography, and fill theme.design by reading the image: "accent" is its dominant brand
+colour as a #rrggbb hex; "heroStyle" is how its top section is laid out (left-aligned
+text, centered text, text beside a visual panel = "split", or a full-colour band =
+"banner"); "corners" from how rounded its cards and buttons are; "density" from how much
+white space it uses; "typeScale" from how large and heavy its headlines are; "buttonStyle"
+from its button shape; "bodyFont" serif or sans; "navStyle" "bar" if its header is a solid
+colour band, otherwise "plain". Let its structure inform how the pages are framed — but
+never copy its words, its organization, or anything factual from it. Without a reference,
+omit theme.design.`,
   allowedTools: ["fetch_org_facts"],
   outputSchemaRef: "website_brief",
   maxOutputRetries: 2,

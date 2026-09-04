@@ -24,7 +24,7 @@ body{
   font-family:var(--font-body);font-size:var(--fs-body);line-height:1.65;
   -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;
 }
-h1,h2,h3,h4{font-family:var(--font-head);color:var(--ink);margin:0 0 var(--s4);font-weight:700}
+h1,h2,h3,h4{font-family:var(--font-head);color:var(--ink);margin:0 0 var(--s4);font-weight:var(--head-weight,700)}
 h1{font-size:var(--fs-h1);line-height:1.1;letter-spacing:-0.022em}
 h2{font-size:var(--fs-h2);line-height:1.15;letter-spacing:-0.018em}
 h3{font-size:var(--fs-h3);line-height:1.3;letter-spacing:-0.008em}
@@ -99,7 +99,7 @@ header.site{
 }
 .nav-cta{
   background:var(--accent);color:var(--accent-ink) !important;
-  padding:9px 18px !important;border-radius:var(--r-pill);font-weight:600;
+  padding:9px 18px !important;border-radius:var(--r-button,var(--r-pill));font-weight:600;
   box-shadow:var(--shadow-sm);
 }
 .nav-cta:hover{background:var(--accent-deep)}
@@ -108,7 +108,7 @@ header.site{
 .button{
   display:inline-flex;align-items:center;gap:var(--s2);
   background:var(--accent);color:var(--accent-ink);
-  padding:14px 28px;border-radius:var(--r-pill);
+  padding:14px 28px;border-radius:var(--r-button,var(--r-pill));
   text-decoration:none;font-weight:600;font-size:1rem;line-height:1;
   box-shadow:var(--shadow-sm);border:1px solid transparent;
   transition:transform .15s ease,box-shadow .15s ease,background .15s ease;
@@ -127,7 +127,7 @@ header.site{
 .actions{display:flex;flex-wrap:wrap;gap:var(--s3);align-items:center;margin-top:var(--s6)}
 
 /* ---- hero -------------------------------------------------------------- */
-.hero{position:relative;overflow:hidden;padding-block:clamp(3.5rem,10vw,7.5rem);background:var(--band)}
+.hero{position:relative;overflow:hidden;padding-block:var(--hero-pad,clamp(3.5rem,10vw,7.5rem));background:var(--band)}
 .hero::before{
   /* Soft off-centre wash — gives the hero depth without an image, which
      matters because most nonprofits have no usable hero photograph. */
@@ -140,6 +140,38 @@ header.site{
 .hero h1{font-size:var(--fs-display);letter-spacing:-0.035em;line-height:1.02;margin-bottom:var(--s5);max-width:17ch}
 .hero .lead{font-size:var(--fs-lead);max-width:54ch}
 .hero-rule{width:64px;height:4px;background:var(--accent);border-radius:2px;margin-bottom:var(--s5)}
+
+/* ---- design variants (from the reference design, via body classes) ---- */
+body.hero-centered .hero .wrap{text-align:center}
+body.hero-centered .hero h1,body.hero-centered .hero .lead{margin-inline:auto}
+body.hero-centered .hero-rule{margin-inline:auto}
+body.hero-centered .hero .actions{justify-content:center}
+body.hero-centered .hero .eyebrow{justify-content:center}
+body.hero-banner .hero{background:linear-gradient(135deg,var(--accent) 0%,var(--accent-deep) 100%);color:var(--accent-ink)}
+body.hero-banner .hero::before{display:none}
+body.hero-banner .hero h1,body.hero-banner .hero .lead{color:var(--accent-ink)}
+body.hero-banner .hero .lead{opacity:.92}
+body.hero-banner .hero .eyebrow{color:var(--accent-ink);opacity:.85}
+body.hero-banner .hero-rule{background:var(--accent-ink);opacity:.7}
+body.hero-banner .hero .button{background:var(--surface);color:var(--accent)}
+body.hero-banner .hero .button.ghost{background:transparent;color:var(--accent-ink);border-color:currentColor}
+body.hero-split .hero .wrap{display:grid;gap:var(--s6);align-items:center}
+@media (min-width:880px){body.hero-split .hero .wrap{grid-template-columns:minmax(0,1.15fr) minmax(0,.85fr);gap:var(--s8)}}
+.hero-panel{display:none}
+body.hero-split .hero-panel{
+  display:block;min-height:18rem;border-radius:var(--r-lg);
+  background:
+    radial-gradient(60% 55% at 30% 30%,color-mix(in srgb,var(--accent) 55%,white) 0%,transparent 70%),
+    linear-gradient(160deg,var(--accent) 0%,var(--accent-deep) 100%);
+  box-shadow:var(--shadow-lg);
+}
+body.nav-bar header.site{background:var(--accent);border-bottom:0;backdrop-filter:none}
+body.nav-bar .brand,body.nav-bar .nav-links a{color:var(--accent-ink)}
+body.nav-bar .brand:hover,body.nav-bar .nav-links a:hover{color:var(--accent-ink);opacity:.85}
+body.nav-bar .nav-links a[aria-current="page"]::after{background:var(--accent-ink)}
+body.nav-bar .nav-cta{background:var(--surface);color:var(--accent) !important}
+body.nav-bar .nav-cta:hover{background:var(--surface);opacity:.9}
+body.buttons-square .card{border-radius:var(--r-md)}
 
 /* ---- prose ------------------------------------------------------------- */
 .prose{max-width:var(--measure)}

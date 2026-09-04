@@ -29,6 +29,28 @@ const PAGES: SitePage[] = [
 
 const THEME = { palette: "forest", headingFont: "serif" } as const;
 
+describe("design read from a reference", () => {
+  it("changes the look through tokens and body classes, never the content", () => {
+    const [plain] = renderSite({ siteName: "T", slug: "t", pages: PAGES, theme: THEME });
+    const [styled] = renderSite({
+      siteName: "T", slug: "t", pages: PAGES,
+      theme: { ...THEME, design: { accent: "#2B6CB0", heroStyle: "banner", corners: "sharp", density: "compact", typeScale: "bold", buttonStyle: "square", bodyFont: "serif", navStyle: "bar" } },
+    });
+    expect(plain!.content).toContain('<body class="hero-left nav-plain buttons-pill">');
+    expect(styled!.content).toContain('<body class="hero-banner nav-bar buttons-square">');
+    expect(styled!.content).toContain("--accent:#2b6cb0;");
+    expect(styled!.content).toContain("--accent-ink:#ffffff");
+    expect(styled!.content).toContain("--r-button:3px");
+    expect(styled!.content).toContain("--head-weight:800");
+    // A light brand colour gets dark text on it.
+    const [light] = renderSite({ siteName: "T", slug: "t", pages: PAGES, theme: { ...THEME, design: { accent: "#F5D76E" } } });
+    expect(light!.content).toContain("--accent-ink:#111318");
+    // Copy is identical either way.
+    const text = (html: string) => html.replace(/<style>[\s\S]*?<\/style>/, "").replace(/<body[^>]*>/, "<body>");
+    expect(text(styled!.content)).toBe(text(plain!.content));
+  });
+});
+
 describe("static site renderer (approved templates)", () => {
   it("escapes hostile content — user data can never become markup", () => {
     const hostile: SitePage[] = [

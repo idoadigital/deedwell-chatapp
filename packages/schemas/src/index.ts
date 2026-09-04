@@ -646,9 +646,26 @@ export const SITE_PALETTES = [
   "forest", "ocean", "slate", "sunrise", "plum", "meadow", "harvest", "midnight",
 ] as const;
 
+/** Design decisions read off a reference design, all optional: a site with
+ *  none of them renders exactly as before. Each maps to CSS the renderer
+ *  already emits, so the model chooses looks, never writes styles. */
+export const SiteDesign = z.object({
+  /** Dominant brand colour as #rrggbb; overrides the palette's accent. */
+  accent: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
+  heroStyle: z.enum(["left", "centered", "split", "banner"]).optional(),
+  corners: z.enum(["sharp", "soft", "round"]).optional(),
+  density: z.enum(["airy", "balanced", "compact"]).optional(),
+  typeScale: z.enum(["quiet", "balanced", "bold"]).optional(),
+  buttonStyle: z.enum(["pill", "rounded", "square"]).optional(),
+  bodyFont: z.enum(["sans", "serif"]).optional(),
+  navStyle: z.enum(["plain", "bar"]).optional(),
+});
+export type SiteDesign = z.infer<typeof SiteDesign>;
+
 export const SiteTheme = z.object({
   palette: z.enum(SITE_PALETTES),
   headingFont: z.enum(["serif", "sans"]),
+  design: SiteDesign.optional(),
 });
 export type SiteTheme = z.infer<typeof SiteTheme>;
 

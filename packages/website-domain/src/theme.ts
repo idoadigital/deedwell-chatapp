@@ -92,26 +92,69 @@ const FONTS = {
     "'Inter var',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif",
 };
 
+/** Relative luminance of a #rrggbb colour (sRGB, WCAG formula). */
+function luminance(hex: string): number {
+  const c = hex.replace("#", "");
+  const ch = (i: number) => {
+    const v = parseInt(c.slice(i, i + 2), 16) / 255;
+    return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+  };
+  return 0.2126 * ch(0) + 0.7152 * ch(2) + 0.0722 * ch(4);
+}
+
+/** The body classes the stylesheet's design variants hang off. */
+export function designClasses(theme: SiteTheme): string {
+  const d = theme.design ?? {};
+  return [
+    `hero-${d.heroStyle ?? "left"}`,
+    `nav-${d.navStyle ?? "plain"}`,
+    `buttons-${d.buttonStyle ?? "pill"}`,
+  ].join(" ");
+}
+
 export function themeTokens(theme: SiteTheme): string {
   const p = PALETTES[theme.palette];
+  const d = theme.design ?? {};
   const heading = theme.headingFont === "serif" ? FONTS.serif : FONTS.sans;
+  const body = d.bodyFont === "serif" ? FONTS.serif : FONTS.sans;
+
+  // A brand colour from the reference replaces the palette accent. Its
+  // companions are mixed from it in CSS; the ink on it is picked here by
+  // luminance so a light brand colour never gets white text.
+  const accent = d.accent ? d.accent.toLowerCase() : p.accent;
+  const accentInk = d.accent ? (luminance(accent) > 0.4 ? "#111318" : "#ffffff") : p.accentInk;
+  const accentDeep = d.accent ? `color-mix(in srgb,${accent} 78%,black)` : p.accentDeep;
+  const accentSoft = d.accent ? `color-mix(in srgb,${accent} 14%,${p.bg})` : p.accentSoft;
+  const accentSoftInk = d.accent ? `color-mix(in srgb,${accent} 70%,${p.ink})` : p.accentSoftInk;
+
+  const corners = { sharp: ["2px", "4px", "8px"], soft: ["6px", "12px", "20px"], round: ["10px", "18px", "28px"] }[d.corners ?? "soft"];
+  const button = { pill: "999px", rounded: "10px", square: "3px" }[d.buttonStyle ?? "pill"];
+  const density = { airy: 1.25, balanced: 1, compact: 0.8 }[d.density ?? "balanced"];
+  const space = (rem: number) => `${(rem * density).toFixed(3)}rem`;
+  const type = {
+    quiet: { display: "clamp(2.2rem,1.3rem + 3.2vw,3.6rem)", h1: "clamp(1.9rem,1.3rem + 2.1vw,2.7rem)", h2: "clamp(1.45rem,1.15rem + 1.2vw,2rem)", weight: "600" },
+    balanced: { display: "clamp(2.6rem,1.4rem + 4.4vw,4.6rem)", h1: "clamp(2.1rem,1.4rem + 2.6vw,3.2rem)", h2: "clamp(1.6rem,1.2rem + 1.5vw,2.35rem)", weight: "700" },
+    bold: { display: "clamp(3rem,1.5rem + 5.6vw,5.6rem)", h1: "clamp(2.4rem,1.5rem + 3.2vw,3.8rem)", h2: "clamp(1.8rem,1.3rem + 1.9vw,2.7rem)", weight: "800" },
+  }[d.typeScale ?? "balanced"];
+
   return `
 :root{
   color-scheme:${p.scheme};
   --bg:${p.bg}; --surface:${p.surface}; --band:${p.band};
   --ink:${p.ink}; --ink-soft:${p.inkSoft}; --line:${p.line};
-  --accent:${p.accent}; --accent-ink:${p.accentInk};
-  --accent-deep:${p.accentDeep}; --accent-soft:${p.accentSoft};
-  --accent-soft-ink:${p.accentSoftInk};
+  --accent:${accent}; --accent-ink:${accentInk};
+  --accent-deep:${accentDeep}; --accent-soft:${accentSoft};
+  --accent-soft-ink:${accentSoftInk};
 
   --font-head:${heading};
-  --font-body:${FONTS.sans};
+  --font-body:${body};
+  --head-weight:${type.weight};
 
   /* Fluid type. clamp() means one scale serves phone through desktop with no
      breakpoint jumps mid-sentence. */
-  --fs-display:clamp(2.6rem,1.4rem + 4.4vw,4.6rem);
-  --fs-h1:clamp(2.1rem,1.4rem + 2.6vw,3.2rem);
-  --fs-h2:clamp(1.6rem,1.2rem + 1.5vw,2.35rem);
+  --fs-display:${type.display};
+  --fs-h1:${type.h1};
+  --fs-h2:${type.h2};
   --fs-h3:clamp(1.15rem,1.05rem + 0.4vw,1.4rem);
   --fs-lead:clamp(1.08rem,1rem + 0.45vw,1.32rem);
   --fs-body:1.0625rem;
@@ -119,11 +162,14 @@ export function themeTokens(theme: SiteTheme): string {
   --fs-eyebrow:0.78rem;
   --fs-stat:clamp(2.4rem,1.6rem + 2.8vw,3.8rem);
 
-  /* Spacing rhythm — a 4px base, so vertical space is never arbitrary. */
+  /* Spacing rhythm — a 4px base, so vertical space is never arbitrary. The
+     section-level steps scale with the design's density. */
   --s1:0.25rem; --s2:0.5rem; --s3:0.75rem; --s4:1rem; --s5:1.5rem;
-  --s6:2rem; --s7:3rem; --s8:4.5rem; --s9:6.5rem;
+  --s6:${space(2)}; --s7:${space(3)}; --s8:${space(4.5)}; --s9:${space(6.5)};
+  --hero-pad:clamp(${space(3.5)},${(10 * density).toFixed(1)}vw,${space(7.5)});
 
-  --r-sm:6px; --r-md:12px; --r-lg:20px; --r-pill:999px;
+  --r-sm:${corners[0]}; --r-md:${corners[1]}; --r-lg:${corners[2]}; --r-pill:999px;
+  --r-button:${button};
   --measure:64ch;
   --wrap:1140px;
   --wrap-narrow:760px;

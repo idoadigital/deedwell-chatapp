@@ -1,5 +1,5 @@
 import type { SiteBlock, SitePage, SiteTheme } from "@deedwell/schemas";
-import { themeTokens } from "./theme.js";
+import { designClasses, themeTokens } from "./theme.js";
 import { BASE_CSS } from "./styles.js";
 
 /**
@@ -127,11 +127,11 @@ function renderBlock(block: SiteBlock, siteSlug: string, formBase: string, tone:
       const secondary = block.secondaryText && block.secondaryHref
         ? `<a class="button ghost" href="${safeHref(block.secondaryHref)}">${esc(block.secondaryText)}</a>` : "";
       const actions = primary || secondary ? `<div class="actions">${primary}${secondary}</div>` : "";
-      return `<section class="hero"><div class="wrap">${
+      return `<section class="hero"><div class="wrap"><div class="hero-copy">${
         block.eyebrow ? `<p class="eyebrow">${esc(block.eyebrow)}</p>` : `<div class="hero-rule"></div>`
       }<h1>${esc(block.heading)}</h1>${
         block.tagline ? `<p class="lead">${esc(block.tagline)}</p>` : ""
-      }${actions}</div></section>`;
+      }${actions}</div><div class="hero-panel" aria-hidden="true"></div></div></section>`;
     }
 
     case "text":
@@ -314,7 +314,7 @@ export function renderSite(input: RenderSiteInput): RenderedFile[] {
 <link rel="canonical" href="${esc(canonical)}">
 <style>${style}</style>
 </head>
-<body>
+<body class="${designClasses(input.theme)}">
 <a class="skip" href="#main">Skip to main content</a>
 ${body}
 </body>
