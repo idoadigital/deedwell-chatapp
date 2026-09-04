@@ -225,6 +225,74 @@ async function recordDesignEvent(ctx: Ctx, slug: string, title: string, ok: bool
   );
 }
 
+/** Write one page's copy from its plan: model call, the placeholder
+ *  backstop, storage, and the timeline event. Safe to run concurrently. */
+async function writePage(ctx: Ctx, args: {
+  input: z.infer<typeof BuildInput>;
+  brief: WebsiteBriefOutput | undefined;
+  plan: WebsiteBriefOutput["sitemap"][number];
+  slug: string;
+  orderIdx: number;
+  facts: OrgFact[];
+  reference: Awaited<ReturnType<typeof loadReferenceTemplate>>;
+}): Promise<{ placeholders: string[] }> {
+  const { input, brief, plan, slug, orderIdx, facts, reference } = args;
+  const blocksFor = (extra: { label: string; content: string }[] = []) => [
+    { label: "org_facts", content: JSON.stringify(facts) },
+    { label: "intake", content: JSON.stringify({ siteName: input.siteName, donateUrl: input.donateUrl }) },
+    { label: "intake_preferences", content: JSON.stringify(ctx.state.intake ?? {}) },
+    { label: "brief", content: JSON.stringify(brief ?? {}) },
+    { label: "page_plan", content: JSON.stringify({ ...plan, slug }) },
+    ...extra,
+    ...siteGenerationDataBlocks({ requiredSections: [], guidance: "" }, reference),
+  ];
+  const result = await runAgentTask<SitePageOutput>(
+    ctx.services.provider, websiteCopywriter,
+    `Write the "${plan.title}" page. Write only this page.`,
+    blocksFor()
+  );
+  await recordModelUsage(ctx, websiteCopywriter.agentKey, result.tokensEstimated);
+
+  // Markers in the page are a broken page. One corrective pass names what
+  // was wrong; whatever still carries a marker after that is dropped.
+  let output = result.output;
+  let markers = findPlaceholders(SitePage.parse({ ...output.page, slug }));
+  if (markers.length) {
+    const retry = await runAgentTask<SitePageOutput>(
+      ctx.services.provider, websiteCopywriter,
+      `Write the "${plan.title}" page. Write only this page.`,
+      blocksFor([{ label: "revision_note", content:
+        `Your previous draft of this page contained placeholder markers: ${markers.join("; ")}. ` +
+        "Remove every block or field that needs a fact you do not have, and list those facts in \"placeholders\" instead. No marker may remain." }])
+    );
+    await recordModelUsage(ctx, websiteCopywriter.agentKey, retry.tokensEstimated);
+    output = retry.output;
+    markers = findPlaceholders(SitePage.parse({ ...output.page, slug }));
+  }
+  let page = SitePage.parse({ ...output.page, slug });
+  let reportedGaps = output.placeholders;
+  if (markers.length) {
+    const stripped = stripPlaceholderBlocks(page, plan);
+    page = SitePage.parse(stripped.page);
+    reportedGaps = [...new Set([...reportedGaps, ...markers.map((m) => m.replace(/^\[\s*placeholder:?\s*/i, "").replace(/\]$/, "").trim())])];
+    await audit(ctx.client, {
+      tenantId: ctx.tenantId, actorAgent: websiteCopywriter.agentKey,
+      action: "site.placeholder_blocks_removed", entityType: "site", entityId: input.siteId,
+      metadata: { page: slug, removed: stripped.removed, markers },
+    });
+  }
+  await upsertPage(ctx, input.siteId, page, orderIdx);
+  await recordPageEvent(ctx, slug, plan.title);
+  if (reportedGaps.length) {
+    await audit(ctx.client, {
+      tenantId: ctx.tenantId, actorAgent: websiteCopywriter.agentKey,
+      action: "site.placeholders_flagged", entityType: "site", entityId: input.siteId,
+      metadata: { page: slug, placeholders: reportedGaps },
+    });
+  }
+  return { placeholders: reportedGaps.map((g) => `${plan.title}: ${g}`) };
+}
+
 /**
  * Design the next page that needs it. Shared by the build and update
  * workflows: a page whose design still matches its copy is skipped, so an
@@ -237,24 +305,25 @@ async function designNextPage(ctx: Ctx, siteId: string, after: string): Promise<
   const cursor = typeof ctx.state.designCursor === "number" ? ctx.state.designCursor : 0;
   if (cursor >= pages.length) return { state: ctx.state, next: after };
 
-  const page = pages[cursor]!;
-  const hash = pageContentHash(page);
   const existing = await loadDesignedPages(ctx, siteId);
   let shared = (ctx.state.sharedDesign as SharedDesign | null | undefined) ?? null;
+
+  // The home page goes alone first: it sets the shared design. Everything
+  // after it is designed in one go, concurrently, against that design.
+  const batch = cursor === 0 ? [pages[0]!] : pages.slice(cursor);
+  const nextCursor = cursor === 0 ? 1 : pages.length;
   const advance = (next: SharedDesign | null): StepResult => ({
-    state: { ...ctx.state, designCursor: cursor + 1, sharedDesign: next },
-    next: cursor + 1 >= pages.length ? after : "design_pages",
+    state: { ...ctx.state, designCursor: nextCursor, sharedDesign: next },
+    next: nextCursor >= pages.length ? after : "design_pages",
   });
 
-  const current = existing.get(page.slug);
-  if (current && current.hash === hash) {
-    // Already designed from this exact copy. The home page still seeds the
-    // shared design for anything that does need designing.
-    if (cursor === 0 && !shared) {
+  if (cursor === 0) {
+    const current = existing.get(pages[0]!.slug);
+    if (current && current.hash === pageContentHash(pages[0]!)) {
+      // Already designed from this exact copy; it still seeds the shared design.
       const { extractSharedDesign } = await import("./sanitize.js");
-      shared = extractSharedDesign(current.html);
+      return advance(shared ?? extractSharedDesign(current.html));
     }
-    return advance(shared);
   }
 
   const settings = await loadSiteGenerationSettings(ctx.client);
@@ -269,44 +338,48 @@ async function designNextPage(ctx: Ctx, siteId: string, after: string): Promise<
   const donateUrl = typeof intake.site_donate_url === "string" ? intake.site_donate_url
     : (BuildInput.safeParse(ctx.state.input).data?.donateUrl ?? null);
 
-  try {
-    const result = await designPage({
-      provider: ctx.services.designer ?? ctx.services.provider,
-      site: { name: site.name, slug: site.slug },
-      page,
-      nav: pages.map((p) => ({ title: p.title, href: pageUrl(p.slug) })),
-      brief,
-      reference,
-      guidance: settings.guidance,
-      organization: {
-        name: site.name,
-        legalName: fact("legal_name"),
-        mission: fact("mission"),
-        headquarters: fact("headquarters"),
-        registration: fact("registration_status"),
-        contactEmail: typeof intake.site_contact_email === "string" ? intake.site_contact_email : null,
-      },
-      donateUrl,
-      shared,
-    });
-    await recordModelUsage(ctx, "website.designer", result.tokensEstimated);
-    await ctx.client.query(
-      "UPDATE site_pages SET rendered_html = $3, rendered_hash = $4 WHERE site_id = $1 AND slug = $2",
-      [siteId, page.slug, result.html, hash]
-    );
-    await recordDesignEvent(ctx, page.slug, page.title, true,
-      reference ? `Laid out from the reference design "${reference.title}".` : "Laid out from the brief.");
-    return advance(result.shared ?? shared);
-  } catch (err) {
-    // The template still knows how to render this page; say why it will.
-    await ctx.client.query(
-      "UPDATE site_pages SET rendered_html = NULL, rendered_hash = NULL WHERE site_id = $1 AND slug = $2",
-      [siteId, page.slug]
-    );
-    await recordDesignEvent(ctx, page.slug, page.title, false,
-      `The designer's page could not be used (${String((err as Error).message ?? err).slice(0, 160)}); the standard layout is used for it.`);
-    return advance(shared);
-  }
+  const organization = {
+    name: site.name,
+    legalName: fact("legal_name"),
+    mission: fact("mission"),
+    headquarters: fact("headquarters"),
+    registration: fact("registration_status"),
+    contactEmail: typeof intake.site_contact_email === "string" ? intake.site_contact_email : null,
+  };
+  const nav = pages.map((p) => ({ title: p.title, href: pageUrl(p.slug) }));
+
+  const designOne = async (page: SitePage): Promise<SharedDesign | null> => {
+    const hash = pageContentHash(page);
+    const current = existing.get(page.slug);
+    if (current && current.hash === hash) return null;
+    try {
+      const result = await designPage({
+        provider: ctx.services.designer ?? ctx.services.provider,
+        site: { name: site.name, slug: site.slug },
+        page, nav, brief, reference, guidance: settings.guidance, organization, donateUrl, shared,
+      });
+      await recordModelUsage(ctx, "website.designer", result.tokensEstimated);
+      await ctx.client.query(
+        "UPDATE site_pages SET rendered_html = $3, rendered_hash = $4 WHERE site_id = $1 AND slug = $2",
+        [siteId, page.slug, result.html, hash]
+      );
+      await recordDesignEvent(ctx, page.slug, page.title, true,
+        reference ? `Laid out from the reference design "${reference.title}".` : "Laid out from the brief.");
+      return result.shared;
+    } catch (err) {
+      // The template still knows how to render this page; say why it will.
+      await ctx.client.query(
+        "UPDATE site_pages SET rendered_html = NULL, rendered_hash = NULL WHERE site_id = $1 AND slug = $2",
+        [siteId, page.slug]
+      );
+      await recordDesignEvent(ctx, page.slug, page.title, false,
+        `The designer's page could not be used (${String((err as Error).message ?? err).slice(0, 160)}); the standard layout is used for it.`);
+      return null;
+    }
+  };
+
+  const outcomes = await Promise.all(batch.map(designOne));
+  return advance(shared ?? outcomes.find((o) => o) ?? null);
 }
 
 // ---------------------------------------------------------------------------
@@ -681,103 +754,31 @@ export function buildWebsiteBuildWorkflow(): WorkflowDefinition<WebsiteServices>
           return { state: { ...ctx.state, placeholders: [] }, complete: true };
         }
 
-        const cursor = typeof ctx.state.cursor === "number" ? ctx.state.cursor : 0;
+        // The delete sweep runs against the planned slug set before anything
+        // is written, so pages dropped from the brief go away.
+        const planned = normalizeHome(
+          sitemap.map((entry) => ({ slug: entry.slug, title: entry.title, blocks: [], seoDescription: "" })) as SitePage[]
+        ).map((p) => p.slug);
+        await ctx.client.query(
+          "DELETE FROM site_pages WHERE site_id = $1 AND NOT (slug = ANY($2))",
+          [input.siteId, planned]
+        );
 
-        // The delete sweep runs once, on first entry, against the planned slug
-        // set. Doing it per page would delete the pages already written.
-        if (cursor === 0) {
-          const planned = normalizeHome(
-            sitemap.map((entry) => ({ slug: entry.slug, title: entry.title, blocks: [], seoDescription: "" })) as SitePage[]
-          ).map((p) => p.slug);
-          await ctx.client.query(
-            "DELETE FROM site_pages WHERE site_id = $1 AND NOT (slug = ANY($2))",
-            [input.siteId, planned]
-          );
-        }
-
-        if (cursor >= sitemap.length) {
-          return { state: { ...ctx.state, designCursor: 0, sharedDesign: null }, next: "design_pages" };
-        }
-
-        const plan = sitemap[cursor]!;
-        // normalizeHome guarantees the first page is the site root; apply the
-        // same rule here so the cursor and the stored slugs agree.
-        const slug = cursor === 0 ? "home" : plan.slug;
+        // Every page at once: they are independent of each other, and ten
+        // sequential model calls was most of the wait.
         const facts = await fetchFacts(ctx, websiteCopywriter);
-        // The same reference the brief was drawn against, so the page's
-        // block composition follows the look, not only its colours.
         const referenceId = (ctx.state.referenceTemplate as { id?: string } | null | undefined)?.id ?? null;
         const reference = await loadReferenceTemplate(ctx.client, ctx.services.storage, referenceId);
-        const result = await runAgentTask<SitePageOutput>(
-          ctx.services.provider, websiteCopywriter,
-          `Write the "${plan.title}" page. Write only this page.`,
-          [
-            { label: "org_facts", content: JSON.stringify(facts) },
-            { label: "intake", content: JSON.stringify({ siteName: input.siteName, donateUrl: input.donateUrl }) },
-            { label: "intake_preferences", content: JSON.stringify(ctx.state.intake ?? {}) },
-            { label: "brief", content: JSON.stringify(brief ?? {}) },
-            { label: "page_plan", content: JSON.stringify({ ...plan, slug }) },
-            ...siteGenerationDataBlocks({ requiredSections: [], guidance: "" }, reference),
-          ]
-        );
-        await recordModelUsage(ctx, websiteCopywriter.agentKey, result.tokensEstimated);
-
-        // Markers in the page are a broken page, and the release checker
-        // would block publishing for them. One corrective pass names exactly
-        // what was wrong; whatever still carries a marker after that is
-        // dropped, so a release can never contain one.
-        let output = result.output;
-        let markers = findPlaceholders(SitePage.parse({ ...output.page, slug }));
-        if (markers.length) {
-          const retry = await runAgentTask<SitePageOutput>(
-            ctx.services.provider, websiteCopywriter,
-            `Write the "${plan.title}" page. Write only this page.`,
-            [
-              { label: "org_facts", content: JSON.stringify(facts) },
-              { label: "intake", content: JSON.stringify({ siteName: input.siteName, donateUrl: input.donateUrl }) },
-              { label: "intake_preferences", content: JSON.stringify(ctx.state.intake ?? {}) },
-              { label: "brief", content: JSON.stringify(brief ?? {}) },
-              { label: "page_plan", content: JSON.stringify({ ...plan, slug }) },
-              { label: "revision_note", content:
-                `Your previous draft of this page contained placeholder markers: ${markers.join("; ")}. ` +
-                "Remove every block or field that needs a fact you do not have, and list those facts in \"placeholders\" instead. No marker may remain." },
-              ...siteGenerationDataBlocks({ requiredSections: [], guidance: "" }, reference),
-            ]
-          );
-          await recordModelUsage(ctx, websiteCopywriter.agentKey, retry.tokensEstimated);
-          output = retry.output;
-          markers = findPlaceholders(SitePage.parse({ ...output.page, slug }));
-        }
-        let page = SitePage.parse({ ...output.page, slug });
-        let reportedGaps = output.placeholders;
-        if (markers.length) {
-          const stripped = stripPlaceholderBlocks(page, plan);
-          page = SitePage.parse(stripped.page);
-          reportedGaps = [...new Set([...reportedGaps, ...markers.map((m) => m.replace(/^\[\s*placeholder:?\s*/i, "").replace(/\]$/, "").trim())])];
-          await audit(ctx.client, {
-            tenantId: ctx.tenantId, actorAgent: websiteCopywriter.agentKey,
-            action: "site.placeholder_blocks_removed", entityType: "site", entityId: input.siteId,
-            metadata: { page: slug, removed: stripped.removed, markers },
-          });
-        }
-        await upsertPage(ctx, input.siteId, page, cursor);
-        await recordPageEvent(ctx, slug, plan.title);
-
+        const results = await Promise.all(sitemap.map((plan, i) =>
+          writePage(ctx, { input, brief, plan, slug: i === 0 ? "home" : plan.slug, orderIdx: i, facts, reference })
+        ));
         const placeholders = [
           ...((ctx.state.placeholders as string[] | undefined) ?? []),
-          ...reportedGaps.map((g) => `${plan.title}: ${g}`),
+          ...results.flatMap((r) => r.placeholders),
         ];
-        if (reportedGaps.length) {
-          await audit(ctx.client, {
-            tenantId: ctx.tenantId, actorAgent: websiteCopywriter.agentKey,
-            action: "site.placeholders_flagged", entityType: "site", entityId: input.siteId,
-            metadata: { page: slug, placeholders: reportedGaps },
-          });
-        }
-
         return {
-          state: { ...ctx.state, cursor: cursor + 1, placeholders, designCursor: 0, sharedDesign: null },
-          next: cursor + 1 >= sitemap.length ? "design_pages" : "generate_content",
+          state: { ...ctx.state, cursor: sitemap.length, placeholders, designCursor: 0, sharedDesign: null },
+          next: "design_pages",
         };
       },
 
