@@ -248,3 +248,50 @@ export function sitePage(request: ModelRequest): SitePageOutput {
     placeholders: [`Page "${slug}" has no certified content yet`],
   };
 }
+
+
+/**
+ * A deliberately plain but structurally complete page, built from the same
+ * blocks the copywriter produced: every rule the release checks enforce
+ * (lang, title, description, one h1, nav to every page, labelled inputs,
+ * honeypot, no script) is satisfied, so the pipeline can be exercised end to
+ * end without a real model. Marked data-designed="mock" so tests can tell.
+ */
+export function siteHtml(request: ModelRequest): string {
+  const page = jsonBlock<{ slug?: string; title?: string; seoDescription?: string; blocks?: Array<Record<string, unknown>> }>(
+    request, "page", {}
+  );
+  const nav = jsonBlock<Array<{ title: string; href: string }>>(request, "site_nav", []);
+  const forms = jsonBlock<Array<{ formKey: string; action: string }>>(request, "site_forms", []);
+  const site = jsonBlock<{ siteName?: string }>(request, "site", {});
+  const escape = (v: unknown) => String(v ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]!));
+  const sections = (page.blocks ?? []).map((b, i) => {
+    if (b.kind === "hero") return `<section class="hero"><h1>${escape(b.heading)}</h1><p>${escape(b.tagline)}</p></section>`;
+    if (b.kind === "form") {
+      const action = forms.find((f) => f.formKey === b.formKey)?.action ?? `/forms/site/${escape(b.formKey)}`;
+      const fields = ((b.fields as Array<{ key: string; label: string; type: string }>) ?? []).map((f) =>
+        `<label for="f-${f.key}">${escape(f.label)}</label>${f.type === "textarea" ? `<textarea id="f-${f.key}" name="${f.key}"></textarea>` : `<input id="f-${f.key}" name="${f.key}" type="${f.type}">`}`
+      ).join("");
+      return `<section><h2>${escape(b.heading)}</h2><form method="post" action="${action}"><input type="hidden" name="website" value="">${fields}<button type="submit">Send</button></form></section>`;
+    }
+    const heading = typeof b.heading === "string" ? `<h2>${escape(b.heading)}</h2>` : "";
+    return `<section class="block-${i}">${heading}<p>${escape(b.body ?? b.quote ?? JSON.stringify(b).slice(0, 120))}</p></section>`;
+  });
+  const hasHero = (page.blocks ?? []).some((b) => b.kind === "hero");
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${escape(page.title ?? "Page")} — ${escape(site.siteName ?? "Site")}</title>
+<meta name="description" content="${escape(page.seoDescription ?? page.title ?? "")}">
+<style>body{font-family:system-ui;margin:0}nav a{margin-right:1rem}.hero{padding:3rem 1rem;background:#eef}</style>
+</head>
+<body data-designed="mock">
+<a class="skip" href="#main">Skip to main content</a>
+<header><nav>${nav.map((n) => `<a href="${n.href}">${escape(n.title)}</a>`).join("")}</nav></header>
+<main id="main">${hasHero ? "" : `<h1>${escape(page.title ?? "Page")}</h1>`}${sections.join("\n")}</main>
+<footer><p>${escape(site.siteName ?? "")}</p></footer>
+</body>
+</html>`;
+}

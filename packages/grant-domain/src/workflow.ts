@@ -69,6 +69,8 @@ export interface GrantServices {
    *  serves every workflow, so this lives on the one services type they
    *  all share rather than a per-domain variant. */
   google?: GoogleAutomationService;
+  /** The model that designs web pages; absent → the shared provider. */
+  designer?: ModelProvider;
 }
 
 export const GRANT_SLICE_WORKFLOW = "grant-application-slice";

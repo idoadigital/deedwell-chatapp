@@ -12,7 +12,7 @@ import {
   type WebsiteBriefOutput,
 } from "@deedwell/schemas";
 import { digitalStrategist, websiteCopywriter, websiteDeveloper } from "./agents.js";
-import { renderSite } from "./renderer.js";
+import { pageUrl, renderSite } from "./renderer.js";
 import { blockingFailures, runSiteChecks } from "./checks.js";
 import {
   INTAKE_SKIP_KEY,
@@ -20,6 +20,7 @@ import {
   WEBSITE_ESSENTIAL_FACTS,
 } from "./intake.js";
 import { findPlaceholders, stripPlaceholderBlocks } from "./placeholders.js";
+import { designPage, pageContentHash, type SharedDesign } from "./design.js";
 import {
   ensureRequiredSections,
   loadReferenceTemplate,
@@ -35,6 +36,8 @@ export interface WebsiteServices {
   provider: ModelProvider;
   gateway: ToolGateway;
   storage: StorageAdapter;
+  /** Designs pages from the reference; absent → the shared provider. */
+  designer?: ModelProvider;
 }
 
 type Ctx = StepContext<WebsiteServices>;
@@ -197,6 +200,114 @@ async function recordPageEvent(ctx: Ctx, slug: string, title: string): Promise<v
   );
 }
 
+async function loadDesignedPages(ctx: Ctx, siteId: string): Promise<Map<string, { html: string; hash: string }>> {
+  const { rows } = await ctx.client.query(
+    "SELECT slug, rendered_html, rendered_hash FROM site_pages WHERE site_id = $1 AND rendered_html IS NOT NULL",
+    [siteId]
+  );
+  return new Map(rows.map((r) => [r.slug as string, { html: r.rendered_html as string, hash: r.rendered_hash as string }]));
+}
+
+async function recordDesignEvent(ctx: Ctx, slug: string, title: string, ok: boolean, detail: string): Promise<void> {
+  const eventType = `design:${slug}`;
+  const { rows } = await ctx.client.query(
+    "SELECT 1 FROM workspace_events WHERE run_id = $1 AND event_type = $2",
+    [ctx.runId, eventType]
+  );
+  if (rows[0]) return;
+  await ctx.client.query(
+    `INSERT INTO workspace_events (id, tenant_id, project_id, run_id, event_type, title, summary,
+       status, agent_key, completed_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,'completed','website.designer',now())`,
+    [uuidv7(), ctx.tenantId, ctx.projectId, ctx.runId, eventType,
+     ok ? `Designed the ${title} page` : `Could not design the ${title} page`, detail]
+  );
+}
+
+/**
+ * Design the next page that needs it. Shared by the build and update
+ * workflows: a page whose design still matches its copy is skipped, so an
+ * update only re-designs what changed. `after` is the step to go to once
+ * every page is done.
+ */
+async function designNextPage(ctx: Ctx, siteId: string, after: string): Promise<StepResult> {
+  const site = await getSite(ctx, siteId);
+  const pages = await loadPages(ctx, siteId);
+  const cursor = typeof ctx.state.designCursor === "number" ? ctx.state.designCursor : 0;
+  if (cursor >= pages.length) return { state: ctx.state, next: after };
+
+  const page = pages[cursor]!;
+  const hash = pageContentHash(page);
+  const existing = await loadDesignedPages(ctx, siteId);
+  let shared = (ctx.state.sharedDesign as SharedDesign | null | undefined) ?? null;
+  const advance = (next: SharedDesign | null): StepResult => ({
+    state: { ...ctx.state, designCursor: cursor + 1, sharedDesign: next },
+    next: cursor + 1 >= pages.length ? after : "design_pages",
+  });
+
+  const current = existing.get(page.slug);
+  if (current && current.hash === hash) {
+    // Already designed from this exact copy. The home page still seeds the
+    // shared design for anything that does need designing.
+    if (cursor === 0 && !shared) {
+      const { extractSharedDesign } = await import("./sanitize.js");
+      shared = extractSharedDesign(current.html);
+    }
+    return advance(shared);
+  }
+
+  const settings = await loadSiteGenerationSettings(ctx.client);
+  const referenceId = (ctx.state.referenceTemplate as { id?: string } | null | undefined)?.id
+    ?? (await ctx.client.query("SELECT reference_template_id FROM sites WHERE id = $1", [siteId])).rows[0]?.reference_template_id
+    ?? null;
+  const reference = await loadReferenceTemplate(ctx.client, ctx.services.storage, referenceId);
+  const facts = await fetchFacts(ctx, websiteCopywriter);
+  const fact = (key: string) => facts.find((f) => f.key === key)?.value ?? null;
+  const intake = await loadIntake(ctx, siteId);
+  const brief = (ctx.state.brief as WebsiteBriefOutput | undefined) ?? null;
+  const donateUrl = typeof intake.site_donate_url === "string" ? intake.site_donate_url
+    : (BuildInput.safeParse(ctx.state.input).data?.donateUrl ?? null);
+
+  try {
+    const result = await designPage({
+      provider: ctx.services.designer ?? ctx.services.provider,
+      site: { name: site.name, slug: site.slug },
+      page,
+      nav: pages.map((p) => ({ title: p.title, href: pageUrl(p.slug) })),
+      brief,
+      reference,
+      guidance: settings.guidance,
+      organization: {
+        name: site.name,
+        legalName: fact("legal_name"),
+        mission: fact("mission"),
+        headquarters: fact("headquarters"),
+        registration: fact("registration_status"),
+        contactEmail: typeof intake.site_contact_email === "string" ? intake.site_contact_email : null,
+      },
+      donateUrl,
+      shared,
+    });
+    await recordModelUsage(ctx, "website.designer", result.tokensEstimated);
+    await ctx.client.query(
+      "UPDATE site_pages SET rendered_html = $3, rendered_hash = $4 WHERE site_id = $1 AND slug = $2",
+      [siteId, page.slug, result.html, hash]
+    );
+    await recordDesignEvent(ctx, page.slug, page.title, true,
+      reference ? `Laid out from the reference design "${reference.title}".` : "Laid out from the brief.");
+    return advance(result.shared ?? shared);
+  } catch (err) {
+    // The template still knows how to render this page; say why it will.
+    await ctx.client.query(
+      "UPDATE site_pages SET rendered_html = NULL, rendered_hash = NULL WHERE site_id = $1 AND slug = $2",
+      [siteId, page.slug]
+    );
+    await recordDesignEvent(ctx, page.slug, page.title, false,
+      `The designer's page could not be used (${String((err as Error).message ?? err).slice(0, 160)}); the standard layout is used for it.`);
+    return advance(shared);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Shared steps: build a release from the CMS working copy, then gate publish.
 // ---------------------------------------------------------------------------
@@ -220,6 +331,16 @@ async function buildRelease(ctx: Ctx, siteId: string): Promise<StepResult> {
   const files = renderSite({
     siteName: site.name, slug: site.slug, pages, theme, registration, contactEmail,
   });
+  // Designed pages replace the template's rendering wherever the design
+  // still matches the copy it was made from.
+  const designed = await loadDesignedPages(ctx, siteId);
+  let designedCount = 0;
+  for (const page of pages) {
+    const d = designed.get(page.slug);
+    if (!d || d.hash !== pageContentHash(page)) continue;
+    const file = files.find((f) => f.path === (page.slug === "home" ? "index.html" : `${page.slug}/index.html`));
+    if (file) { file.content = d.html; designedCount += 1; }
+  }
   const checks = runSiteChecks(files, pages);
 
   const { rows: versionRow } = await ctx.client.query(
@@ -237,7 +358,7 @@ async function buildRelease(ctx: Ctx, siteId: string): Promise<StepResult> {
     `INSERT INTO site_releases (id, tenant_id, site_id, version, snapshot, storage_prefix, checks, run_id)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
     [releaseId, ctx.tenantId, siteId, version,
-     JSON.stringify({ siteName: site.name, slug: site.slug, theme, pages }),
+     JSON.stringify({ siteName: site.name, slug: site.slug, theme, pages, designedPages: designedCount, renderer: designedCount === pages.length ? "model" : designedCount ? "mixed" : "template" }),
      prefix, JSON.stringify(checks), ctx.runId]
   );
   await ctx.client.query(
@@ -271,9 +392,9 @@ async function buildRelease(ctx: Ctx, siteId: string): Promise<StepResult> {
        created_by_kind, created_by_agent, change_summary)
      VALUES ($1,$2,$3,$4,$5,'agent','website.qa_deployment',$6)`,
     [uuidv7(), ctx.tenantId, reportId, reportVersion, JSON.stringify({
-      releaseId, version, checks,
+      releaseId, version, checks, designedPages: designedCount, totalPages: pages.length,
       passed: checks.length - failures.length, failed: failures.length, blocking: blocking.length,
-    }), `v${version}: ${checks.length - failures.length}/${checks.length} checks passed, ${blocking.length} blocking failure(s)`]
+    }), `v${version}: ${checks.length - failures.length}/${checks.length} checks passed, ${blocking.length} blocking failure(s), ${designedCount}/${pages.length} pages designed from the reference`]
   );
   await ctx.client.query("UPDATE artifacts SET current_version = $2 WHERE id = $1", [reportId, reportVersion]);
 
@@ -377,7 +498,7 @@ export function buildWebsiteBuildWorkflow(): WorkflowDefinition<WebsiteServices>
     // re-entry, and generate_content now runs once per page. steps_used
     // increments on every execution including resumes, so waits are not free.
     initialStep: "discovery",
-    stepBudget: 40,
+    stepBudget: 60,
     steps: {
       // Stage 1 (spec §5): confirm what we know, ask only for what's missing.
       // No page is generated until the essentials exist and the brief is approved.
@@ -567,7 +688,7 @@ export function buildWebsiteBuildWorkflow(): WorkflowDefinition<WebsiteServices>
         }
 
         if (cursor >= sitemap.length) {
-          return { state: ctx.state, next: "build_release" };
+          return { state: { ...ctx.state, designCursor: 0, sharedDesign: null }, next: "design_pages" };
         }
 
         const plan = sitemap[cursor]!;
@@ -647,9 +768,21 @@ export function buildWebsiteBuildWorkflow(): WorkflowDefinition<WebsiteServices>
         }
 
         return {
-          state: { ...ctx.state, cursor: cursor + 1, placeholders },
-          next: cursor + 1 >= sitemap.length ? "build_release" : "generate_content",
+          state: { ...ctx.state, cursor: cursor + 1, placeholders, designCursor: 0, sharedDesign: null },
+          next: cursor + 1 >= sitemap.length ? "design_pages" : "generate_content",
         };
+      },
+
+      /**
+       * One page per step, like the writing: the designer sees the reference
+       * image and the finished copy and hands back the page's HTML. The home
+       * page goes first and its styles, header and footer become the shared
+       * design every later page must reuse. A page the designer cannot
+       * produce falls back to the template at build time, with an event
+       * saying so, rather than stopping the build.
+       */
+      async design_pages(ctx): Promise<StepResult> {
+        return designNextPage(ctx, BuildInput.parse(ctx.state.input).siteId, "build_release");
       },
 
       async build_release(ctx): Promise<StepResult> {
@@ -667,7 +800,7 @@ export function buildWebsiteUpdateWorkflow(): WorkflowDefinition<WebsiteServices
     name: WEBSITE_UPDATE_WORKFLOW,
     version: 1,
     initialStep: "apply_patch",
-    stepBudget: 15,
+    stepBudget: 40,
     steps: {
       async apply_patch(ctx): Promise<StepResult> {
         const input = UpdateInput.parse(ctx.state.input);
@@ -716,8 +849,13 @@ export function buildWebsiteUpdateWorkflow(): WorkflowDefinition<WebsiteServices
         });
         return {
           state: { ...ctx.state, applied: true, changeSummary: result.output.changeSummary },
-          next: "build_release",
+          next: "design_pages",
         };
+      },
+      /** Re-design only the pages the patch changed; the rest keep their
+       *  rendering, so an edit does not cost a full redesign. */
+      async design_pages(ctx): Promise<StepResult> {
+        return designNextPage(ctx, UpdateInput.parse(ctx.state.input).siteId, "build_release");
       },
       async build_release(ctx): Promise<StepResult> {
         return buildRelease(ctx, UpdateInput.parse(ctx.state.input).siteId);

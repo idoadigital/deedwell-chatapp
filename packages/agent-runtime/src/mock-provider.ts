@@ -1,5 +1,5 @@
 import type { ModelProvider, ModelRequest, ModelResponse } from "./index.js";
-import { siteContent, sitePage, sitePatch, websiteBrief } from "./mock-website.js";
+import { siteContent, siteHtml, sitePage, sitePatch, websiteBrief } from "./mock-website.js";
 import { mockIntent } from "./mock-intent.js";
 import type {
   AdGrantsCampaignPlanOutput,
@@ -43,8 +43,11 @@ export class MockModelProvider implements ModelProvider {
       site_patch: sitePatch,
       intent: mockIntent,
       ad_grants_campaign_plan: draftAdGrantsCampaign,
+      site_html: siteHtml,
     };
-    const text = JSON.stringify(generators[request.outputSchemaRef](request));
+    const produced = generators[request.outputSchemaRef](request);
+    // The designer answers with a document, not a JSON object.
+    const text = typeof produced === "string" ? produced : JSON.stringify(produced);
     const inputChars =
       request.system.length +
       request.task.length +

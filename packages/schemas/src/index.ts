@@ -258,6 +258,7 @@ export const AgentDefinition = z.object({
     "site_patch",
     "intent",
     "ad_grants_campaign_plan",
+    "site_html",
     // "none" marks agents whose work is deterministic system logic (e.g. the
     // eligibility engine) — listed in the directory, never sent to a model.
     "none",

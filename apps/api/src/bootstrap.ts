@@ -7,6 +7,7 @@ import {
   type StorageAdapter,
 } from "@deedwell/database";
 import {
+  createDesignProvider,
   createModelProvider,
   seedAgentDefinitions,
   type ModelProvider,
@@ -59,6 +60,8 @@ export async function createDeps(overrides: Partial<{
       ? new GcsStorage(process.env.STORAGE_BUCKET)
       : new LocalFsStorage(process.env.DATA_DIR ?? "./.data"));
   const provider = overrides.provider ?? createModelProvider();
+  // Page design goes to the strong tier; in tests the mock serves both.
+  const designer = overrides.provider ?? createDesignProvider();
 
   const gateway = new ToolGateway();
   registerGrantTools(gateway);
@@ -86,7 +89,7 @@ export async function createDeps(overrides: Partial<{
       ? (await import("@deedwell/browser-automation")).createGoogleAutomation({ appPool, storage })
       : undefined;
 
-  const services: GrantServices = { provider, gateway, storage, research, google };
+  const services: GrantServices = { provider, gateway, storage, research, google, designer };
   const engine = new PgWorkflowEngine<GrantServices>(
     adminPool,
     appPool,

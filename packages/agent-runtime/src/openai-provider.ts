@@ -26,10 +26,13 @@ export class OpenAiProvider implements ModelProvider {
   async complete(request: ModelRequest): Promise<ModelResponse> {
     const requestId = Math.random().toString(36).slice(2, 10);
     const started = Date.now();
+    const html = request.responseFormat === "html";
     const user = [
       `TASK: ${request.task}`,
       ``,
-      `Respond with ONLY a single JSON object conforming to the "${request.outputSchemaRef}" output contract described in your instructions. No prose, no markdown fences.`,
+      html
+        ? `Respond with ONLY the complete HTML document described in your instructions, starting with <!doctype html>. No prose, no markdown fences.`
+        : `Respond with ONLY a single JSON object conforming to the "${request.outputSchemaRef}" output contract described in your instructions. No prose, no markdown fences.`,
       ``,
       ...request.dataBlocks.map(
         (b) =>
@@ -52,8 +55,8 @@ export class OpenAiProvider implements ModelProvider {
       },
       body: JSON.stringify({
         model: this.model,
-        temperature: 0.2,
-        response_format: { type: "json_object" },
+        temperature: html ? 0.4 : 0.2,
+        ...(html ? {} : { response_format: { type: "json_object" } }),
         messages: [
           { role: "system", content: request.system + "\n\n" + SCHEMA_HINTS[request.outputSchemaRef] },
           { role: "user", content: userContent },
@@ -70,18 +73,20 @@ export class OpenAiProvider implements ModelProvider {
       usage?: { total_tokens?: number };
     };
     const text = payload.choices[0]?.message?.content ?? "";
+    const cleaned = html ? text.trim().replace(/^```(?:html)?\s*/i, "").replace(/\s*```$/, "") : text;
     const tokens = payload.usage?.total_tokens ?? Math.ceil(text.length / 4);
     console.log(JSON.stringify({
       at: "model_request", requestId, provider: "openai", model: this.model,
       schema: request.outputSchemaRef, ms: Date.now() - started, tokens, ok: true,
     }));
-    return { text, tokensEstimated: tokens };
+    return { text: cleaned, tokensEstimated: tokens };
   }
 }
 
 /** Compact output-shape descriptions appended to the system prompt per schema.
  *  Shared with the Gemini adapter — the contract is the seam's, not the vendor's. */
 export const SCHEMA_HINTS: Record<ModelRequest["outputSchemaRef"], string> = {
+  site_html: `Output: one complete, standalone HTML5 document for the single page named in page_plan — <!doctype html>, <html lang="en">, <head> with <meta charset="utf-8">, <meta name="viewport">, <title>, <meta name="description">, and exactly ONE <style> element holding all CSS; then <body> with a skip link, one <header> containing a <nav> that links to EVERY page listed in "site_nav" using the exact hrefs given, one <main> with exactly one <h1>, and one <footer>. No <script>, no <link>, no external fonts, stylesheets, images or iframes; visuals come from CSS (gradients, shapes, borders) and inline <svg>. No <img> unless its src is a data: URI. Any form: method="post", the exact action given in "site_forms", a hidden input named "website" left empty, and every input/textarea has an id with a matching <label for>. Output the HTML only.`,
   requirements_extraction: `Output JSON shape: {"requirements":[{"text":string,"kind":"eligibility"|"narrative"|"budget"|"attachment"|"formatting"|"deadline"|"other","mandatory":boolean,"sourceLocation":{"line":number,"quote":string},"wordLimit":number|null}],"documentSummary":string}. Line numbers are 1-based lines of the document block.`,
   fact_extraction: `Output JSON shape: {"facts":[{"key":snake_case string,"value":string,"sourceLocation":{"line":number,"quote":string}}],"documentSummary":string}. Every fact MUST quote the exact sentence it came from and its 1-based line number. Extract only facts the document states outright — never infer, estimate, or round a number. If nothing in the document supports a fact worth recording, return an empty facts array rather than guessing.`,
   section_draft: `Output JSON shape: {"title":string,"body":string,"claims":[{"text":string,"factKey":string|null,"support":"verified"|"user_certified"|"estimate"|"assumption"|"unsupported","flagged":boolean}],"wordCount":number}. Every material claim must appear in claims with the org_facts key it rests on, or factKey null + support "unsupported" + flagged true.`,

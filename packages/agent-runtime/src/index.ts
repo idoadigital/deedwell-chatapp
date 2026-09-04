@@ -42,6 +42,9 @@ export interface ModelRequest {
   task: string;
   /** Untrusted content. Providers must present it as data, never instructions. */
   dataBlocks: ModelDataBlock[];
+  /** "json" (default) demands one JSON object; "html" asks for a whole HTML
+   *  document as plain text, with the larger output budget that needs. */
+  responseFormat?: "json" | "html";
   outputSchemaRef:
     | "requirements_extraction"
     | "fact_extraction"
@@ -56,7 +59,8 @@ export interface ModelRequest {
     | "site_patch"
     | "intent"
     | "ad_grants_campaign_plan"
-    | "content_strategy";
+    | "content_strategy"
+    | "site_html";
 }
 
 export interface ModelResponse {
@@ -73,13 +77,26 @@ export interface ModelProvider {
 // Adapters for real providers (OpenAI Agents SDK, Anthropic) implement
 // ModelProvider here when integrated. They are NOT implemented yet; nothing in
 // this codebase pretends otherwise (see ADR-0003).
-export function createModelProvider(kind = process.env.MODEL_PROVIDER ?? "mock"): ModelProvider {
+export function createModelProvider(
+  kind = process.env.MODEL_PROVIDER ?? "mock",
+  opts: { model?: string } = {}
+): ModelProvider {
   if (kind === "mock") return new MockModelProvider();
-  if (kind === "openai") return new OpenAiProvider();
-  if (kind === "gemini") return new GeminiProvider();
+  if (kind === "openai") return new OpenAiProvider(opts.model ? { model: opts.model } : {});
+  if (kind === "gemini") return new GeminiProvider(opts.model ? { model: opts.model } : {});
   throw new Error(
     `Model provider "${kind}" is not implemented. Available: "mock", "openai", "gemini".`
   );
+}
+
+/** The model that designs web pages: visual judgement is where the fast tier
+ *  is weakest, so this defaults to the strong Gemini tier while everything
+ *  else stays on the configured provider. DESIGN_MODEL_PROVIDER and
+ *  DESIGN_MODEL override; "mock" in tests. */
+export function createDesignProvider(): ModelProvider {
+  const kind = process.env.DESIGN_MODEL_PROVIDER ?? process.env.MODEL_PROVIDER ?? "mock";
+  const model = process.env.DESIGN_MODEL ?? (kind === "gemini" ? "gemini-2.5-pro" : undefined);
+  return createModelProvider(kind, model ? { model } : {});
 }
 
 // ---------------------------------------------------------------------------
@@ -87,6 +104,9 @@ export function createModelProvider(kind = process.env.MODEL_PROVIDER ?? "mock")
 // ---------------------------------------------------------------------------
 
 const OUTPUT_SCHEMAS: Record<ModelRequest["outputSchemaRef"], z.ZodTypeAny> = {
+  // Plain text, not JSON: the designer's whole HTML document. Never routed
+  // through runAgentTask's JSON parse; see website-domain/design.ts.
+  site_html: z.string(),
   requirements_extraction: RequirementsExtractionOutput,
   fact_extraction: FactExtractionOutput,
   section_draft: SectionDraftOutput,

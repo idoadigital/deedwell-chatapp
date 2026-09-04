@@ -1,6 +1,7 @@
 export {
   digitalStrategist,
   websiteCopywriter,
+  websiteDesigner,
   websiteDeveloper,
   seoReviewer,
   qaDeployer,
@@ -36,3 +37,5 @@ export {
   type ReferenceTemplate,
 } from "./site-generation.js";
 export { findPlaceholders, stripPlaceholderBlocks, PLACEHOLDER_RE } from "./placeholders.js";
+export { sanitizePage, sanitizeCss, extractSharedDesign, looksLikeAPage } from "./sanitize.js";
+export { designPage, pageContentHash, type DesignPageArgs, type DesignedPage, type SharedDesign } from "./design.js";

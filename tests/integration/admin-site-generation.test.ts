@@ -209,6 +209,17 @@ describe("Platform Admin → Site Generation Settings", () => {
     try {
       const home = await router.inject({ method: "GET", url: "/preview/riverbend-sitegen/" });
       expect(home.statusCode).toBe(200);
+      // The page came from the designer (the mock marks its documents), not
+      // the template, and the release records that.
+      expect(home.body).toContain('data-designed="mock"');
+      const { rows: rel } = await env.adminPool.query(
+        "SELECT snapshot->>'renderer' AS renderer, snapshot->>'designedPages' AS designed FROM site_releases WHERE site_id = (SELECT id FROM sites WHERE tenant_id = $1) ORDER BY version DESC LIMIT 1",
+        [orgId]
+      );
+      const { rows: pageCount } = await env.adminPool.query(
+        "SELECT count(*)::text AS n FROM site_pages WHERE site_id = (SELECT id FROM sites WHERE tenant_id = $1)", [orgId]
+      );
+      expect(rel[0]).toEqual({ renderer: "model", designed: pageCount[0].n });
       expect(home.body).toContain('href="/preview/riverbend-sitegen/');
       expect(home.body).not.toMatch(/href="\/(?!preview\/)/);
       const bare = await router.inject({ method: "GET", url: "/preview/riverbend-sitegen" });

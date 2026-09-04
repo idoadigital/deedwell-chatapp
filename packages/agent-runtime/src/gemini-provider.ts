@@ -110,6 +110,12 @@ function projectFromKeyFile(): string | null {
   }
 }
 
+/** Models sometimes wrap a document in ```html fences despite instructions. */
+export function stripFences(text: string): string {
+  const m = text.trim().match(/^```(?:html|HTML)?\s*([\s\S]*?)\s*```$/);
+  return m ? m[1]! : text.trim();
+}
+
 export class GeminiProvider implements ModelProvider {
   readonly name = "gemini";
   private readonly tokens = new AccessTokenSource();
@@ -130,10 +136,13 @@ export class GeminiProvider implements ModelProvider {
   async complete(request: ModelRequest, retried = false, rateLimitAttempt = 0): Promise<ModelResponse> {
     const requestId = Math.random().toString(36).slice(2, 10);
     const started = Date.now();
+    const html = request.responseFormat === "html";
     const user = [
       `TASK: ${request.task}`,
       ``,
-      `Respond with ONLY a single JSON object conforming to the "${request.outputSchemaRef}" output contract described in your instructions. No prose, no markdown fences.`,
+      html
+        ? `Respond with ONLY the complete HTML document described in your instructions, starting with <!doctype html>. No prose, no markdown fences.`
+        : `Respond with ONLY a single JSON object conforming to the "${request.outputSchemaRef}" output contract described in your instructions. No prose, no markdown fences.`,
       ``,
       ...request.dataBlocks.map(
         (b) => `<<<DOCUMENT label="${b.label}">>>\n${b.content}${b.image ? "\n(An image for this document is attached.)" : ""}\n<<<END DOCUMENT>>>`
@@ -155,13 +164,12 @@ export class GeminiProvider implements ModelProvider {
         body: JSON.stringify({
           systemInstruction: { parts: [{ text: request.system + "\n\n" + SCHEMA_HINTS[request.outputSchemaRef] }] },
           contents: [{ role: "user", parts }],
-          generationConfig: {
-            temperature: 0.2,
-            responseMimeType: "application/json",
-            maxOutputTokens: 8192,
-          },
+          generationConfig: html
+            ? { temperature: 0.4, maxOutputTokens: 32768 }
+            : { temperature: 0.2, responseMimeType: "application/json", maxOutputTokens: 8192 },
         }),
-        signal: AbortSignal.timeout(90_000),
+        // A whole designed page is many times the size of a JSON answer.
+        signal: AbortSignal.timeout(html ? 420_000 : 90_000),
       }
     );
     if (res.status === 401 && !retried) {
@@ -193,7 +201,8 @@ export class GeminiProvider implements ModelProvider {
       candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
       usageMetadata?: { totalTokenCount?: number };
     };
-    const text = (payload.candidates?.[0]?.content?.parts ?? []).map((p) => p.text ?? "").join("");
+    const raw = (payload.candidates?.[0]?.content?.parts ?? []).map((p) => p.text ?? "").join("");
+    const text = html ? stripFences(raw) : raw;
     const tokens = payload.usageMetadata?.totalTokenCount ?? Math.ceil(text.length / 4);
     console.log(JSON.stringify({
       at: "model_request", requestId, provider: "gemini", model: this.model,
