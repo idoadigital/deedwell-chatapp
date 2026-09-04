@@ -3,6 +3,7 @@ import formbody from "@fastify/formbody";
 import type { Pool } from "pg";
 import { uuidv7, type StorageAdapter } from "@deedwell/database";
 import { summarize } from "@deedwell/observability";
+import { MOTION_SCRIPT_HASH } from "@deedwell/website-domain";
 
 /**
  * Site Router (BRD §10.3): resolves Host → (tenant, site, release) and serves
@@ -54,7 +55,7 @@ const FRAME_ANCESTORS =
 
 const SECURITY_HEADERS: Record<string, string> = {
   "content-security-policy":
-    `default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data: https:; form-action 'self'; base-uri 'none'; frame-ancestors ${FRAME_ANCESTORS}`,
+    `default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data: https:; script-src '${MOTION_SCRIPT_HASH}'; form-action 'self'; base-uri 'none'; frame-ancestors ${FRAME_ANCESTORS}`,
   "x-content-type-options": "nosniff",
   "referrer-policy": "strict-origin-when-cross-origin",
 };

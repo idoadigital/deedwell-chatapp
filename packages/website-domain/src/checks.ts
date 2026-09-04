@@ -1,4 +1,5 @@
 import type { SitePage } from "@deedwell/schemas";
+import { MOTION_SCRIPT } from "./builder/motion.js";
 import { pageUrl, type RenderedFile } from "./renderer.js";
 
 /**
@@ -178,11 +179,15 @@ export function runSiteChecks(files: RenderedFile[], pages: SitePage[], org: Che
       });
     }
 
+    // The only script a site may carry is Deedwell's own motion script,
+    // byte for byte; anything else is a defect.
+    const scripts = [...html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi)].map((m) => m[1]!);
+    const foreign = scripts.filter((s) => s !== MOTION_SCRIPT);
     checks.push({
       name: "No script tags (static template policy)",
       page,
-      pass: !/<script/i.test(html),
-      detail: "Approved templates ship zero JavaScript",
+      pass: foreign.length === 0,
+      detail: foreign.length ? `${foreign.length} unexpected script(s)` : scripts.length ? "Only the site motion script" : "No scripts",
       severity: "blocking",
     });
   }

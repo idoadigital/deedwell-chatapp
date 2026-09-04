@@ -171,6 +171,41 @@ export function registerWebsiteRoutes(app: FastifyInstance, ctx: AppContext): vo
     return { ok: true };
   });
 
+  // ---- generation pipeline stages ------------------------------------------
+  // What each stage of the website generator produced for a site, and a way
+  // to reset one so the next build re-runs it alone.
+  app.get("/v1/orgs/:orgId/sites/:siteId/build-stages", async (req) => {
+    ctx.requireRole(req, "viewer");
+    const { siteId } = req.params as { siteId: string };
+    const { rows } = await ctx.inOrg(req, (client) =>
+      client.query(
+        `SELECT stage, scope, model, duration_ms, created_at, output FROM site_build_stages
+          WHERE site_id = $1 ORDER BY created_at`,
+        [siteId]
+      )
+    );
+    return { stages: rows };
+  });
+  app.post("/v1/orgs/:orgId/sites/:siteId/build-stages/:stage/reset", async (req) => {
+    ctx.requireRole(req, "member");
+    const { siteId, stage } = req.params as { siteId: string; stage: string };
+    const { scope } = (req.body ?? {}) as { scope?: string };
+    const removed = await ctx.inOrg(req, async (client) => {
+      const { rows } = await client.query(
+        scope === undefined
+          ? "DELETE FROM site_build_stages WHERE site_id = $1 AND stage = $2 RETURNING id"
+          : "DELETE FROM site_build_stages WHERE site_id = $1 AND stage = $2 AND scope = $3 RETURNING id",
+        scope === undefined ? [siteId, stage] : [siteId, stage, scope]
+      );
+      await audit(client, {
+        tenantId: req.orgId!, actorUser: req.userId, action: "site.stage_reset",
+        entityType: "site", entityId: siteId, metadata: { stage, scope: scope ?? null, removed: rows.length },
+      });
+      return rows.length;
+    });
+    return { ok: true, removed };
+  });
+
   // ---- list & detail ------------------------------------------------------
 
   app.get("/v1/orgs/:orgId/sites", async (req) => {

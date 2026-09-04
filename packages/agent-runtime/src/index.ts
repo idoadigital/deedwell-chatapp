@@ -15,6 +15,7 @@ import {
   SitePatchOutput,
   WebsiteBriefOutput,
   type AgentDefinition,
+  DesignLanguage, DesignTokens, PageComposition, CriticReport,
 } from "@deedwell/schemas";
 import { MockModelProvider } from "./mock-provider.js";
 import { OpenAiProvider } from "./openai-provider.js";
@@ -62,7 +63,11 @@ export interface ModelRequest {
     | "intent"
     | "ad_grants_campaign_plan"
     | "content_strategy"
-    | "site_html";
+    | "site_html"
+    | "design_language"
+    | "design_tokens"
+    | "page_composition"
+    | "design_critique";
 }
 
 export interface ModelResponse {
@@ -123,6 +128,10 @@ const OUTPUT_SCHEMAS: Record<ModelRequest["outputSchemaRef"], z.ZodTypeAny> = {
   // Plain text, not JSON: the designer's whole HTML document. Never routed
   // through runAgentTask's JSON parse; see website-domain/design.ts.
   site_html: z.string(),
+  design_language: DesignLanguage,
+  design_tokens: DesignTokens,
+  page_composition: PageComposition,
+  design_critique: CriticReport,
   requirements_extraction: RequirementsExtractionOutput,
   fact_extraction: FactExtractionOutput,
   section_draft: SectionDraftOutput,

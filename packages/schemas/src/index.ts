@@ -259,6 +259,10 @@ export const AgentDefinition = z.object({
     "intent",
     "ad_grants_campaign_plan",
     "site_html",
+    "design_language",
+    "design_tokens",
+    "page_composition",
+    "design_critique",
     // "none" marks agents whose work is deterministic system logic (e.g. the
     // eligibility engine) — listed in the directory, never sent to a model.
     "none",
@@ -906,3 +910,5 @@ export const SubmitIntakeInput = z.object({
 export const CompleteWebsiteRequestInput = z.object({
   url: z.string().url().max(500),
 });
+
+export * from "./website-builder.js";

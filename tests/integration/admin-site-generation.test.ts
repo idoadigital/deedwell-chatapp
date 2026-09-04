@@ -209,9 +209,12 @@ describe("Platform Admin → Site Generation Settings", () => {
     try {
       const home = await router.inject({ method: "GET", url: "/preview/riverbend-sitegen/" });
       expect(home.statusCode).toBe(200);
-      // The page came from the designer (the mock marks its documents), not
-      // the template, and the release records that.
-      expect(home.body).toContain('data-designed="mock"');
+      // The page came from the generation pipeline (library shell, tokens,
+      // motion script), not the template, and the release records that.
+      expect(home.body).toContain('class="site-header site-header--');
+      expect(home.body).toContain("--fs-h1:clamp(");
+      expect(home.body).toContain('<nav class="footer__nav" aria-label="Footer">');
+      expect(home.body).toMatch(/<script>\(function\(\)\{var d=document/);
       const { rows: rel } = await env.adminPool.query(
         "SELECT snapshot->>'renderer' AS renderer, snapshot->>'designedPages' AS designed FROM site_releases WHERE site_id = (SELECT id FROM sites WHERE tenant_id = $1) ORDER BY version DESC LIMIT 1",
         [orgId]

@@ -20,7 +20,8 @@ import {
   WEBSITE_ESSENTIAL_FACTS,
 } from "./intake.js";
 import { findPlaceholders, stripPlaceholderBlocks } from "./placeholders.js";
-import { assemblePage, designPageMain, designSystem, pageContentHash, takeAssemblyWarnings, type Organization, type SiteDesignSystem } from "./design.js";
+import { pageContentHash, type Organization } from "./design.js";
+import { buildSite } from "./builder/index.js";
 import { generateSiteImages, planSiteImages, type SiteImage } from "./images.js";
 import { createHash } from "node:crypto";
 import { capHeaderNav, ensureNavCoverage, normalizeInternalLinks } from "./sanitize.js";
@@ -225,7 +226,7 @@ async function recordDesignEvent(ctx: Ctx, slug: string, title: string, ok: bool
        status, agent_key, completed_at)
      VALUES ($1,$2,$3,$4,$5,$6,$7,'completed','website.designer',now())`,
     [uuidv7(), ctx.tenantId, ctx.projectId, ctx.runId, eventType,
-     ok ? `Designed the ${title} page` : `Could not design the ${title} page`, detail]
+     ok ? (slug.includes(":") || /^(reference_analysis|design_system|page_plan|critique|design_pipeline)/.test(slug) ? `Design: ${title}` : `Designed the ${title} page`) : `Could not design ${title}`, detail]
   );
 }
 
@@ -330,17 +331,16 @@ async function makeSiteImages(
 }
 
 /**
- * The design step, shared by the build and update workflows. Two phases:
- * first the site's design system from the reference (once), then every
- * page concurrently on that system. A page whose copy, images and system
- * are unchanged keeps its rendering. Anything that fails falls back to the
- * template with an event saying why, so a build always completes.
+ * The design step, shared by the build and update workflows: the whole
+ * generation pipeline (reference analysis → design system → per-page plan,
+ * render, critique, repair) in one step, memoized per stage so a re-run
+ * only redoes what changed. If the pipeline cannot run at all, pages keep
+ * the template rendering and an event says why.
  */
 async function designNextPage(ctx: Ctx, siteId: string, after: string): Promise<StepResult> {
   const site = await getSite(ctx, siteId);
   const pages = await loadPages(ctx, siteId);
-  const phase = (ctx.state.designPhase as string | undefined) ?? "system";
-  if (phase === "done") return { state: ctx.state, next: after };
+  if (ctx.state.designPhase === "done") return { state: ctx.state, next: after };
 
   const settings = await loadSiteGenerationSettings(ctx.client);
   const referenceId = (ctx.state.referenceTemplate as { id?: string } | null | undefined)?.id
@@ -364,60 +364,37 @@ async function designNextPage(ctx: Ctx, siteId: string, after: string): Promise<
     contactEmail: typeof intake.site_contact_email === "string" ? intake.site_contact_email : (fact("contact_email") ?? fact("email")),
     contactPhone: fact("phone") ?? fact("contact_phone"),
   };
-  const nav = pages.map((p) => ({ title: p.title, href: pageUrl(p.slug) }));
   const images = Array.isArray(site.images) ? site.images : [];
-  const common = {
-    provider: ctx.services.designer ?? ctx.services.provider,
-    site: { name: site.name, slug: site.slug }, nav, brief, reference,
-    guidance: settings.guidance, organization, donateUrl, images,
-  };
+  const designer = ctx.services.designer ?? ctx.services.provider;
+  const str = (v: unknown) => (typeof v === "string" && v.trim() ? v : null);
 
-  if (phase === "system") {
-    try {
-      const { system, tokensEstimated } = await designSystem(common);
-      await recordModelUsage(ctx, "website.designer", tokensEstimated);
-      await recordDesignEvent(ctx, "system", "design system", true,
-        reference ? `Styled after the reference design "${reference.title}".` : "Styled from the brief.");
-      return { state: { ...ctx.state, designPhase: "pages", designSystem: system }, next: "design_pages" };
-    } catch (err) {
-      await recordDesignEvent(ctx, "system", "design system", false,
-        `The designer's style guide could not be used (${String((err as Error).message ?? err).slice(0, 160)}); the standard layout is used for this build.`);
-      return { state: { ...ctx.state, designPhase: "done", designSystem: null }, next: after };
-    }
-  }
-
-  const system = ctx.state.designSystem as SiteDesignSystem | null;
-  if (!system) return { state: { ...ctx.state, designPhase: "done" }, next: after };
-  const systemHash = createHash("sha256").update(system.styles + system.header + system.footer).digest("hex");
-  const existing = await loadDesignedPages(ctx, siteId);
-
-  await Promise.all(pages.map(async (page) => {
-    // Content hash first, so the release can match on the copy alone; the
-    // system and image parts decide whether a re-design is needed.
-    const hash = `${pageContentHash(page)}:${systemHash}:${createHash("sha256").update(images.map((i) => i.path).join(",")).digest("hex")}`;
-    const current = existing.get(page.slug);
-    if (current && current.hash === hash) return;
-    try {
-      const { main, tokensEstimated } = await designPageMain({ ...common, page, system });
-      await recordModelUsage(ctx, "website.designer", tokensEstimated);
-      const html = assemblePage({ site: common.site, page, nav, system, main, organization });
-      const warnings = takeAssemblyWarnings();
+  try {
+    const built = await buildSite({
+      stage: { db: ctx.client, tenantId: ctx.tenantId, siteId, runId: ctx.runId },
+      vision: designer, planner: designer, critic: designer,
+      site: { name: site.name, slug: site.slug },
+      pages, brief, reference, images, organization, donateUrl,
+      brand: {
+        primaryColor: str(intake.site_brand_primary_color), secondaryColor: str(intake.site_brand_secondary_color),
+        tone: str(intake.site_tone) ?? brief?.tone ?? null, visualDirection: str(intake.site_visual_direction),
+      },
+      guidance: settings.guidance,
+      visualQa: (process.env.VISUAL_QA ?? "off") === "screenshots",
+      onEvent: (e) => recordDesignEvent(ctx, e.scope ? `${e.stage}:${e.scope}` : e.stage, e.scope || e.stage.replace(/_/g, " "), e.ok, e.detail),
+    });
+    for (const page of built.pages) {
       await ctx.client.query(
         "UPDATE site_pages SET rendered_html = $3, rendered_hash = $4 WHERE site_id = $1 AND slug = $2",
-        [siteId, page.slug, html, hash]
+        [siteId, page.slug, page.html, `${pageContentHash(pages.find((p) => p.slug === page.slug)!)}:pipeline`]
       );
-      await recordDesignEvent(ctx, page.slug, page.title, true,
-        warnings.length ? `Composed on the site's design system. Cleaned up: ${warnings.slice(0, 3).join("; ")}.` : "Composed on the site's design system.");
-    } catch (err) {
-      await ctx.client.query(
-        "UPDATE site_pages SET rendered_html = NULL, rendered_hash = NULL WHERE site_id = $1 AND slug = $2",
-        [siteId, page.slug]
-      );
-      await recordDesignEvent(ctx, page.slug, page.title, false,
-        `The designer's page could not be used (${String((err as Error).message ?? err).slice(0, 160)}); the standard layout is used for it.`);
     }
-  }));
-  return { state: { ...ctx.state, designPhase: "done" }, next: after };
+    await ctx.client.query("UPDATE sites SET theme = theme || $2::jsonb WHERE id = $1", [siteId, JSON.stringify({ language: built.language, tokens: built.tokens })]);
+    return { state: { ...ctx.state, designPhase: "done" }, next: after };
+  } catch (err) {
+    await recordDesignEvent(ctx, "design_pipeline", "design pipeline", false,
+      `The design pipeline could not run (${String((err as Error).message ?? err).slice(0, 200)}); the standard layout is used for this build.`);
+    return { state: { ...ctx.state, designPhase: "done" }, next: after };
+  }
 }
 
 // ---------------------------------------------------------------------------

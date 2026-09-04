@@ -327,3 +327,58 @@ export function siteHtml(request: ModelRequest): string {
 </body>
 </html>`;
 }
+
+
+// ---- Website builder pipeline stages (deterministic stand-ins) -------------
+
+export function designLanguage(_request: ModelRequest) {
+  return {
+    style: "editorial-modern", mood: "warm, credible, hopeful", density: "spacious", rhythm: "alternating-bands",
+    contentWidth: "1200", sectionSpacing: "generous", whitespace: "generous margins, breathing room around headlines",
+    background: "warm-light",
+    typography: { headingStyle: "serif-editorial", bodyStyle: "sans", headingScale: "controlled", bodyScale: "comfortable", weightContrast: "medium", letterCase: "uppercase-eyebrows" },
+    radius: "small", cards: "minimal", buttons: "rounded", navigation: "light-minimal", imageTreatment: "large-contained",
+    grid: "asymmetric", alignment: "left", transitions: "soft-tints", fullWidthImagery: true, overlays: false, gradients: "none",
+    contrast: "light-dominant", layoutCharacter: "editorial", symmetry: "asymmetric", decorative: ["thin rules"],
+    motionStyle: "subtle", motionOpportunities: ["fade-up on sections", "count metrics"],
+    palette: { primary: "#1f5f4a", secondary: "#e8dcc8", accent: "#c8632b", background: "#fbf8f2" },
+  };
+}
+
+export function designTokens(_request: ModelRequest) {
+  return {
+    typography: { headingFamily: "serif-editorial", bodyFamily: "sans", scale: "controlled", bodySize: "comfortable", headingWeight: "600", bodyWeight: "400", headingLetterSpacing: "tight", eyebrowCase: "uppercase" },
+    spacing: { density: "spacious", sectionPadding: "generous" },
+    colors: { primary: "#1f5f4a", secondary: "#e8dcc8", accent: "#c8632b", background: "#fbf8f2", surface: "#ffffff", muted: "#f1ebe0", foreground: "#1c1a17", foregroundMuted: "#5c574f", border: "#e3dccf", onPrimary: "#ffffff", onAccent: "#ffffff", dark: "#17211d", onDark: "#f5f1ea" },
+    layout: { contentWidth: "1200", narrowWidth: "760", gutter: "24", grid: "asymmetric", alignment: "left" },
+    components: { buttonRadius: "8", inputRadius: "8", cardRadius: "12", imageRadius: "12", borderWidth: "1", shadow: "soft", cardStyle: "minimal", buttonStyle: "rounded", navHeight: "72", iconSize: "24" },
+    header: "light-minimal", imageTreatment: "large-contained", motion: "subtle", backgroundRhythm: "alternating",
+  };
+}
+
+const COMPONENT_FOR_BLOCK: Record<string, string> = {
+  hero: "EditorialHero", text: "EditorialTextSection", programs: "ProgramCards", stats: "ImpactMetrics", cta: "DonateCTA",
+  form: "ContactSection", contact: "ContactSection", quote: "TestimonialFeature", steps: "ProgramTimeline", faq: "FAQ",
+  team: "TeamGrid", logos: "PartnersStrip", split: "SplitStorySection", donate: "DonateModule",
+};
+
+export function pageComposition(request: ModelRequest) {
+  const page = jsonBlock<{ slug?: string; title?: string; blocks?: Array<{ kind: string }> }>(request, "page", {});
+  const blocks = page.blocks ?? [];
+  return {
+    slug: page.slug ?? "home",
+    objective: `Present ${page.title ?? "the page"} clearly`,
+    primaryCta: { label: "Donate", href: "/donate/" },
+    secondaryCta: null,
+    sections: blocks.map((b, i) => ({
+      id: `s${i}`, purpose: `${b.kind} block`, component: COMPONENT_FOR_BLOCK[b.kind] ?? "ProseSection",
+      background: i % 2 === 1 ? "muted" : "default", imagePosition: b.kind === "hero" ? "right" : "none",
+      image: b.kind === "hero" ? "hero" : null, block: i, density: "balanced", motion: b.kind === "stats" ? "count" : "fade-up", mobile: "stack",
+    })),
+  };
+}
+
+export function designCritique(_request: ModelRequest) {
+  const nine = { visualHierarchy: 9, typography: 9, spacing: 9, alignment: 9, consistency: 9, readability: 9, imageComposition: 8, ctaClarity: 9, brandConsistency: 9, animationQuality: 8, responsiveQuality: 9, accessibility: 9, overallPolish: 9 };
+  return { scores: nine, issues: [] };
+}

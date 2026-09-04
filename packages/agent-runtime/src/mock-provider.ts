@@ -1,5 +1,5 @@
 import type { ModelProvider, ModelRequest, ModelResponse } from "./index.js";
-import { siteContent, siteHtml, sitePage, sitePatch, websiteBrief } from "./mock-website.js";
+import { designCritique, designLanguage, designTokens, pageComposition, siteContent, siteHtml, sitePage, sitePatch, websiteBrief } from "./mock-website.js";
 import { mockIntent } from "./mock-intent.js";
 import type {
   AdGrantsCampaignPlanOutput,
@@ -44,6 +44,10 @@ export class MockModelProvider implements ModelProvider {
       intent: mockIntent,
       ad_grants_campaign_plan: draftAdGrantsCampaign,
       site_html: siteHtml,
+      design_language: designLanguage,
+      design_tokens: designTokens,
+      page_composition: pageComposition,
+      design_critique: designCritique,
     };
     const produced = generators[request.outputSchemaRef](request);
     // The designer answers with a document, not a JSON object.

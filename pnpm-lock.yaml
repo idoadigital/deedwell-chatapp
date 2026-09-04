@@ -125,7 +125,11 @@ importers:
         specifier: ^5.4.11
         version: 5.4.21(@types/node@25.9.5)
 
-  apps/site-router: {}
+  apps/site-router:
+    dependencies:
+      '@deedwell/website-domain':
+        specifier: workspace:^
+        version: link:../../packages/website-domain
 
   packages/adgrants-domain:
     dependencies:
