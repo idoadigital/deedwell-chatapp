@@ -7,6 +7,8 @@
  * base64 in data[].b64_json; there is no URL to fetch afterwards, so the
  * bytes go straight to our own storage.
  */
+import { AccessTokenSource } from "@deedwell/agent-runtime";
+
 export interface GeneratedImage {
   bytes: Buffer;
   mime: string;
@@ -77,10 +79,84 @@ export class MockImageGenerator implements ImageGenerator {
 
 /** `apiKey` comes from the admin key store. Without one, and outside mock
  *  mode, this throws rather than silently producing nothing. */
+/**
+ * Google Imagen on Vertex AI, the same project and credentials the Gemini
+ * text provider uses. The fallback when the OpenAI image account cannot
+ * serve, and a full generator in its own right.
+ */
+export class VertexImageGenerator implements ImageGenerator {
+  readonly model: string;
+  private readonly tokens = new AccessTokenSource();
+  private readonly project: string;
+  private readonly region: string;
+
+  constructor(opts: { project?: string; region?: string; model?: string } = {}) {
+    const project = opts.project ?? process.env.GCP_PROJECT;
+    if (!project) throw new Error("VertexImageGenerator requires GCP_PROJECT");
+    this.project = project;
+    this.region = opts.region ?? process.env.VERTEX_REGION ?? "us-central1";
+    this.model = opts.model ?? process.env.VERTEX_IMAGE_MODEL ?? "imagen-3.0-generate-002";
+  }
+
+  async generate(prompt: string, size: string): Promise<GeneratedImage> {
+    // Imagen takes an aspect ratio, not pixels; landscape → 4:3, portrait → 3:4.
+    const [w, h] = size.split("x").map(Number);
+    const aspectRatio = !w || !h || w === h ? "1:1" : w > h ? (w / h > 1.6 ? "16:9" : "4:3") : (h / w > 1.6 ? "9:16" : "3:4");
+    const token = await this.tokens.get();
+    const res = await fetch(
+      `https://${this.region}-aiplatform.googleapis.com/v1/projects/${this.project}/locations/${this.region}/publishers/google/models/${this.model}:predict`,
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify({
+          instances: [{ prompt }],
+          parameters: { sampleCount: 1, aspectRatio, personGeneration: "allow_adult", safetySetting: "block_medium_and_above", addWatermark: false, outputOptions: { mimeType: "image/png" } },
+        }),
+        signal: AbortSignal.timeout(120_000),
+      }
+    );
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      throw new Error(`Vertex Imagen request failed (${res.status}): ${body.slice(0, 300)}`);
+    }
+    const json = (await res.json()) as { predictions?: Array<{ bytesBase64Encoded?: string; mimeType?: string }> };
+    const p = json.predictions?.[0];
+    if (!p?.bytesBase64Encoded) throw new Error("Vertex Imagen returned no image (possibly filtered)");
+    return { bytes: Buffer.from(p.bytesBase64Encoded, "base64"), mime: p.mimeType ?? "image/png" };
+  }
+}
+
+const UNSERVICEABLE = /insufficient_quota|no credits|credit balance|invalid_api_key|incorrect api key|No OpenAI API key|\(401\)|\(402\)|\(403\)|\(429\)/i;
+
+/** Try the primary; when it cannot serve at all, use the secondary and
+ *  keep using it for ten minutes rather than failing every image. */
+export class FallbackImageGenerator implements ImageGenerator {
+  readonly model: string;
+  private unserviceableUntil = 0;
+  constructor(private readonly primary: ImageGenerator, private readonly secondary: ImageGenerator) {
+    this.model = `${primary.model}→${secondary.model}`;
+  }
+  async generate(prompt: string, size: string): Promise<GeneratedImage> {
+    if (Date.now() < this.unserviceableUntil) return this.secondary.generate(prompt, size);
+    try {
+      return await this.primary.generate(prompt, size);
+    } catch (err) {
+      const message = String((err as Error).message ?? err);
+      if (!UNSERVICEABLE.test(message)) throw err;
+      this.unserviceableUntil = Date.now() + 10 * 60_000;
+      console.log(JSON.stringify({ at: "image_provider_fallback", from: this.primary.model, to: this.secondary.model, reason: message.slice(0, 160) }));
+      return this.secondary.generate(prompt, size);
+    }
+  }
+}
+
 export function createImageGenerator(
   opts: { apiKey?: string | null; kind?: string } = {}
 ): ImageGenerator {
   const kind = opts.kind ?? process.env.MODEL_PROVIDER ?? "mock";
   if (kind === "mock") return new MockImageGenerator();
-  return new OpenAiImageGenerator({ apiKey: opts.apiKey ?? undefined });
+  const fallbackKind = process.env.IMAGE_FALLBACK_PROVIDER ?? (process.env.GCP_PROJECT ? "vertex" : "none");
+  if (kind === "vertex") return new VertexImageGenerator();
+  const openai = new OpenAiImageGenerator({ apiKey: opts.apiKey ?? undefined });
+  return fallbackKind === "vertex" ? new FallbackImageGenerator(openai, new VertexImageGenerator()) : openai;
 }

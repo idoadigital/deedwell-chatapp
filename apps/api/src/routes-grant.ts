@@ -234,9 +234,16 @@ export function registerGrantRoutes(app: FastifyInstance, ctx: AppContext): void
         [approvalId, input.decision, req.userId, input.note ?? null]
       );
       if (!rows[0]) throw new HttpError(404, "No pending approval with that id");
-      await ctx.deps.engine.signal(client, rows[0].run_id, "approval", {
-        approvalId, decision: input.decision,
-      });
+      // A decision on an approval whose run has already moved on (a stale
+      // brief after a newer build, say) is still recorded; only the resume
+      // is skipped.
+      try {
+              await ctx.deps.engine.signal(client, rows[0].run_id, "approval", {
+                approvalId, decision: input.decision,
+              });
+      } catch (err) {
+        req.log.warn({ err, runId: rows[0].run_id }, "approval decided but the run could not be resumed");
+      }
       await audit(client, {
         tenantId: req.orgId!, actorUser: req.userId, action: `approval.${input.decision}`,
         entityType: "approval", entityId: approvalId, metadata: { note: input.note },

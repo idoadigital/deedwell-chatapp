@@ -21,7 +21,7 @@ import { SCHEMA_HINTS } from "./openai-provider.js";
 
 const TOKEN_REFRESH_MS = 20 * 60 * 1000;
 
-class AccessTokenSource {
+export class AccessTokenSource {
   private token = "";
   private fetchedAt = 0;
 

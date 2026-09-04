@@ -3,7 +3,7 @@ export type { ContentKind, ContentStrategy, DesignBrief } from "./types.js";
 export { DESIGN_GUIDELINES } from "./guidelines.js";
 export { buildStrategy, type OrgContext } from "./strategy.js";
 export {
-  createImageGenerator, OpenAiImageGenerator, MockImageGenerator,
+  createImageGenerator, OpenAiImageGenerator, MockImageGenerator, VertexImageGenerator, FallbackImageGenerator,
   type ImageGenerator, type GeneratedImage,
 } from "./images.js";
 export { generateCampaign, type CampaignResult, type RenderedDesign } from "./pipeline.js";

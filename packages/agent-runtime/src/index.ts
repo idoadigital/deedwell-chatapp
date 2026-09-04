@@ -20,6 +20,7 @@ import {
 import { MockModelProvider } from "./mock-provider.js";
 import { OpenAiProvider } from "./openai-provider.js";
 import { GeminiProvider } from "./gemini-provider.js";
+export { AccessTokenSource } from "./gemini-provider.js";
 import { FallbackProvider } from "./fallback-provider.js";
 export { FallbackProvider } from "./fallback-provider.js";
 
