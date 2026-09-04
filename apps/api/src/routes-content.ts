@@ -119,7 +119,8 @@ export function registerContentRoutes(app: FastifyInstance, ctx: AppContext): vo
       const project = await client.query("SELECT * FROM content_projects WHERE id = $1", [contentId]);
       if (!project.rows[0]) throw new HttpError(404, "Content project not found");
       const assets = await client.query(
-        `SELECT a.id, a.position, a.caption, a.prompt, a.file_id, f.filename, f.mime
+        `SELECT a.id, a.position, a.caption, a.prompt, a.file_id, a.approval, a.approved_at,
+                f.filename, f.mime
          FROM content_assets a LEFT JOIN files f ON f.id = a.file_id
          WHERE a.content_project_id = $1 ORDER BY a.position`,
         [contentId]
@@ -206,7 +207,7 @@ export function registerContentPublishingRoutes(app: FastifyInstance, ctx: AppCo
       const { rows } = await client.query(
         `UPDATE content_assets
             SET approval = $2,
-                approved_by = CASE WHEN $2 = 'pending' THEN NULL ELSE $3 END,
+                approved_by = CASE WHEN $2 = 'pending' THEN NULL ELSE $3::uuid END,
                 approved_at = CASE WHEN $2 = 'pending' THEN NULL ELSE now() END
           WHERE id = $1 RETURNING id, approval`,
         [assetId, approval, req.userId]
