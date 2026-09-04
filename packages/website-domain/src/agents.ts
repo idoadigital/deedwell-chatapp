@@ -25,7 +25,17 @@ what evidence it needs, so the writer knows what to gather.
 
 THEME: choose the palette from the requested visual direction and any brand colours supplied
 in intake_preferences. "midnight" is the dark option and suits bold, high-contrast direction;
-serif headings suit editorial and traditional organizations, sans suits clean and modern.`,
+serif headings suit editorial and traditional organizations, sans suits clean and modern.
+
+GRANT REQUIREMENTS: when a grant_requirements document is supplied, every section it lists
+is mandatory. Give each one its own page in the sitemap, titled as the requirement names it,
+in addition to the pages you propose — a funder checks for these by name. Follow any guidance
+in that document about what those sections must contain; say it in the page's purpose.
+
+DESIGN REFERENCE: when a design_reference image is supplied, it is the look to aim for.
+Choose the palette and heading font that most closely match its colours, contrast and
+typography, and let its structure inform how the pages are framed — but never copy its
+words, its organization, or anything factual from it.`,
   allowedTools: ["fetch_org_facts"],
   outputSchemaRef: "website_brief",
   maxOutputRetries: 2,

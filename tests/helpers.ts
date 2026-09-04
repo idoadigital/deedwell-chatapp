@@ -9,6 +9,8 @@ const ALL_TABLES = [
   "artifact_versions", "artifacts", "tool_invocations", "approvals", "workflow_steps",
   "workflow_runs", "files", "projects", "invitations", "organization_memberships",
   "organizations", "sessions", "users",
+  // Platform-owned (no tenant), so nothing above cascades into them.
+  "site_reference_templates", "platform_settings",
 ];
 
 export interface TestEnv {
@@ -47,7 +49,7 @@ export async function createTestEnv(
 
 export async function api(
   app: FastifyInstance,
-  method: "GET" | "POST",
+  method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
   url: string,
   opts: { token?: string; body?: unknown } = {}
 ): Promise<{ status: number; body: any; raw: string }> {

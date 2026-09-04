@@ -136,9 +136,15 @@ export class GeminiProvider implements ModelProvider {
       `Respond with ONLY a single JSON object conforming to the "${request.outputSchemaRef}" output contract described in your instructions. No prose, no markdown fences.`,
       ``,
       ...request.dataBlocks.map(
-        (b) => `<<<DOCUMENT label="${b.label}">>>\n${b.content}\n<<<END DOCUMENT>>>`
+        (b) => `<<<DOCUMENT label="${b.label}">>>\n${b.content}${b.image ? "\n(An image for this document is attached.)" : ""}\n<<<END DOCUMENT>>>`
       ),
     ].join("\n");
+    // Images ride as their own parts after the text; Gemini is multimodal
+    // natively, so a design reference reaches the model as pixels, not prose.
+    const parts: Array<Record<string, unknown>> = [{ text: user }];
+    for (const b of request.dataBlocks) {
+      if (b.image) parts.push({ inlineData: { mimeType: b.image.mime, data: b.image.base64 } });
+    }
 
     const token = await this.tokens.get();
     const res = await fetch(
@@ -148,7 +154,7 @@ export class GeminiProvider implements ModelProvider {
         headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
         body: JSON.stringify({
           systemInstruction: { parts: [{ text: request.system + "\n\n" + SCHEMA_HINTS[request.outputSchemaRef] }] },
-          contents: [{ role: "user", parts: [{ text: user }] }],
+          contents: [{ role: "user", parts }],
           generationConfig: {
             temperature: 0.2,
             responseMimeType: "application/json",

@@ -33,9 +33,16 @@ export class OpenAiProvider implements ModelProvider {
       ``,
       ...request.dataBlocks.map(
         (b) =>
-          `<<<DOCUMENT label="${b.label}">>>\n${b.content}\n<<<END DOCUMENT>>>`
+          `<<<DOCUMENT label="${b.label}">>>\n${b.content}${b.image ? "\n(An image for this document is attached.)" : ""}\n<<<END DOCUMENT>>>`
       ),
     ].join("\n");
+    const images = request.dataBlocks.filter((b) => b.image);
+    const userContent = images.length
+      ? [
+          { type: "text", text: user },
+          ...images.map((b) => ({ type: "image_url", image_url: { url: `data:${b.image!.mime};base64,${b.image!.base64}` } })),
+        ]
+      : user;
 
     const res = await fetch(`${this.baseUrl}/chat/completions`, {
       method: "POST",
@@ -49,7 +56,7 @@ export class OpenAiProvider implements ModelProvider {
         response_format: { type: "json_object" },
         messages: [
           { role: "system", content: request.system + "\n\n" + SCHEMA_HINTS[request.outputSchemaRef] },
-          { role: "user", content: user },
+          { role: "user", content: userContent },
         ],
       }),
       signal: AbortSignal.timeout(90_000),

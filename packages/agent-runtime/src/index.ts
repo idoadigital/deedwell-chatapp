@@ -31,6 +31,10 @@ export { seedAgentDefinitions } from "./seed.js";
 export interface ModelDataBlock {
   label: string;
   content: string;
+  /** An image that belongs with this block (a design reference, say).
+   *  Providers that can see images attach it; text-only ones fall back to
+   *  the content, which must therefore describe the image on its own. */
+  image?: { mime: string; base64: string };
 }
 
 export interface ModelRequest {

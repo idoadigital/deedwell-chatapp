@@ -19,6 +19,12 @@ import {
   WEBSITE_DIRECTION_KEYS,
   WEBSITE_ESSENTIAL_FACTS,
 } from "./intake.js";
+import {
+  ensureRequiredSections,
+  loadSiteGenerationSettings,
+  pickReferenceTemplate,
+  siteGenerationDataBlocks,
+} from "./site-generation.js";
 
 export const WEBSITE_BUILD_WORKFLOW = "website-build";
 export const WEBSITE_UPDATE_WORKFLOW = "website-update";
@@ -427,6 +433,11 @@ export function buildWebsiteBuildWorkflow(): WorkflowDefinition<WebsiteServices>
       async intake_brief(ctx): Promise<StepResult> {
         const input = BuildInput.parse(ctx.state.input);
         const facts = await fetchFacts(ctx, digitalStrategist);
+        // Platform-wide direction from Site Generation Settings: the sections
+        // grant approval demands, and one reference design drawn at random
+        // from the library so consecutive sites do not all look alike.
+        const settings = await loadSiteGenerationSettings(ctx.client);
+        const reference = await pickReferenceTemplate(ctx.client, ctx.services.storage);
         const result = await runAgentTask<WebsiteBriefOutput>(
           ctx.services.provider, digitalStrategist,
           "Produce a website brief for this organization.",
@@ -440,12 +451,20 @@ export function buildWebsiteBuildWorkflow(): WorkflowDefinition<WebsiteServices>
                 ?? input.donateUrl,
             }) },
             { label: "intake_preferences", content: JSON.stringify(ctx.state.intake ?? {}) },
+            ...siteGenerationDataBlocks(settings, reference),
           ]
         );
         await recordModelUsage(ctx, digitalStrategist.agentKey, result.tokensEstimated);
-        await ctx.client.query("UPDATE sites SET theme = $2 WHERE id = $1", [
-          input.siteId, JSON.stringify(result.output.theme),
-        ]);
+        // The prompt asks; this guarantees. A required section the model
+        // skipped becomes its own page before anyone approves the brief.
+        const brief: WebsiteBriefOutput = {
+          ...result.output,
+          sitemap: ensureRequiredSections(result.output.sitemap, settings.requiredSections),
+        };
+        await ctx.client.query(
+          "UPDATE sites SET theme = $2, reference_template_id = $3 WHERE id = $1",
+          [input.siteId, JSON.stringify(brief.theme), reference?.id ?? null]
+        );
         // Artifact for the workspace panel (versioned like everything else).
         const { rows: existing } = await ctx.client.query(
           "SELECT id, current_version FROM artifacts WHERE run_id = $1 AND type = 'website_brief'",
@@ -464,8 +483,8 @@ export function buildWebsiteBuildWorkflow(): WorkflowDefinition<WebsiteServices>
           `INSERT INTO artifact_versions (id, tenant_id, artifact_id, version, content,
              created_by_kind, created_by_agent, change_summary)
            VALUES ($1,$2,$3,$4,$5,'agent',$6,$7)`,
-          [uuidv7(), ctx.tenantId, artifactId, version, JSON.stringify(result.output),
-           digitalStrategist.agentKey, `Brief with ${result.output.sitemap.length}-page sitemap`]
+          [uuidv7(), ctx.tenantId, artifactId, version, JSON.stringify(brief),
+           digitalStrategist.agentKey, `Brief with ${brief.sitemap.length}-page sitemap`]
         );
         await ctx.client.query("UPDATE artifacts SET current_version = $2 WHERE id = $1", [artifactId, version]);
         // Stage 2 (spec §5): the brief must be approved before any build starts.
@@ -476,15 +495,19 @@ export function buildWebsiteBuildWorkflow(): WorkflowDefinition<WebsiteServices>
             artifactId,
             siteId: input.siteId,
             siteName: input.siteName,
-            objectives: result.output.objectives,
-            audiences: result.output.audiences,
-            tone: result.output.tone,
-            theme: result.output.theme,
-            sitemap: result.output.sitemap,
+            objectives: brief.objectives,
+            audiences: brief.audiences,
+            tone: brief.tone,
+            theme: brief.theme,
+            sitemap: brief.sitemap,
+            referenceTemplate: reference ? { id: reference.id, title: reference.title } : null,
           })]
         );
         return {
-          state: { ...ctx.state, brief: result.output, briefArtifactId: artifactId },
+          state: {
+            ...ctx.state, brief, briefArtifactId: artifactId,
+            referenceTemplate: reference ? { id: reference.id, title: reference.title } : null,
+          },
           wait: { kind: "approval", payload: { approvalId, kind: "website_brief" }, resumeStep: "brief_gate" },
         };
       },

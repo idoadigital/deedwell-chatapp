@@ -37,6 +37,14 @@ export function tenantFileKey(tenantId: string, fileId: string, filename: string
   return `tenants/${tenantId}/files/${fileId}/${safeName}`;
 }
 
+/** Platform-owned objects (no tenant): admin-uploaded reference material the
+ *  generators read on every tenant's behalf. Same server-generated-key rule. */
+export function platformFileKey(scope: string, fileId: string, filename: string): string {
+  const safeScope = scope.replace(/[^a-z0-9-]/g, "-").slice(0, 40);
+  const safeName = filename.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 100);
+  return `platform/${safeScope}/${fileId}/${safeName}`;
+}
+
 /**
  * GCS-backed storage — production on Cloud Run, whose container filesystem
  * is ephemeral. Same tenant-prefixed, server-generated-key contract as

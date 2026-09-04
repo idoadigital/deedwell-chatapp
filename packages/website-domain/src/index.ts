@@ -26,3 +26,11 @@ export {
   WEBSITE_UPDATE_WORKFLOW,
   type WebsiteServices,
 } from "./workflow.js";
+export {
+  SITE_GENERATION_SETTINGS_KEY,
+  loadSiteGenerationSettings,
+  pickReferenceTemplate,
+  siteGenerationDataBlocks,
+  ensureRequiredSections,
+  type ReferenceTemplate,
+} from "./site-generation.js";

@@ -665,6 +665,45 @@ export const WebsiteBriefOutput = z.object({
 });
 export type WebsiteBriefOutput = z.infer<typeof WebsiteBriefOutput>;
 
+// ---------------------------------------------------------------------------
+// Site Generation Settings (Platform Admin): what every generated site must
+// carry for grant approval, and the reference-design library.
+// ---------------------------------------------------------------------------
+
+export const SiteRequiredSection = z.object({
+  /** Stable slug; becomes the page slug when the strategist leaves it out. */
+  key: z.string().regex(/^[a-z0-9-]+$/).min(1).max(60),
+  title: z.string().min(1).max(120),
+  description: z.string().max(600).default(""),
+});
+export type SiteRequiredSection = z.infer<typeof SiteRequiredSection>;
+
+export const SiteGenerationSettings = z.object({
+  requiredSections: z.array(SiteRequiredSection).max(30).default([]),
+  /** Free-form direction for the generator, e.g. what funders look for. */
+  guidance: z.string().max(4000).default(""),
+});
+export type SiteGenerationSettings = z.infer<typeof SiteGenerationSettings>;
+
+export const SITE_TEMPLATE_MIMES = ["image/png", "image/jpeg", "image/webp"] as const;
+
+export const UploadSiteTemplateInput = z.object({
+  filename: z.string().min(1).max(255),
+  // 8 MB of image is ~10.7 MB of base64; the API body limit is 15 MB.
+  contentBase64: z.string().max(11_000_000),
+  mime: z.enum(SITE_TEMPLATE_MIMES),
+  title: z.string().min(1).max(120),
+  description: z.string().max(600).default(""),
+});
+export type UploadSiteTemplateInput = z.infer<typeof UploadSiteTemplateInput>;
+
+export const UpdateSiteTemplateInput = z.object({
+  title: z.string().min(1).max(120).optional(),
+  description: z.string().max(600).optional(),
+  status: z.enum(["active", "archived"]).optional(),
+});
+export type UpdateSiteTemplateInput = z.infer<typeof UpdateSiteTemplateInput>;
+
 /** Website Copywriter output contract. */
 /** What the Content page posts to start a campaign. The kind list is the same
  *  closed set the DB CHECK enforces. */
