@@ -30,6 +30,7 @@ export {
   SITE_GENERATION_SETTINGS_KEY,
   loadSiteGenerationSettings,
   pickReferenceTemplate,
+  loadReferenceTemplate,
   siteGenerationDataBlocks,
   ensureRequiredSections,
   type ReferenceTemplate,

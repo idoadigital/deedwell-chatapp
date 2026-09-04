@@ -72,7 +72,13 @@ physical address; and a way to contact a human. Prefer one specific figure over 
 claims. If you do not have a number, do not round one up — say what you do instead.
 
 NEVER invent a statistic, a quotation, a named person, or a funder. Those are the four things
-that end an application when a reviewer checks them. Emit a placeholder and report it.`,
+that end an application when a reviewer checks them. Emit a placeholder and report it.
+
+DESIGN REFERENCE: when a design_reference image is supplied, compose the page the way that
+design is composed — the kind of opening it uses, how much it leans on photography versus
+type, whether it alternates prose with numbers, quotes or steps — by choosing block kinds
+and their order accordingly. Take structure and rhythm from it only; never its words, its
+organization, or any fact.`,
   allowedTools: ["fetch_org_facts"],
   // Pages are written one at a time so each commits, emits an event, and shows
   // up as visible progress. The all-pages-at-once contract (site_content) is no

@@ -21,6 +21,7 @@ import {
 } from "./intake.js";
 import {
   ensureRequiredSections,
+  loadReferenceTemplate,
   loadSiteGenerationSettings,
   pickReferenceTemplate,
   siteGenerationDataBlocks,
@@ -573,6 +574,10 @@ export function buildWebsiteBuildWorkflow(): WorkflowDefinition<WebsiteServices>
         // same rule here so the cursor and the stored slugs agree.
         const slug = cursor === 0 ? "home" : plan.slug;
         const facts = await fetchFacts(ctx, websiteCopywriter);
+        // The same reference the brief was drawn against, so the page's
+        // block composition follows the look, not only its colours.
+        const referenceId = (ctx.state.referenceTemplate as { id?: string } | null | undefined)?.id ?? null;
+        const reference = await loadReferenceTemplate(ctx.client, ctx.services.storage, referenceId);
         const result = await runAgentTask<SitePageOutput>(
           ctx.services.provider, websiteCopywriter,
           `Write the "${plan.title}" page. Write only this page.`,
@@ -582,6 +587,7 @@ export function buildWebsiteBuildWorkflow(): WorkflowDefinition<WebsiteServices>
             { label: "intake_preferences", content: JSON.stringify(ctx.state.intake ?? {}) },
             { label: "brief", content: JSON.stringify(brief ?? {}) },
             { label: "page_plan", content: JSON.stringify({ ...plan, slug }) },
+            ...siteGenerationDataBlocks({ requiredSections: [], guidance: "" }, reference),
           ]
         );
         await recordModelUsage(ctx, websiteCopywriter.agentKey, result.tokensEstimated);

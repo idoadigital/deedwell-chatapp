@@ -12,8 +12,10 @@ import { summarize } from "@deedwell/observability";
  * - strict CSP; the approved templates ship zero JavaScript
  * - unknown hosts/slugs get a safe 404, never an error dump
  *
- * Host forms: <slug>.preview.<base> (preview release) and <slug>.<base>
- * (published release). Path forms: /<slug>/* serves the published release
+ * Host forms: preview-<slug>.<base> (preview release; the older
+ * <slug>.preview.<base> still resolves) and <slug>.<base> (published
+ * release). Preview is a first-level label so one wildcard certificate for
+ * *.<base> covers every site and every preview. Path forms: /<slug>/* serves the published release
  * (the production form behind e.g. sites.deedwell.org); /preview/:slug/* the
  * preview; /live/:slug/* is kept as an alias for previously stored links.
  */
@@ -40,7 +42,7 @@ const CONTENT_TYPES: Record<string, string> = {
 // Deedwell app origins only; everyone else is still refused.
 const FRAME_ANCESTORS =
   process.env.FRAME_ANCESTORS ??
-  "'self' http://178.104.188.229:4173 http://localhost:4173 http://localhost:5173 tauri://localhost http://tauri.localhost";
+  "'self' https://deedwell.org https://www.deedwell.org https://coworkers.deedwell.org http://localhost:4173 http://localhost:5173 tauri://localhost http://tauri.localhost";
 
 const SECURITY_HEADERS: Record<string, string> = {
   "content-security-policy":
@@ -89,9 +91,21 @@ export function buildSiteRouter(deps: SiteRouterDeps): FastifyInstance {
       return { slug: bare.slice(0, -previewSuffix.length), mode: "preview" };
     }
     if (bare.endsWith(liveSuffix)) {
-      return { slug: bare.slice(0, -liveSuffix.length), mode: "live" };
+      const label = bare.slice(0, -liveSuffix.length);
+      if (label.startsWith("preview-")) return { slug: label.slice("preview-".length), mode: "preview" };
+      return { slug: label, mode: "live" };
     }
     return null;
+  }
+
+  /** The host the visitor typed. Behind an edge proxy (a Cloudflare Worker
+   *  forwarding to Cloud Run) that arrives in X-Forwarded-Host, since the
+   *  proxy has to address the upstream by its own name. */
+  function visitorHost(headers: Record<string, unknown>): string {
+    const forwarded = headers["x-forwarded-host"];
+    const first = Array.isArray(forwarded) ? forwarded[0] : forwarded;
+    if (typeof first === "string" && first.trim()) return first.split(",")[0]!.trim();
+    return String(headers.host ?? "");
   }
 
   async function serve(
@@ -186,7 +200,7 @@ export function buildSiteRouter(deps: SiteRouterDeps): FastifyInstance {
   // otherwise the bare path form /<slug>/* serving the published release.
   app.get("/*", async (req, reply) => {
     const rest = ((req.params as { "*": string })["*"] ?? "").replace(/^\/+/, "");
-    const target = hostToTarget(String(req.headers.host ?? ""));
+    const target = hostToTarget(visitorHost(req.headers as Record<string, unknown>));
     if (target) return serve(reply, target.slug, target.mode, rest);
     const [slug, ...restParts] = rest.split("/");
     if (!slug || RESERVED_ROOT_SEGMENTS.has(slug)) {

@@ -58,6 +58,28 @@ export async function pickReferenceTemplate(
   };
 }
 
+/** The template a site was briefed against, for the steps after the brief. */
+export async function loadReferenceTemplate(
+  db: Queryable,
+  storage: StorageAdapter,
+  templateId: string | null | undefined
+): Promise<ReferenceTemplate | null> {
+  if (!templateId) return null;
+  const { rows } = await db.query(
+    "SELECT id, title, description, mime, storage_key FROM site_reference_templates WHERE id = $1",
+    [templateId]
+  );
+  const row = rows[0];
+  if (!row) return null;
+  return {
+    id: String(row.id),
+    title: String(row.title),
+    description: String(row.description ?? ""),
+    mime: String(row.mime),
+    bytes: await storage.get(String(row.storage_key)),
+  };
+}
+
 /** The extra documents the strategist receives. Both are optional: an empty
  *  settings row and an empty library add nothing to the prompt. */
 export function siteGenerationDataBlocks(
