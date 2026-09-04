@@ -30,13 +30,19 @@ export async function generateCampaign(opts: {
   prompt: string;
   org: OrgContext;
   onProgress?: (done: number, total: number) => void;
+  /** For "generate more": captions already in the campaign, and where the
+   *  new designs' positions start so they sort after the existing ones. */
+  avoid?: string[];
+  positionOffset?: number;
 }): Promise<CampaignResult> {
   const strategy = await buildStrategy({
     model: opts.model,
     kind: opts.kind,
     prompt: opts.prompt,
     org: opts.org,
+    avoid: opts.avoid,
   });
+  const offset = opts.positionOffset ?? 0;
 
   const size = CONTENT_KIND_SPEC[opts.kind].size;
   let done = 0;
@@ -46,7 +52,7 @@ export async function generateCampaign(opts: {
       done += 1;
       opts.onProgress?.(done, strategy.designs.length);
       return {
-        position: i,
+        position: offset + i,
         caption: brief.caption,
         prompt: brief.prompt,
         bytes: image.bytes,

@@ -51,15 +51,24 @@ export async function buildStrategy(opts: {
   kind: ContentKind;
   prompt: string;
   org: OrgContext;
+  /** Captions of designs this campaign already has. When the staff ask for
+   *  more, the new briefs must be different approaches, not repeats. */
+  avoid?: string[];
 }): Promise<ContentStrategy> {
   const spec = CONTENT_KIND_SPEC[opts.kind];
+  const more = opts.avoid?.length
+    ? ` The campaign already has ${opts.avoid.length} designs (listed in "designs already made"); propose only NEW designs that take clearly different approaches from those, keeping the same strategy.`
+    : "";
   const res = await opts.model.complete({
     system: SYSTEM,
-    task: `Plan a ${CONTENT_KIND_LABELS[opts.kind]} campaign. Every design is ${spec.surface} in ${spec.aspect} format.`,
+    task: `Plan a ${CONTENT_KIND_LABELS[opts.kind]} campaign. Every design is ${spec.surface} in ${spec.aspect} format.${more}`,
     outputSchemaRef: "content_strategy",
     dataBlocks: [
       { label: "organization context", content: contextBlock(opts.org) },
       { label: "staff request", content: opts.prompt },
+      ...(opts.avoid?.length
+        ? [{ label: "designs already made", content: opts.avoid.map((c, i) => `${i + 1}. ${c}`).join("\n") }]
+        : []),
     ],
   });
   // Providers return JSON text; the schema is the contract, not a suggestion.
