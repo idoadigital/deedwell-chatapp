@@ -1,11 +1,7 @@
-import { createHash } from "node:crypto";
 import type { FastifyInstance } from "fastify";
-import type { PoolClient } from "pg";
-import { audit, tenantFileKey, uuidv7, withContext } from "@deedwell/database";
-import {
-  createImageGenerator, generateCampaign, readProviderKey,
-  type ContentKind, type OrgContext, type RenderedDesign,
-} from "@deedwell/content-domain";
+import { audit, uuidv7 } from "@deedwell/database";
+import { readProviderKey, type ContentKind } from "@deedwell/content-domain";
+import { canStartCampaign, startCampaign, startMoreDesigns } from "./content-campaigns.js";
 import { CreateContentInput } from "@deedwell/schemas";
 import { HttpError, type AppContext } from "./app.js";
 
@@ -13,33 +9,13 @@ import { HttpError, type AppContext } from "./app.js";
  *  The POST returns immediately with a 'generating' row; the client polls the
  *  GET. Nothing is streamed because nothing needs to be — the client shows a
  *  skeleton until status flips. */
-const MAX_CONCURRENT = Number(process.env.CONTENT_MAX_CONCURRENT ?? 2);
-let running = 0;
-
-async function loadOrgContext(client: PoolClient, orgId: string): Promise<OrgContext> {
-  const [org, facts, knowledge] = await Promise.all([
-    client.query("SELECT name FROM organizations WHERE id = $1", [orgId]),
-    client.query("SELECT fact_key, value FROM org_facts WHERE status <> 'rejected' ORDER BY fact_key LIMIT 60"),
-    client.query(
-      `SELECT filename FROM files WHERE project_id IS NULL ORDER BY created_at DESC LIMIT 12`
-    ),
-  ]);
-  return {
-    name: org.rows[0]?.name ?? "This nonprofit",
-    facts: facts.rows.map((r) => ({ key: r.fact_key as string, value: String(r.value) })),
-    // Filenames only: the knowledge files themselves are not parsed here, and
-    // claiming to have read them would be worse than naming them.
-    knowledge: knowledge.rows.map((r) => ({ title: r.filename as string, excerpt: "" })),
-  };
-}
-
 export function registerContentRoutes(app: FastifyInstance, ctx: AppContext): void {
   const { deps } = ctx;
 
   app.post("/v1/orgs/:orgId/content", async (req, reply) => {
     ctx.requireRole(req, "member");
     const input = CreateContentInput.parse(req.body);
-    if (running >= MAX_CONCURRENT) {
+    if (!canStartCampaign()) {
       throw new HttpError(429, "Another campaign is still generating — try again in a moment.");
     }
     // Fail before creating a row: a campaign that can never generate should
@@ -49,28 +25,14 @@ export function registerContentRoutes(app: FastifyInstance, ctx: AppContext): vo
     }
     const orgId = req.orgId!;
     const userId = req.userId!;
-    const id = uuidv7();
-    const title = input.title ?? input.prompt.slice(0, 60);
-
     const row = await ctx.inOrg(req, async (client) => {
-      await client.query(
-        `INSERT INTO content_projects (id, tenant_id, kind, title, prompt, created_by)
-         VALUES ($1,$2,$3,$4,$5,$6)`,
-        [id, orgId, input.kind, title, input.prompt, userId]
-      );
+      const { project } = await startCampaign(deps, client, { orgId, userId, kind: input.kind, prompt: input.prompt, title: input.title ?? null });
       await audit(client, {
         tenantId: orgId, actorUser: userId, action: "content.generate",
-        entityType: "content_projects", entityId: id, metadata: { kind: input.kind },
+        entityType: "content_projects", entityId: String(project.id), metadata: { kind: input.kind },
       });
-      const { rows } = await client.query("SELECT * FROM content_projects WHERE id = $1", [id]);
-      return rows[0];
+      return project;
     });
-
-    // Detached on purpose: the request is done, the work is not.
-    running += 1;
-    void runCampaign({ deps, orgId, userId, id, kind: input.kind, prompt: input.prompt })
-      .catch((err) => app.log.error({ err, contentProjectId: id }, "content generation failed"))
-      .finally(() => { running -= 1; });
 
     reply.code(202);
     return { contentProject: row, assets: [] };
@@ -119,7 +81,7 @@ export function registerContentRoutes(app: FastifyInstance, ctx: AppContext): vo
   app.post("/v1/orgs/:orgId/content/:contentId/more", async (req, reply) => {
     ctx.requireRole(req, "member");
     const { contentId } = req.params as { contentId: string };
-    if (running >= MAX_CONCURRENT) {
+    if (!canStartCampaign()) {
       throw new HttpError(429, "Another campaign is still generating — try again in a moment.");
     }
     if ((process.env.MODEL_PROVIDER ?? "mock") !== "mock" && !(await readProviderKey(deps.appPool, "openai"))) {
@@ -145,10 +107,8 @@ export function registerContentRoutes(app: FastifyInstance, ctx: AppContext): vo
       return updated[0];
     });
 
-    running += 1;
-    void runMoreDesigns({ deps, orgId, userId, id: contentId, kind: row.kind as ContentKind, prompt: row.prompt as string })
-      .catch((err) => app.log.error({ err, contentProjectId: contentId }, "generate more failed"))
-      .finally(() => { running -= 1; });
+    void startMoreDesigns(deps, { orgId, userId, id: contentId, kind: row.kind as ContentKind, prompt: row.prompt as string })
+      .catch((err) => app.log.error({ err, contentProjectId: contentId }, "generate more failed"));
 
     reply.code(202);
     return { contentProject: row };
@@ -171,131 +131,6 @@ export function registerContentRoutes(app: FastifyInstance, ctx: AppContext): vo
     });
     return result;
   });
-}
-
-/** The actual work, outside the request. Runs in its own tenant-scoped
- *  transaction because the request's one is long gone by the time it starts. */
-async function runCampaign(args: {
-  deps: AppContext["deps"];
-  orgId: string;
-  userId: string;
-  id: string;
-  kind: ContentKind;
-  prompt: string;
-}): Promise<void> {
-  const { deps, orgId, userId, id, kind, prompt } = args;
-  try {
-    const org = await withContext(deps.appPool, { tenantId: orgId, userId }, (client) =>
-      loadOrgContext(client, orgId)
-    );
-    const apiKey = await readProviderKey(deps.appPool, "openai");
-    const result = await generateCampaign({
-      model: deps.provider,
-      images: createImageGenerator({ apiKey }),
-      kind,
-      prompt,
-      org,
-    });
-
-    await storeDesigns({ deps, orgId, userId, id, designs: result.designs });
-
-    await withContext(deps.appPool, { tenantId: orgId, userId }, (client) =>
-      client.query(
-        `UPDATE content_projects SET status = 'ready', strategy = $2, updated_at = now() WHERE id = $1`,
-        [id, JSON.stringify(result.strategy)]
-      )
-    );
-  } catch (err) {
-    await withContext(deps.appPool, { tenantId: orgId, userId }, (client) =>
-      client.query(
-        `UPDATE content_projects SET status = 'failed', error = $2, updated_at = now() WHERE id = $1`,
-        [id, String((err as Error).message ?? err).slice(0, 500)]
-      )
-    ).catch(() => {});
-    throw err;
-  }
-}
-
-/** Each design becomes an ordinary tenant file plus a content_assets row. */
-async function storeDesigns(args: {
-  deps: AppContext["deps"];
-  orgId: string;
-  userId: string;
-  id: string;
-  designs: RenderedDesign[];
-}): Promise<void> {
-  const { deps, orgId, userId, id } = args;
-  for (const design of args.designs) {
-    const fileId = uuidv7();
-    const filename = `${design.caption.replace(/[^a-z0-9]+/gi, "-").toLowerCase().slice(0, 40) || "design"}.png`;
-    const storageKey = tenantFileKey(orgId, fileId, filename);
-    await deps.storage.put(storageKey, design.bytes);
-    await withContext(deps.appPool, { tenantId: orgId, userId }, async (client) => {
-      await client.query(
-        `INSERT INTO files (id, tenant_id, project_id, filename, mime, size_bytes, sha256, storage_key, created_by)
-         VALUES ($1,$2,NULL,$3,$4,$5,$6,$7,$8)`,
-        [fileId, orgId, filename, design.mime, design.bytes.length,
-         createHash("sha256").update(design.bytes).digest("hex"), storageKey, userId]
-      );
-      await client.query(
-        `INSERT INTO content_assets (id, tenant_id, content_project_id, file_id, position, prompt, caption)
-         VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-        [uuidv7(), orgId, id, fileId, design.position, design.prompt, design.caption]
-      );
-    });
-  }
-}
-
-/** A further round for a campaign that already has designs. The existing
- *  ones are never touched: a failure here leaves the campaign 'ready' with
- *  what it had, plus the reason, rather than marking good work failed. */
-async function runMoreDesigns(args: {
-  deps: AppContext["deps"];
-  orgId: string;
-  userId: string;
-  id: string;
-  kind: ContentKind;
-  prompt: string;
-}): Promise<void> {
-  const { deps, orgId, userId, id, kind, prompt } = args;
-  try {
-    const { org, existing } = await withContext(deps.appPool, { tenantId: orgId, userId }, async (client) => ({
-      org: await loadOrgContext(client, orgId),
-      existing: (await client.query(
-        "SELECT caption, position FROM content_assets WHERE content_project_id = $1 ORDER BY position",
-        [id]
-      )).rows as Array<{ caption: string; position: number }>,
-    }));
-    const apiKey = await readProviderKey(deps.appPool, "openai");
-    const result = await generateCampaign({
-      model: deps.provider,
-      images: createImageGenerator({ apiKey }),
-      kind,
-      prompt,
-      org,
-      avoid: existing.map((a) => a.caption),
-      positionOffset: existing.length ? Math.max(...existing.map((a) => a.position)) + 1 : 0,
-    });
-    await storeDesigns({ deps, orgId, userId, id, designs: result.designs });
-    await withContext(deps.appPool, { tenantId: orgId, userId }, (client) =>
-      client.query(
-        `UPDATE content_projects
-            SET status = 'ready', updated_at = now(),
-                strategy = CASE WHEN strategy IS NULL THEN $2::jsonb
-                           ELSE jsonb_set(strategy, '{designs}', coalesce(strategy->'designs', '[]'::jsonb) || ($2::jsonb->'designs')) END
-          WHERE id = $1`,
-        [id, JSON.stringify(result.strategy)]
-      )
-    );
-  } catch (err) {
-    await withContext(deps.appPool, { tenantId: orgId, userId }, (client) =>
-      client.query(
-        `UPDATE content_projects SET status = 'ready', error = $2, updated_at = now() WHERE id = $1`,
-        [id, `Could not generate more: ${String((err as Error).message ?? err).slice(0, 480)}`]
-      )
-    ).catch(() => {});
-    throw err;
-  }
 }
 
 /** Approval and publishing for generated designs. Split out from the

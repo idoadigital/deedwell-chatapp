@@ -28,6 +28,8 @@ export interface PlanArgs {
   donateUrl: string | null;
   siteSlug: string;
   usedComponents: ComponentName[];
+  /** A requested change to the look of this page, from the chat. */
+  designInstruction?: string | null;
 }
 
 export async function planPage(args: PlanArgs): Promise<{ composition: PageComposition; corrections: string[] }> {
@@ -44,6 +46,7 @@ export async function planPage(args: PlanArgs): Promise<{ composition: PageCompo
         { label: "site_images", content: JSON.stringify(args.images.map((i) => ({ key: i.key, purpose: i.purpose, forPage: i.forPage }))) },
         { label: "site", content: JSON.stringify({ donateUrl: args.donateUrl, componentsUsedOnOtherPages: args.usedComponents }) },
         ...(args.brief ? [{ label: "brief", content: JSON.stringify({ objectives: args.brief.objectives, audiences: args.brief.audiences, tone: args.brief.tone, sitemap: args.brief.sitemap }) }] : []),
+        ...(args.designInstruction ? [{ label: "design_instruction", content: `The site owner asked for this change to the look of the page; honour it in your choices of component, variant, image position and background: ${args.designInstruction}` }] : []),
       ],
     });
     raw = JSON.parse(res.text);

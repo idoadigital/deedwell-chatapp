@@ -51,6 +51,10 @@ export interface BuildSiteArgs {
   brand: BrandHints;
   /** Site Generation Settings guidance, folded into the brand hints. */
   guidance: string;
+  /** A look-and-layout change from the chat, applied to the named pages
+   *  when they are planned; part of those pages' plan input, so only they
+   *  are re-planned. */
+  designNote?: { instruction: string; pages: string[] } | null;
   visualQa?: boolean;
   onEvent?: (event: { stage: string; scope: string; ok: boolean; detail: string }) => Promise<void>;
 }
@@ -92,9 +96,10 @@ export async function buildSite(args: BuildSiteArgs): Promise<{ language: Design
     }
   };
   const buildOne = async (page: SitePage): Promise<BuiltPage> => {
-    const planInput = { page, language, images: args.images.map((i) => i.key), donateUrl: args.donateUrl };
+    const note = args.designNote && args.designNote.pages.includes(page.slug) ? args.designNote.instruction : null;
+    const planInput = { page, language, images: args.images.map((i) => i.key), donateUrl: args.donateUrl, note };
     const planned = (await runStage(args.stage, { stage: "page_plan", scope: page.slug, input: planInput, model: args.planner.name },
-      () => planPage({ provider: args.planner, page, language, brief: args.brief, images: args.images, donateUrl: args.donateUrl, siteSlug: args.site.slug, usedComponents: used }))).output;
+      () => planPage({ provider: args.planner, page, language, brief: args.brief, images: args.images, donateUrl: args.donateUrl, siteSlug: args.site.slug, usedComponents: used, designInstruction: note }))).output;
     let composition = normalize(planned.composition, { page, images: args.images, donateUrl: args.donateUrl, language });
     for (const s of composition.sections) if (!used.includes(s.component)) used.push(s.component);
     await say("page_plan", page.slug, true, `${composition.sections.length} sections: ${composition.sections.map((s) => s.component).join(", ")}.${planned.corrections.length ? ` Corrected: ${planned.corrections.slice(0, 2).join("; ")}.` : ""}`);

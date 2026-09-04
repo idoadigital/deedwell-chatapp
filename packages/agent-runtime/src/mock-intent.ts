@@ -133,6 +133,12 @@ export function mockIntent(request: ModelRequest): IntentOutput {
     return { action: "reject", note: null };
   }
 
+  if (/\b(social (media )?(post|image|graphic|content)|instagram|facebook post|linkedin post|flyer|event (graphic|promo|poster)|buying guide)\b/.test(lower)
+    && /\b(create|make|design|generate|draw|produce|need|want)\b/.test(lower)) {
+    const kind = /flyer/.test(lower) ? "flyer" : /buying guide|guide cover/.test(lower) ? "buying_guide" : /event/.test(lower) ? "event_promo" : "social";
+    return { action: "create_content", kind, prompt: text };
+  }
+
   if (ctx.hasSite && /\b(change|update|add|remove|replace|rename|rewrite|make the)\b/.test(lower)) {
     return { action: "update_website", instruction: text };
   }

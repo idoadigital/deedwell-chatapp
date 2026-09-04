@@ -345,6 +345,43 @@ async function makeSiteImages(
   }
 }
 
+/** Replace specific site images on request ("a photo of the tutoring room
+ *  instead"). Keys stay the same, so pages need no re-planning; the bytes
+ *  and alt text change, and the next release carries them. */
+async function regenerateSiteImages(
+  ctx: Ctx, siteId: string, siteName: string,
+  requests: Array<{ key: string; prompt: string }>, facts: OrgFact[]
+): Promise<string[]> {
+  if (!requests.length || !ctx.services.images) return [];
+  const site = await getSite(ctx, siteId);
+  const current = Array.isArray(site.images) ? site.images : [];
+  const fact = (key: string) => facts.find((f) => f.key === key)?.value ?? null;
+  try {
+    const generator = await ctx.services.images();
+    const plan = requests.map((r) => {
+      const existing = current.find((i) => i.key === r.key);
+      const key = r.key.replace(/[^a-z0-9_-]/gi, "").toLowerCase() || "image";
+      return {
+        key, size: existing && key === "hero" ? "1536x1024" : "1024x1024",
+        purpose: existing?.purpose ?? "Requested image",
+        alt: `${siteName}: ${r.prompt.slice(0, 120)}`,
+        prompt: `${r.prompt}. Context: ${fact("mission") ?? siteName}. Editorial nonprofit photography feel, natural light, no text, no logos, no watermarks.`,
+        forPage: existing?.forPage ?? null,
+      };
+    });
+    const made = await generateSiteImages({
+      generator, plan, storage: ctx.services.storage, tenantId: ctx.tenantId, siteId,
+      onError: (item, err) => console.log(JSON.stringify({ at: "site_image_failed", key: item.key, error: String((err as Error).message ?? err).slice(0, 200) })),
+    });
+    const merged = [...current.filter((i) => !made.some((m) => m.key === i.key)), ...made];
+    await ctx.client.query("UPDATE sites SET images = $2 WHERE id = $1", [siteId, JSON.stringify(merged)]);
+    return made.map((m) => m.key);
+  } catch (err) {
+    console.log(JSON.stringify({ at: "site_images_skipped", error: String((err as Error).message ?? err).slice(0, 200) }));
+    return [];
+  }
+}
+
 /**
  * The design step, shared by the build and update workflows: the whole
  * generation pipeline (reference analysis → design system → per-page plan,
@@ -394,6 +431,7 @@ async function designNextPage(ctx: Ctx, siteId: string, after: string): Promise<
         tone: str(intake.site_tone) ?? brief?.tone ?? null, visualDirection: str(intake.site_visual_direction),
       },
       guidance: settings.guidance,
+      designNote: (ctx.state.designNote as { instruction: string; pages: string[] } | null | undefined) ?? null,
       visualQa: (process.env.VISUAL_QA ?? "off") === "screenshots",
       onEvent: (e) => recordDesignEvent(ctx, e.scope ? `${e.stage}:${e.scope}` : e.stage, e.scope || e.stage.replace(/_/g, " "), e.ok, e.detail),
     });
@@ -863,15 +901,42 @@ export function buildWebsiteUpdateWorkflow(): WorkflowDefinition<WebsiteServices
       async apply_patch(ctx): Promise<StepResult> {
         const input = UpdateInput.parse(ctx.state.input);
         const pages = await loadPages(ctx, input.siteId);
+        const siteRow = await getSite(ctx, input.siteId);
+        const siteImages = Array.isArray(siteRow.images) ? siteRow.images : [];
         const result = await runAgentTask<SitePatchOutput>(
           ctx.services.provider, websiteDeveloper,
           "Translate the user's change request into a patch against the structured page model.",
           [
             { label: "pages", content: JSON.stringify(pages) },
+            { label: "site_images", content: JSON.stringify(siteImages.map((i) => ({ key: i.key, alt: i.alt, purpose: i.purpose, forPage: i.forPage }))) },
             { label: "instruction", content: input.instruction },
           ]
         );
         await recordModelUsage(ctx, websiteDeveloper.agentKey, result.tokensEstimated);
+        const designInstruction = result.output.designInstruction?.trim() || null;
+        const imageRequests = result.output.imageRequests ?? [];
+        // A change to the look or a picture is a real change even when no
+        // text moved; it goes to the designer rather than to the pages.
+        if (designInstruction || imageRequests.length) {
+          const facts = await fetchFacts(ctx, websiteCopywriter);
+          const regenerated = await regenerateSiteImages(ctx, input.siteId, siteRow.name, imageRequests, facts);
+          const affected = (result.output.affectedPages ?? []).filter((slug) => pages.some((p) => p.slug === slug));
+          const designNote = designInstruction
+            ? { instruction: designInstruction, pages: affected.length ? affected : pages.map((p) => p.slug) }
+            : null;
+          if (!result.output.applied || !result.output.pages.length) {
+            await audit(ctx.client, {
+              tenantId: ctx.tenantId, actorAgent: websiteDeveloper.agentKey,
+              action: "site.design_change_requested", entityType: "site", entityId: input.siteId,
+              metadata: { instruction: input.instruction, designInstruction, affected, regenerated },
+            });
+            return {
+              state: { ...ctx.state, applied: true, changeSummary: result.output.changeSummary || designInstruction || "Pictures updated", designNote, designPhase: "system" },
+              next: "design_pages",
+            };
+          }
+          ctx.state.designNote = designNote;
+        }
         if (!result.output.applied) {
           // Honest failure surface — no fake success (BRD §15.3).
           await audit(ctx.client, {
@@ -906,7 +971,7 @@ export function buildWebsiteUpdateWorkflow(): WorkflowDefinition<WebsiteServices
           metadata: { changeSummary: result.output.changeSummary },
         });
         return {
-          state: { ...ctx.state, applied: true, changeSummary: result.output.changeSummary },
+          state: { ...ctx.state, applied: true, changeSummary: result.output.changeSummary, designNote: ctx.state.designNote ?? null, designPhase: "system" },
           next: "design_pages",
         };
       },

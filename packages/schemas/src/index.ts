@@ -782,6 +782,12 @@ export const SitePatchOutput = z.object({
   reason: z.string().max(500).nullable(),
   changeSummary: z.string().max(500),
   pages: z.array(SitePage).min(1).max(10),
+  /** A look-and-layout change ("move the hero image left", "make the
+   *  programs a timeline") for the page planner, applied to affectedPages. */
+  designInstruction: z.string().max(600).nullable().optional(),
+  affectedPages: z.array(z.string().max(60)).max(10).optional(),
+  /** Site images to regenerate: which key, and what it should show now. */
+  imageRequests: z.array(z.object({ key: z.string().max(40), prompt: z.string().min(3).max(400) })).max(6).optional(),
 });
 export type SitePatchOutput = z.infer<typeof SitePatchOutput>;
 
@@ -825,6 +831,12 @@ export const IntentOutput = z.discriminatedUnion("action", [
   }),
   z.object({ action: z.literal("build_website"), siteName: z.string().max(120).nullable() }),
   z.object({ action: z.literal("update_website"), instruction: z.string().min(3).max(1000) }),
+  /** Content Studio from the chat: social posts, flyers, guides, event promos. */
+  z.object({
+    action: z.literal("create_content"),
+    kind: z.enum(["social", "flyer", "buying_guide", "event_promo"]),
+    prompt: z.string().min(3).max(1000),
+  }),
   z.object({
     action: z.literal("provide_info"),
     facts: z.array(z.object({ key: z.string().min(1).max(120), value: z.string().min(1).max(4000) })).min(1),

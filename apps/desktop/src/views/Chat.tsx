@@ -444,6 +444,17 @@ function Message({
             onView={(id) => (onViewDeliverable ? onViewDeliverable(id) : onOpenWork())} />
         )}
 
+        {Array.isArray(meta.images) && meta.images.length > 0 && (
+          <div className="msg-images">
+            {(meta.images as Array<{ assetId?: string; fileId: string; caption?: string }>).slice(0, 6).map((img) => (
+              <a key={img.assetId ?? img.fileId} className="msg-image" href={`${api.API_URL}/v1/orgs/${org.id}/files/${img.fileId}/content`} target="_blank" rel="noreferrer">
+                <img src={`${api.API_URL}/v1/orgs/${org.id}/files/${img.fileId}/content`} alt={img.caption ?? "Generated design"} loading="lazy" />
+                {img.caption && <span>{img.caption}</span>}
+              </a>
+            ))}
+          </div>
+        )}
+
         {meta.infoRequest && meta.infoRequest.length > 0 && meta.infoRequestOpen !== false && (
           <InfoQuickForm
             org={org}

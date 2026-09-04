@@ -6,6 +6,8 @@ import { runAgentTask } from "@deedwell/agent-runtime";
 import { AgentDefinition, IntentOutput, RESERVED_SITE_SLUGS, type GrantActionRef, type OrgFact } from "@deedwell/schemas";
 import { GRANT_FULL_WORKFLOW, writeOrgFact } from "@deedwell/grant-domain";
 import { WEBSITE_BUILD_WORKFLOW, WEBSITE_UPDATE_WORKFLOW } from "@deedwell/website-domain";
+import { readProviderKey } from "@deedwell/content-domain";
+import { canStartCampaign, startCampaign } from "./content-campaigns.js";
 import type { Deps } from "./bootstrap.js";
 import { recordEvent, recordSource, setWorkspace } from "./workspace.js";
 import { DEFAULT_CHANNELS, MAYA_WELCOME, TEAMMATES, teammateByKey } from "./teammates.js";
@@ -38,8 +40,9 @@ AI teammate. You DO have a name — never say otherwise. When asked about the te
 name the actual teammates.
 
 CAPABILITIES: the team can search for grants, start a grant application from search
-results, build the organization's website, update it, record organizational facts,
-take approve/reject decisions, and report status. When the user asks what you or the
+results, build the organization's website, update it (text, pictures, layout), design
+social media posts, flyers, guides and event graphics ("create_content"), record
+organizational facts, take approve/reject decisions, and report status. When the user asks what you or the
 team can do — including broad replies like "everything" or "give me a list" — use
 "answer" and list these concretely. Never respond to that question with "clarify".
 Never volunteer this list when the user didn't ask for it.
@@ -925,6 +928,45 @@ export async function handleUserMessage(
       } else {
         await say(kickoff, { runId, siteId }, "website.digital_strategist");
       }
+      break;
+    }
+
+    case "create_content": {
+      if (!canStartCampaign()) {
+        await say(`The design studio is still finishing another set — give it a minute and ask again.`);
+        break;
+      }
+      if ((process.env.MODEL_PROVIDER ?? "mock") !== "mock" && !(await readProviderKey(deps.appPool, "openai"))) {
+        await say(`Image design isn't set up yet — an administrator needs to add an OpenAI API key in Platform Admin.`);
+        break;
+      }
+      const label = { social: "social media designs", flyer: "flyer designs", buying_guide: "guide covers", event_promo: "event graphics" }[intent.kind];
+      const { project, done } = await startCampaign(deps, client, { orgId: ids.tenantId, userId: ids.userId, kind: intent.kind, prompt: intent.prompt });
+      await audit(client, {
+        tenantId: ids.tenantId, actorUser: ids.userId, action: "content.generate",
+        entityType: "content_projects", entityId: String(project.id), metadata: { kind: intent.kind, via: "chat" },
+      });
+      await say(`On it — designing ${label} for "${intent.prompt.slice(0, 80)}". They'll appear here in a couple of minutes, and in Artifacts and the Content page.`, { contentProjectId: project.id }, "content.designer");
+      // The designs land after this request is long gone: post them into
+      // the same channel when they do, on their own connection.
+      const channelId = channel.id;
+      const contentProjectId = String(project.id);
+      void done.then(() => withContext(deps.appPool, { tenantId: ids.tenantId, userId: ids.userId }, async (c) => {
+        const { rows: proj } = await c.query("SELECT status, error, title FROM content_projects WHERE id = $1", [contentProjectId]);
+        const { rows: assets } = await c.query(
+          "SELECT id, file_id, caption FROM content_assets WHERE content_project_id = $1 ORDER BY position", [contentProjectId]
+        );
+        const okay = proj[0]?.status === "ready" && assets.length > 0;
+        await insertMessage(c, {
+          tenantId: ids.tenantId, channelId, authorKind: "agent", authorAgent: "content.designer",
+          body: okay
+            ? `Here are ${assets.length} ${label} for "${proj[0].title}". Approve the ones you like on the Content page to schedule or publish them; they're also saved in Artifacts.`
+            : `I couldn't finish those designs${proj[0]?.error ? ` — ${String(proj[0].error).slice(0, 200)}` : ""}.`,
+          metadata: okay
+            ? { contentProjectId, images: assets.map((a) => ({ assetId: a.id, fileId: a.file_id, caption: a.caption })) }
+            : { contentProjectId },
+        });
+      })).catch((err) => console.log(JSON.stringify({ at: "chat_content_post_failed", error: String((err as Error).message ?? err).slice(0, 200) })));
       break;
     }
 

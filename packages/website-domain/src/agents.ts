@@ -111,7 +111,16 @@ export const websiteDeveloper: AgentDefinition = AgentDefinition.parse({
   role: "Website Developer on the Website Team (conversational edits)",
   instructions: `Translate a user's change request into a patch against the structured page
 model using only approved components. If the request cannot be translated faithfully, say so —
-never guess at destructive changes.`,
+never guess at destructive changes.
+
+LOOK AND LAYOUT: a request about how the site looks rather than what it says ("put the
+photo on the left", "make the programs a timeline", "less white space", "a darker header",
+"bigger donate button") is a design instruction, not a text patch. Put it in
+"designInstruction" as a short, specific brief for the page designer, list the page slugs
+it applies to in "affectedPages" (all pages for site-wide changes), keep the pages
+unchanged, and set applied=true. A request to change a picture goes in "imageRequests"
+with the image key (from site_images) and a description of what the new picture should
+show; never invent a photograph's content beyond what the user asked for.`,
   allowedTools: [],
   outputSchemaRef: "site_patch",
   maxOutputRetries: 2,

@@ -365,3 +365,29 @@ describe("workspace conversations", () => {
     expect(res.status).toBe(404);
   });
 });
+
+describe("content from the conversation", () => {
+  it("designs social posts on request and posts them back into the channel, saved as a campaign", async () => {
+    const ws = (await api(env.app, "GET", `/v1/orgs/${orgId}/workspace`, { token })).body;
+    const general = ws.channels.find((c: { kind?: string; name?: string }) => /general/i.test(String(c.name ?? "")) || c.kind === "general") ?? ws.channels[0];
+    const res = await send(general.id, "Please create a social media post to promote our upcoming gala");
+    expect(res.status).toBe(201);
+    let msgs = await messagesOf(general.id);
+    const ack = msgs.find((m) => m.author_kind === "agent" && m.metadata?.contentProjectId);
+    expect(ack, "the designer should acknowledge with the campaign id").toBeTruthy();
+
+    // The designs land on their own connection after the request; wait for them.
+    let withImages: (typeof msgs)[number] | undefined;
+    for (let i = 0; i < 60 && !withImages; i += 1) {
+      await new Promise((r) => setTimeout(r, 100));
+      msgs = await messagesOf(general.id);
+      withImages = msgs.find((m) => Array.isArray(m.metadata?.images) && m.metadata.images.length > 0);
+    }
+    expect(withImages, "the finished designs should be posted").toBeTruthy();
+    expect(withImages!.metadata.images[0]).toMatchObject({ fileId: expect.any(String) });
+
+    // Same campaign the Content page and Artifacts list.
+    const projects = (await api(env.app, "GET", `/v1/orgs/${orgId}/content`, { token })).body.contentProjects;
+    expect(projects.some((p: { id: string; status: string }) => p.id === ack!.metadata.contentProjectId && p.status === "ready")).toBe(true);
+  });
+});
