@@ -153,13 +153,17 @@ standalone HTML5 document. You are given the page's finished copy as content blo
 site's navigation, a design reference image, and sometimes the shared design of the site's
 first page. You decide how the page LOOKS; the words are final.
 
-THE REFERENCE IS THE BRIEF FOR THE LOOK. Study the design_reference image and reproduce
-its visual language faithfully: overall layout and grid, the composition of the top section,
-colour palette and how colour is distributed, typography (weights, sizes, contrast between
-headings and body), spacing and density, the style of cards, buttons, dividers and
-sections, the header and footer treatment. Adapt that language to this page's content —
-do not copy its words, its brand, its organization, or invent facts to fill its shapes.
-If a brief theme is given, treat it as a hint; the image wins on looks.
+THE REFERENCE IS THE BRIEF FOR THE LOOK. Before writing anything, study the
+design_reference image closely and describe it to yourself: the grid and column structure,
+the exact composition of the top section (alignment, proportions, what sits beside what),
+the palette and where each colour is used (backgrounds, text, accents, buttons), the
+typography (font style, weights, sizes, letter-spacing, how headings contrast with body),
+the spacing and density, the shape and style of cards, buttons, dividers and section
+backgrounds, the header (logo placement, menu style) and footer treatment, and any
+decorative devices (shapes, patterns, illustration style). Then reproduce that language
+faithfully, so someone comparing the page with the image sees the same design. Adapt it to
+this page's content — never copy its words, its brand, its organization, or invent facts to
+fill its shapes. If a brief theme is given, treat it as a hint; the image wins on looks.
 
 USE THE COPY EXACTLY. Lay out every block in "page" in order, using its text. You may add
 purely presentational text (labels such as "Learn more" for a link that has a target, section
@@ -170,11 +174,27 @@ as a pull-quote, "steps" as a numbered flow, "programs" as cards, "faq" as <deta
 STRUCTURE (required, checked by machine): <!doctype html>; <html lang="en">; <head> with
 <meta charset="utf-8">, <meta name="viewport" content="width=device-width, initial-scale=1">,
 <title> ("Page title — Site name"), <meta name="description"> from the page's seoDescription,
-and exactly ONE <style> holding all CSS. <body> starts with <a class="skip" href="#main">Skip
-to main content</a>, then ONE <header> containing ONE <nav aria-label="Main"> with a link to
-EVERY entry of "site_nav" using its exact href (mark the current page with aria-current="page"),
-then <main id="main"> with exactly ONE <h1>, then ONE <footer> with the organization name,
-contact email and registration line from "organization" when present, and the page list.
+Open Graph title/description, and exactly ONE <style> holding all CSS. <body> starts with
+<a class="skip" href="#main">Skip to main content</a>, then ONE <header>, then
+<main id="main"> with exactly ONE <h1>, then ONE <footer>.
+
+NAVIGATION: the header holds ONE <nav aria-label="Main"> with AT MOST FIVE links — the
+site name/logo linking to "/", then the most important pages (about, programs, get involved
+or donate, contact). Use the exact hrefs from "site_nav" and mark the current page with
+aria-current="page". Every remaining page goes in the footer: the footer holds
+<nav aria-label="Footer"> listing EVERY entry of "site_nav" (all of them, including the ones
+in the header), grouped sensibly (About, Get involved, Legal…), plus the organization name,
+contact email and registration line from "organization" when present, and a copyright line.
+On small screens the header menu must remain usable without JavaScript: wrap the links, or
+use a <details><summary>Menu</summary>…</details> disclosure.
+
+WEB BEST PRACTICES: semantic landmarks (header, nav, main, section with headings, footer);
+a logical heading order (h1, then h2 for sections, h3 inside); a visible focus style on every
+link, button and input; 4.5:1 text contrast and 3:1 for large text; touch targets at least
+44px; fluid type and spacing with clamp(); a mobile-first layout that adapts at ~640px and
+~1024px with no horizontal scroll; images and SVGs with alt text or aria-hidden; buttons that
+look like buttons and links that look like links; consistent section rhythm; a print-safe
+layout; no fixed heights that clip text.
 
 NO EXTERNAL ANYTHING. No <script>, <link>, <iframe>, web fonts, external stylesheets or
 images. Use system font stacks. All imagery is CSS (gradients, shapes, patterns, borders)

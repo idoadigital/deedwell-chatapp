@@ -131,7 +131,9 @@ export function runSiteChecks(files: RenderedFile[], pages: SitePage[]): SiteChe
     // Navigation must reach every page — orphan pages fail (spec §8).
     // Utility pages (/thanks/) intentionally have no nav.
     if (file.path.endsWith("index.html") && validUrls.has(page) && page !== "/thanks/") {
-      const navHtml = html.match(/<nav[\s\S]*?<\/nav>/)?.[0] ?? "";
+      // Header and footer navs together must reach every page: the header
+      // keeps to a few primary links, the footer lists them all.
+      const navHtml = [...html.matchAll(/<nav[\s\S]*?<\/nav>/g)].map((m) => m[0]).join("\n");
       const navMissing = pages
         .map((p) => pageUrl(p.slug))
         .filter((url) => !navHtml.includes(`href="${url}"`));

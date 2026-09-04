@@ -93,8 +93,16 @@ export function createModelProvider(
  *  is weakest, so this defaults to the strong Gemini tier while everything
  *  else stays on the configured provider. DESIGN_MODEL_PROVIDER and
  *  DESIGN_MODEL override; "mock" in tests. */
-export function createDesignProvider(): ModelProvider {
+export function createDesignProvider(opts: { openaiKey?: () => Promise<string | null> } = {}): ModelProvider {
   const kind = process.env.DESIGN_MODEL_PROVIDER ?? process.env.MODEL_PROVIDER ?? "mock";
+  if (kind === "openai") {
+    // The key lives with Platform Admin, not in the environment, and "auto"
+    // means the newest general model the account can see.
+    return new OpenAiProvider({
+      apiKey: opts.openaiKey ?? process.env.OPENAI_API_KEY,
+      model: process.env.DESIGN_MODEL ?? "auto",
+    });
+  }
   const model = process.env.DESIGN_MODEL ?? (kind === "gemini" ? "gemini-2.5-pro" : undefined);
   return createModelProvider(kind, model ? { model } : {});
 }

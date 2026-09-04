@@ -289,9 +289,9 @@ export function siteHtml(request: ModelRequest): string {
 </head>
 <body data-designed="mock">
 <a class="skip" href="#main">Skip to main content</a>
-<header><nav>${nav.map((n) => `<a href="${n.href}">${escape(n.title)}</a>`).join("")}</nav></header>
+<header><nav aria-label="Main">${nav.slice(0, 5).map((n) => `<a href="${n.href}">${escape(n.title)}</a>`).join("")}</nav></header>
 <main id="main">${hasHero ? "" : `<h1>${escape(page.title ?? "Page")}</h1>`}${sections.join("\n")}</main>
-<footer><p>${escape(site.siteName ?? "")}</p></footer>
+<footer><nav aria-label="Footer">${nav.map((n) => `<a href="${n.href}">${escape(n.title)}</a>`).join("")}</nav><p>${escape(site.siteName ?? "")}</p></footer>
 </body>
 </html>`;
 }

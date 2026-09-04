@@ -29,6 +29,7 @@ import {
   WEBSITE_AGENTS,
 } from "@deedwell/website-domain";
 import { ALL_AD_GRANTS_AGENTS, buildAdGrantsWorkflow } from "@deedwell/adgrants-domain";
+import { readProviderKey } from "@deedwell/content-domain";
 import { createGcpGrantPlatform, type GcpGrantPlatform } from "./gcp/platform.js";
 
 export interface Deps {
@@ -61,7 +62,9 @@ export async function createDeps(overrides: Partial<{
       : new LocalFsStorage(process.env.DATA_DIR ?? "./.data"));
   const provider = overrides.provider ?? createModelProvider();
   // Page design goes to the strong tier; in tests the mock serves both.
-  const designer = overrides.provider ?? createDesignProvider();
+  const designer = overrides.provider ?? createDesignProvider({
+    openaiKey: () => readProviderKey(appPool, "openai"),
+  });
 
   const gateway = new ToolGateway();
   registerGrantTools(gateway);

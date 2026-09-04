@@ -7,20 +7,55 @@ import type { ModelProvider, ModelRequest, ModelResponse } from "./index.js";
  *
  * Requires OPENAI_API_KEY. Model via OPENAI_MODEL (default gpt-4o-mini).
  */
+export type ApiKeySource = string | (() => Promise<string | null>);
+
+/** Newest general model on the account, from what the API actually lists:
+ *  the highest plain "gpt-N[.M]" id, never a mini/nano/dated variant. */
+export async function newestOpenAiModel(apiKey: string, baseUrl: string): Promise<string> {
+  const res = await fetch(`${baseUrl}/models`, { headers: { authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(20_000) });
+  if (!res.ok) throw new Error(`OpenAI model list failed (${res.status})`);
+  const { data } = (await res.json()) as { data: Array<{ id: string }> };
+  const ranked = data
+    .map((m) => m.id.match(/^gpt-(\d+)(?:\.(\d+))?$/))
+    .filter((m): m is RegExpMatchArray => Boolean(m))
+    .map((m) => ({ id: m[0], major: Number(m[1]), minor: Number(m[2] ?? 0) }))
+    .sort((a, b) => b.major - a.major || b.minor - a.minor);
+  const pick = ranked[0]?.id ?? (data.some((m) => m.id === "gpt-4.1") ? "gpt-4.1" : "gpt-4o");
+  console.log(JSON.stringify({ at: "openai_model_selected", model: pick, candidates: ranked.slice(0, 5).map((r) => r.id) }));
+  return pick;
+}
+
 export class OpenAiProvider implements ModelProvider {
   readonly name = "openai";
-  private readonly apiKey: string;
-  private readonly model: string;
+  private readonly keySource: ApiKeySource;
+  private readonly modelSetting: string;
+  private resolvedModel: string | null = null;
   private readonly baseUrl: string;
 
-  constructor(opts: { apiKey?: string; model?: string; baseUrl?: string } = {}) {
+  /** `apiKey` may be a value or an async source (a key kept by Platform
+   *  Admin, say); `model` "auto" picks the account's newest general model. */
+  constructor(opts: { apiKey?: ApiKeySource; model?: string; baseUrl?: string } = {}) {
     const key = opts.apiKey ?? process.env.OPENAI_API_KEY;
     if (!key) {
       throw new Error("OpenAiProvider requires OPENAI_API_KEY (or MODEL_PROVIDER=mock)");
     }
-    this.apiKey = key;
-    this.model = opts.model ?? process.env.OPENAI_MODEL ?? "gpt-4o-mini";
+    this.keySource = key;
+    this.modelSetting = opts.model ?? process.env.OPENAI_MODEL ?? "gpt-4o-mini";
     this.baseUrl = opts.baseUrl ?? process.env.OPENAI_BASE_URL ?? "https://api.openai.com/v1";
+  }
+
+  private async apiKey(): Promise<string> {
+    const key = typeof this.keySource === "string" ? this.keySource : await this.keySource();
+    if (!key) throw new Error("No OpenAI API key is configured — add one in Platform Admin → Developer.");
+    return key;
+  }
+
+  private async model(): Promise<string> {
+    if (this.resolvedModel) return this.resolvedModel;
+    this.resolvedModel = this.modelSetting === "auto"
+      ? await newestOpenAiModel(await this.apiKey(), this.baseUrl)
+      : this.modelSetting;
+    return this.resolvedModel;
   }
 
   async complete(request: ModelRequest): Promise<ModelResponse> {
@@ -47,22 +82,27 @@ export class OpenAiProvider implements ModelProvider {
         ]
       : user;
 
+    const model = await this.model();
+    // Reasoning models (gpt-5 and o-series) take no temperature and budget
+    // output with max_completion_tokens, which also covers their thinking.
+    const reasoning = /^(gpt-5|o\d)/.test(model);
     const res = await fetch(`${this.baseUrl}/chat/completions`, {
       method: "POST",
       headers: {
-        authorization: `Bearer ${this.apiKey}`,
+        authorization: `Bearer ${await this.apiKey()}`,
         "content-type": "application/json",
       },
       body: JSON.stringify({
-        model: this.model,
-        temperature: html ? 0.4 : 0.2,
+        model,
+        ...(reasoning ? {} : { temperature: html ? 0.4 : 0.2 }),
+        ...(html ? { max_completion_tokens: reasoning ? 60_000 : 16_000 } : {}),
         ...(html ? {} : { response_format: { type: "json_object" } }),
         messages: [
           { role: "system", content: request.system + "\n\n" + SCHEMA_HINTS[request.outputSchemaRef] },
           { role: "user", content: userContent },
         ],
       }),
-      signal: AbortSignal.timeout(90_000),
+      signal: AbortSignal.timeout(html ? 480_000 : 90_000),
     });
     if (!res.ok) {
       const body = await res.text().catch(() => "");
@@ -76,7 +116,7 @@ export class OpenAiProvider implements ModelProvider {
     const cleaned = html ? text.trim().replace(/^```(?:html)?\s*/i, "").replace(/\s*```$/, "") : text;
     const tokens = payload.usage?.total_tokens ?? Math.ceil(text.length / 4);
     console.log(JSON.stringify({
-      at: "model_request", requestId, provider: "openai", model: this.model,
+      at: "model_request", requestId, provider: "openai", model,
       schema: request.outputSchemaRef, ms: Date.now() - started, tokens, ok: true,
     }));
     return { text: cleaned, tokensEstimated: tokens };
