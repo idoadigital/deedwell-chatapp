@@ -99,7 +99,7 @@ export class VertexImageGenerator implements ImageGenerator {
     this.model = opts.model ?? process.env.VERTEX_IMAGE_MODEL ?? "gemini-2.5-flash-image";
   }
 
-  async generate(prompt: string, size: string): Promise<GeneratedImage> {
+  async generate(prompt: string, size: string, attempt = 0): Promise<GeneratedImage> {
     // The model takes an aspect ratio, not pixels.
     const [w, h] = size.split("x").map(Number);
     const aspectRatio = !w || !h || w === h ? "1:1" : w > h ? (w / h > 1.6 ? "16:9" : "3:2") : (h / w > 1.6 ? "9:16" : "2:3");
@@ -116,6 +116,11 @@ export class VertexImageGenerator implements ImageGenerator {
         signal: AbortSignal.timeout(120_000),
       }
     );
+    if ((res.status === 429 || res.status === 503) && attempt < 5) {
+      // Per-minute image quota is small; wait it out rather than fail the image.
+      await new Promise((r) => setTimeout(r, Math.min(8_000 * 2 ** attempt, 60_000) + Math.floor(Math.random() * 2000)));
+      return this.generate(prompt, size, attempt + 1);
+    }
     if (!res.ok) {
       const body = await res.text().catch(() => "");
       throw new Error(`Vertex image request failed (${res.status}): ${body.slice(0, 300)}`);

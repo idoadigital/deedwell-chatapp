@@ -62,7 +62,14 @@ export interface WorkflowEngine {
   runPendingOnce(workerId: string): Promise<boolean>;
 }
 
-const CLAIM_LEASE_SECONDS = 30;
+const CLAIM_LEASE_SECONDS = 90;
+
+class LeaseLostError extends Error {
+  constructor(runId: string, step: string) {
+    super(`Lease on run ${runId} lost during step "${step}"`);
+    this.name = "LeaseLostError";
+  }
+}
 const WAIT_STATUS: Record<"info" | "approval", WorkflowRunStatus> = {
   info: "waiting_for_info",
   approval: "waiting_approval",
@@ -158,6 +165,17 @@ export class PgWorkflowEngine<S> implements WorkflowEngine {
     }
 
     const started = Date.now();
+    // Steps now run for minutes (a site build writes and designs pages
+    // concurrently), far past the claim lease. The lease is renewed while
+    // the step runs, and the step's commit is refused if the lease was lost
+    // to another worker in the meantime — so a step never executes twice
+    // with both results landing.
+    const heartbeat = setInterval(() => {
+      this.adminPool.query(
+        "UPDATE workflow_runs SET claimed_at = now() WHERE id = $1 AND claimed_by = $2",
+        [run.id, workerId]
+      ).catch(() => { /* renewed on the next beat */ });
+    }, Math.max(5, Math.floor(CLAIM_LEASE_SECONDS / 3)) * 1000);
     try {
       await withContext(this.appPool, { tenantId: run.tenant_id, userId: run.created_by }, async (client) => {
         const state: JsonState = run.state ?? {};
@@ -187,13 +205,16 @@ export class PgWorkflowEngine<S> implements WorkflowEngine {
 
         // State, journal, usage, and run status commit atomically with the
         // step's own writes — durability comes from this single transaction.
-        await client.query(
+        const committed = await client.query(
           `UPDATE workflow_runs SET status = $2, current_step = $3, state = $4,
              attempts = 0, steps_used = steps_used + 1, next_attempt_at = NULL,
              claimed_by = NULL, claimed_at = NULL, last_error = NULL
-           WHERE id = $1`,
-          [run.id, status, nextStep, JSON.stringify(result.state)]
+           WHERE id = $1 AND claimed_by = $5`,
+          [run.id, status, nextStep, JSON.stringify(result.state), workerId]
         );
+        if (committed.rowCount === 0) {
+          throw new LeaseLostError(run.id, run.current_step);
+        }
         await this.journal(client, run, "completed", Date.now() - started, summarize(result));
         await client.query(
           `INSERT INTO usage_ledger (id, tenant_id, run_id, kind, quantity, metadata)
@@ -203,7 +224,14 @@ export class PgWorkflowEngine<S> implements WorkflowEngine {
         this.emit(run.tenant_id, run.id, status, nextStep);
       });
     } catch (err) {
+      if (err instanceof LeaseLostError) {
+        // Another worker took the run over; its result stands, ours rolled back.
+        console.log(JSON.stringify({ at: "workflow_lease_lost", runId: run.id, step: run.current_step, worker: workerId }));
+        return true;
+      }
       await this.recordStepFailure(run, err, Date.now() - started);
+    } finally {
+      clearInterval(heartbeat);
     }
     return true;
   }

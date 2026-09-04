@@ -113,14 +113,27 @@ export async function generateSiteImages(args: {
   siteId: string;
   onError?: (item: ImagePlanItem, err: unknown) => void;
 }): Promise<SiteImage[]> {
-  const settled = await Promise.allSettled(args.plan.map(async (item): Promise<SiteImage> => {
-    const image = await args.generator.generate(item.prompt, item.size);
-    const storageKey = siteImageStorageKey(args.tenantId, args.siteId, item.key);
-    await args.storage.put(storageKey, image.bytes);
-    return {
-      key: item.key, path: `/images/${item.key}.png`, storageKey, alt: item.alt,
-      purpose: item.purpose, forPage: item.forPage, mime: image.mime,
-    };
+  // Two at a time: image quotas are per minute and a burst of six is
+  // exactly what exhausts them.
+  const limit = Number(process.env.SITE_IMAGE_CONCURRENCY ?? 2);
+  const settled: PromiseSettledResult<SiteImage>[] = new Array(args.plan.length);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(limit, args.plan.length) }, async () => {
+    while (next < args.plan.length) {
+      const i = next++;
+      const item = args.plan[i]!;
+      try {
+        const image = await args.generator.generate(item.prompt, item.size);
+        const storageKey = siteImageStorageKey(args.tenantId, args.siteId, item.key);
+        await args.storage.put(storageKey, image.bytes);
+        settled[i] = { status: "fulfilled", value: {
+          key: item.key, path: `/images/${item.key}.png`, storageKey, alt: item.alt,
+          purpose: item.purpose, forPage: item.forPage, mime: image.mime,
+        } };
+      } catch (reason) {
+        settled[i] = { status: "rejected", reason };
+      }
+    }
   }));
   const out: SiteImage[] = [];
   settled.forEach((r, i) => {
