@@ -135,15 +135,15 @@ export const Section = z.object({
   component: z.enum(COMPONENTS),
   /** Component-specific variant, from the catalog's list for that component. */
   variant: z.string().max(40).optional(),
-  background: z.enum(["default", "muted", "surface", "dark", "primary", "accent-tint"]).default("default"),
-  imagePosition: z.enum(["none", "left", "right", "background", "top", "full"]).default("none"),
+  background: z.enum(["default", "muted", "surface", "dark", "primary", "accent-tint"]).optional(),
+  imagePosition: z.enum(["none", "left", "right", "background", "top", "full"]).optional(),
   /** Key of one of the site's generated images, or null. */
-  image: z.string().max(40).nullable().default(null),
+  image: z.string().max(40).nullable().optional(),
   /** Index into the page's copywriter blocks this section presents. */
   block: z.number().int().min(0),
-  density: z.enum(["airy", "balanced", "dense"]).default("balanced"),
-  motion: z.enum(["none", "fade-up", "stagger", "image-reveal", "count", "parallax"]).default("fade-up"),
-  mobile: z.enum(["stack", "carousel-free", "collapse"]).default("stack"),
+  density: z.enum(["airy", "balanced", "dense"]).optional(),
+  motion: z.enum(["none", "fade-up", "stagger", "image-reveal", "count", "parallax"]).optional(),
+  mobile: z.enum(["stack", "carousel-free", "collapse"]).optional(),
   /** Light copy edits the planner may make for the web (shorter), never new facts. */
   overrides: z.object({
     eyebrow: z.string().max(80).optional(),
@@ -175,7 +175,7 @@ export const CriticIssue = z.object({
     "split-section", "remove-section", "left-align", "constrain-width", "none",
   ]),
   /** For change-variant: the variant to use. */
-  value: z.string().max(40).optional(),
+  value: z.string().max(200).optional(),
 });
 export const CriticReport = z.object({
   scores: z.object({

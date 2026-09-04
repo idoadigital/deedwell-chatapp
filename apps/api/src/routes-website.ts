@@ -230,7 +230,7 @@ export function registerWebsiteRoutes(app: FastifyInstance, ctx: AppContext): vo
     return ctx.inOrg(req, async (client) => {
       const site = await client.query(
         `SELECT id, project_id, slug, name, status, source, external_build_url,
-                theme, preview_release_id, active_release_id, created_at
+                theme, images, reference_template_id, preview_release_id, active_release_id, created_at
          FROM sites WHERE id = $1`,
         [siteId]
       );

@@ -6,6 +6,7 @@
   "type": "module",
   "dependencies": {
     "@deedwell/content-domain": "workspace:^",
+    "playwright": "^1.49.0",
     "sanitize-html": "2.17.7"
   },
   "devDependencies": {

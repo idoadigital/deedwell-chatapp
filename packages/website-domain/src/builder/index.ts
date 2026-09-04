@@ -102,9 +102,12 @@ export async function buildSite(args: BuildSiteArgs): Promise<{ language: Design
         return { report: await critiquePage({ provider: args.critic, page, composition, language, html, screenshots: shots }), screenshots: shots.length };
       })).output;
       critique = review.report;
+      // Without screenshots the critic judges markup alone and its scores
+      // run low; only defects it is sure of are acted on then.
       const weak = lowestScore(critique) < 8;
-      if (weak && critique.issues.length) {
-        const fixed = repairComposition(composition, critique.issues);
+      const actionable = review.screenshots ? critique.issues : critique.issues.filter((i) => i.severity === "high");
+      if (weak && actionable.length) {
+        const fixed = repairComposition(composition, actionable);
         if (fixed.applied.length) {
           composition = fixed.composition;
           repairs.push(...fixed.applied);

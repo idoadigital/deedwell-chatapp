@@ -84,8 +84,11 @@ export function normalize(raw: unknown, args: Pick<PlanArgs, "page" | "images" |
       corrections.push(`section ${i}: two strong bands in a row; softened`);
       background = "muted";
     }
+    const wantsImage = CATALOG[component].family === "hero" || ["SplitStorySection", "ImageTextSection", "TestimonialFeature", "ProgramFeature", "FullBleedImage", "StoryGrid", "ImageStrip"].includes(component);
     const image = s?.image && imageKeys.has(s.image) ? s.image : null;
-    const imagePosition = s?.imagePosition ?? (block.kind === "hero" || block.kind === "split" ? "right" : "none");
+    const imagePosition = s?.imagePosition && s.imagePosition !== "none"
+      ? s.imagePosition
+      : wantsImage && args.images.length ? (i % 2 === 0 ? "right" : "left") : "none";
     lastBg = background;
     lastComponent = component;
     return {

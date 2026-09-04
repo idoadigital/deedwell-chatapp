@@ -213,6 +213,9 @@ importers:
       '@deedwell/content-domain':
         specifier: workspace:^
         version: link:../content-domain
+      playwright:
+        specifier: ^1.49.0
+        version: 1.62.1
       sanitize-html:
         specifier: 2.17.7
         version: 2.17.7

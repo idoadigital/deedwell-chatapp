@@ -54,7 +54,7 @@ export function btn(label: string, href: string, kind: "primary" | "secondary" |
 }
 
 function imageFor(ctx: RenderCtx, section: Section): SiteImage | null {
-  if (section.imagePosition === "none") return null;
+  if (!section.imagePosition || section.imagePosition === "none") return null;
   if (section.image) {
     const named = ctx.images.find((i) => i.key === section.image);
     if (named) return named;
@@ -79,8 +79,8 @@ function parallax(ctx: RenderCtx, section: Section): string {
 }
 
 function shell(ctx: RenderCtx, section: Section, inner: string, opts: { narrow?: boolean; fullBleed?: boolean; extraClass?: string } = {}): string {
-  const bg = section.background === "default" ? "" : ` bg-${section.background}`;
-  const density = section.density === "balanced" ? "" : ` density-${section.density}`;
+  const bg = !section.background || section.background === "default" ? "" : ` bg-${section.background}`;
+  const density = !section.density || section.density === "balanced" ? "" : ` density-${section.density}`;
   const cls = `section${bg}${density}${opts.extraClass ? ` ${opts.extraClass}` : ""}`;
   const container = opts.fullBleed ? "" : `container${opts.narrow ? " container--narrow" : ""}`;
   return `<section class="${cls}" id="${esc(section.id)}" aria-labelledby="${esc(section.id)}-h"${reveal(ctx, section)}>${container ? `<div class="${container}">` : ""}${inner}${container ? "</div>" : ""}</section>`;
