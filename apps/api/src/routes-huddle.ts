@@ -27,7 +27,12 @@ export function registerHuddleRoutes(app: FastifyInstance, ctx: AppContext): voi
         "SELECT id FROM huddles WHERE channel_id = $1 AND status = 'active'",
         [input.channelId]
       );
-      if (existing.rows[0]) return { huddleId: existing.rows[0].id, resumed: true };
+      const ch = channel.rows[0];
+      if (existing.rows[0]) {
+        // Rejoining: the natural team plus anyone brought in since.
+        const participants = await huddleParticipants(client, existing.rows[0].id, ch);
+        return { huddleId: existing.rows[0].id, resumed: true, participants };
+      }
 
       const huddleId = uuidv7();
       await client.query(
@@ -36,15 +41,7 @@ export function registerHuddleRoutes(app: FastifyInstance, ctx: AppContext): voi
       );
       // Participants: the channel's natural team (spec §9 — huddle includes
       // the agents associated with that conversation).
-      const ch = channel.rows[0];
-      const participants =
-        ch.kind === "dm"
-          ? [...new Set(["core.executive_assistant", ch.agent_key].filter(Boolean))]
-          : ch.project_type === "grant_application"
-            ? TEAMMATES.filter((t) => t.team !== "website").map((t) => t.agentKey)
-            : ch.project_type === "website"
-              ? ["core.executive_assistant", ...TEAMMATES.filter((t) => t.team === "website").map((t) => t.agentKey)]
-              : TEAMMATES.slice(0, 4).map((t) => t.agentKey);
+      const participants = defaultParticipants(ch);
 
       await insertMessage(client, {
         tenantId: req.orgId!, channelId: input.channelId, authorKind: "agent",
@@ -143,4 +140,32 @@ export function registerHuddleRoutes(app: FastifyInstance, ctx: AppContext): voi
       throw new HttpError(503, err instanceof Error ? err.message : "Voice synthesis failed");
     }
   });
+}
+
+/** The teammates a channel's huddle starts with: the DM partner (with Maya
+ *  facilitating), the grant team, the website team, or the core four. */
+export function defaultParticipants(ch: { kind: string; agent_key: string | null; project_type: string | null }): string[] {
+  return ch.kind === "dm"
+    ? [...new Set(["core.executive_assistant", ch.agent_key].filter(Boolean) as string[])]
+    : ch.project_type === "grant_application"
+      ? TEAMMATES.filter((t) => t.team !== "website").map((t) => t.agentKey)
+      : ch.project_type === "website"
+        ? ["core.executive_assistant", ...TEAMMATES.filter((t) => t.team === "website").map((t) => t.agentKey)]
+        : TEAMMATES.slice(0, 4).map((t) => t.agentKey);
+}
+
+/** Who is on the call right now: the defaults plus everyone a host has
+ *  brought in (recorded as participant_joined events on the huddle). */
+export async function huddleParticipants(
+  client: { query: (sql: string, params?: unknown[]) => Promise<{ rows: Array<Record<string, unknown>> }> },
+  huddleId: string,
+  ch: { kind: string; agent_key: string | null; project_type: string | null }
+): Promise<string[]> {
+  const joined = await client.query(
+    "SELECT payload->>'agent' AS agent FROM huddle_events WHERE huddle_id = $1 AND type = 'participant_joined'",
+    [huddleId]
+  );
+  const set = new Set(defaultParticipants(ch));
+  for (const row of joined.rows) if (typeof row.agent === "string" && teammateByKey.has(row.agent)) set.add(row.agent);
+  return [...set];
 }

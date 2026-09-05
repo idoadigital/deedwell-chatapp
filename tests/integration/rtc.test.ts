@@ -94,6 +94,38 @@ describe("realtime huddle session", () => {
     }
   });
 
+  it("introduces and adds a teammate who is not on the call before they speak", async () => {
+    const sess = await api(env.app, "POST", `/v1/orgs/${orgId}/huddles/${huddleId}/rtc-session`, { token, body: {} });
+    const { ws, events, next } = await openSession(sess.body.token);
+    const started = await next("session_started");
+    // A Maya DM huddle starts with just Maya.
+    expect(started.participants).toEqual(["core.executive_assistant"]);
+    expect(started.participants).not.toContain("grant.budget_specialist");
+
+    ws.send(JSON.stringify({ type: "text", body: "Michael, how much should we budget for the outreach staff?" }));
+    const joined = await next("participant_joined", 15000);
+    expect(joined.agent).toBe("grant.budget_specialist");
+    expect(joined.name).toBe("Michael");
+    expect(joined.invitedBy).toBe("core.executive_assistant");
+    // The host introduced them out loud first…
+    const intro = events.find((e) => e.type === "caption" && e.speaker === "core.executive_assistant" && /Michael/.test(e.body));
+    expect(intro).toBeTruthy();
+    expect(events.indexOf(intro) < events.indexOf(joined)).toBe(true);
+    // …and only then does Michael take the floor.
+    const michael = events.find((e) => e.type === "speaker_change" && e.speaker === "grant.budget_specialist");
+    if (michael) expect(events.indexOf(joined) < events.indexOf(michael)).toBe(true);
+    ws.close();
+    await new Promise((r) => setTimeout(r, 400));
+
+    // Rejoining the same huddle remembers who was brought in (which also
+    // proves the join was persisted, since resume reads it back).
+    const channels = await api(env.app, "GET", `/v1/orgs/${orgId}/channels`, { token });
+    const mayaDm = channels.body.channels.find((c: any) => c.key === "dm:core.executive_assistant").id;
+    const resumed = await api(env.app, "POST", `/v1/orgs/${orgId}/huddles`, { token, body: { channelId: mayaDm } });
+    expect(resumed.body.resumed).toBe(true);
+    expect(resumed.body.participants).toContain("grant.budget_specialist");
+  });
+
   it("tokens are single-use", async () => {
     const sess = await api(env.app, "POST", `/v1/orgs/${orgId}/huddles/${huddleId}/rtc-session`, {
       token, body: {},

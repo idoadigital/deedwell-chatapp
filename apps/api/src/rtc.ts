@@ -15,6 +15,7 @@ import {
   type CommittedTurn,
 } from "./huddle-turns.js";
 import { HttpError, type AppContext } from "./app.js";
+import { huddleParticipants } from "./routes-huddle.js";
 
 /**
  * Real-time huddle session (WS transport; the token/event contract is
@@ -60,6 +61,18 @@ function ackLine(seed: string): string {
   return ACK_LINES[h % ACK_LINES.length]!;
 }
 const ACKS_ON = () => (process.env.HUDDLE_ACK ?? "on") !== "off";
+
+/** What the host says when a question belongs to someone not on the call. */
+const INVITE_LINES = [
+  (n: string) => `That's one for ${n} — let me bring them into the call.`,
+  (n: string) => `Good question for ${n}. One second, I'll add them to this call.`,
+  (n: string) => `${n} should take that. Let me pull them in.`,
+];
+function inviteLine(seed: string, name: string): string {
+  let h = 0;
+  for (const ch of seed) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return INVITE_LINES[h % INVITE_LINES.length]!(name);
+}
 /** Synthesis calls kept in flight ahead of playback. */
 const TTS_PREFETCH = 3;
 
@@ -171,7 +184,7 @@ export function registerRtc(app: FastifyInstance, ctx: AppContext): void {
         }
         // Orchestrator: explicit addressing > ownership/continuity > expertise.
         const decision = routeTurn(myTurnId, finalText, {
-          participants: sessionParticipants,
+          participants: [...participants],
           taskOwnerAgent: null,
           recentSpeakers: recentAgentSpeakers,
           defaultAgent: session.channel.kind === "dm" && session.channel.agent_key
@@ -184,7 +197,14 @@ export function registerRtc(app: FastifyInstance, ctx: AppContext): void {
         // half-second clip — so the wait for the real reply feels like a
         // person thinking, not a dead line. Fire-and-forget; a real reply
         // that lands first simply queues behind it.
-        if (voiceEnabled() && ACKS_ON() && decision.primaryCandidateId) {
+        const primary = decision.primaryCandidateId;
+        const facilitator = session.channel.kind === "dm" && session.channel.agent_key && participants.has(session.channel.agent_key)
+          ? session.channel.agent_key
+          : participants.has("core.executive_assistant") ? "core.executive_assistant" : [...participants][0] ?? "core.executive_assistant";
+        if (primary && !participants.has(primary)) {
+          // The introduction doubles as the acknowledgement for this turn.
+          await bringIn(primary, recentAgentSpeakers[0] && participants.has(recentAgentSpeakers[0]) ? recentAgentSpeakers[0] : facilitator, myTurnId);
+        } else if (voiceEnabled() && ACKS_ON() && decision.primaryCandidateId) {
           const ackAgent = decision.primaryCandidateId;
           const mate = teammateByKey.get(ackAgent);
           void synthesize(
@@ -213,6 +233,11 @@ export function registerRtc(app: FastifyInstance, ctx: AppContext): void {
             if (closed || interrupted || currentTurnId !== myTurnId) break;
             if (m.author_kind !== "agent") continue;
             const agent = String(m.author_agent);
+            if (!participants.has(agent)) {
+              const lastHere = recentAgentSpeakers.find((k) => participants.has(k));
+              await bringIn(agent, lastHere ?? facilitator, myTurnId);
+              if (closed || interrupted || currentTurnId !== myTurnId) break;
+            }
             recentAgentSpeakers.unshift(agent);
             recentAgentSpeakers.length = Math.min(recentAgentSpeakers.length, 5);
             const body = String(m.body);
@@ -317,15 +342,46 @@ export function registerRtc(app: FastifyInstance, ctx: AppContext): void {
       void persistEvent("stt_unavailable");
     }
 
-    const sessionParticipants = TEAMMATES_KEYS;
+    // Who is actually on the call. Anyone else the conversation needs gets
+    // introduced and added — visibly — before they speak.
+    const participants = new Set<string>(
+      await huddleParticipants(ctx.deps.adminPool, session.huddleId, session.channel as never).catch(() => TEAMMATES_KEYS.slice(0, 4))
+    );
     const recentAgentSpeakers: string[] = [];
+
+    /** The host says who the question belongs to and adds them; the client
+     *  animates the new tile in. Resolves once the intro audio is sent, so
+     *  the newcomer's first words follow the introduction, not overlap it. */
+    const bringIn = async (agent: string, host: string, myTurnId: string) => {
+      if (participants.has(agent) || !teammateByKey.has(agent)) return;
+      participants.add(agent);
+      const name = teammateByKey.get(agent)!.name;
+      const hostMate = teammateByKey.get(host) ?? teammateByKey.get("core.executive_assistant")!;
+      const line = inviteLine(myTurnId + agent, name);
+      activeSpeaker = hostMate.agentKey;
+      send({ type: "speaker_change", speaker: hostMate.agentKey, turnId: myTurnId });
+      send({ type: "caption", speaker: hostMate.agentKey, body: line });
+      void persistSegment("agent", hostMate.agentKey, line);
+      if (voiceEnabled()) {
+        try {
+          const audio = await synthesize(ctx.deps.storage, { kokoro: hostMate.voice, google: hostMate.googleVoice }, line);
+          if (!closed && !interrupted && currentTurnId === myTurnId) socket.send(audio);
+        } catch { /* the caption carries it */ }
+      }
+      send({ type: "participant_joined", agent, name, role: teammateByKey.get(agent)!.role, invitedBy: hostMate.agentKey, turnId: myTurnId });
+      void persistEvent("participant_joined", { agent, invitedBy: hostMate.agentKey, turnId: myTurnId });
+      if (activeSpeaker === hostMate.agentKey) {
+        activeSpeaker = null;
+        send({ type: "speaker_change", speaker: "idle" });
+      }
+    };
     const turns = new TurnManager(
       turnConfig,
       (turn) => respond(turn.text, turn),
       (state) => send({ type: "state", state: state.toLowerCase() })
     );
 
-    send({ type: "session_started", stt: sttReady, voices: voiceEnabled(), voiceProvider: voiceProvider(), turnConfig });
+    send({ type: "session_started", stt: sttReady, voices: voiceEnabled(), voiceProvider: voiceProvider(), participants: [...participants], turnConfig });
     void persistEvent("session_started", { stt: sttReady });
 
     socket.on("message", (raw, isBinary) => {
