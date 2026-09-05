@@ -15,7 +15,7 @@ import { registerCoreRoutes } from "./routes-core.js";
 import { registerGrantRoutes } from "./routes-grant.js";
 import { registerGrantFullRoutes } from "./routes-grants-full.js";
 import { registerWebsiteRoutes } from "./routes-website.js";
-import { registerContentRoutes, registerContentPublishingRoutes } from "./routes-content.js";
+import { registerContentRoutes, registerContentPublishingRoutes, registerDesignShareRoutes } from "./routes-content.js";
 import { registerConnectorRoutes } from "./routes-connectors.js";
 import { registerAdminIntegrationRoutes } from "./routes-admin-integrations.js";
 import { registerDataDeletionRoutes } from "./routes-data-deletion.js";
@@ -112,6 +112,9 @@ export function buildApp(deps: Deps): FastifyInstance {
       !url.startsWith("/v1/") || url.startsWith("/v1/auth/") || url.startsWith("/v1/rtc") ||
       url.startsWith("/v1/ad-grants/google-connect") || url.startsWith("/v1/ad-grants/google-oauth/callback") ||
       url.startsWith("/v1/billing/stripe/webhook") ||
+      // Shared designs: the random token in the URL is the whole credential
+      // (see registerDesignShareRoutes). Nothing else under /v1/share/ exists.
+      url.startsWith("/v1/share/") ||
       // Provider-initiated: the OAuth redirect and Meta's data-deletion
       // callback arrive without a session. Both are authenticated by their own
       // means (single-use state / HMAC signature) rather than by a cookie.
@@ -223,6 +226,7 @@ export function buildApp(deps: Deps): FastifyInstance {
   registerWebsiteRoutes(app, ctx);
   registerContentRoutes(app, ctx);
   registerContentPublishingRoutes(app, ctx);
+  registerDesignShareRoutes(app, ctx);
   registerConnectorRoutes(app, ctx);
   registerAdminIntegrationRoutes(app, ctx);
   registerDataDeletionRoutes(app, ctx);

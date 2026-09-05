@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { audit, uuidv7 } from "@deedwell/database";
 import { readProviderKey, type ContentKind } from "@deedwell/content-domain";
@@ -72,6 +73,67 @@ export function registerContentRoutes(app: FastifyInstance, ctx: AppContext): vo
     // but privately: this is tenant data behind a session cookie.
     reply.header("cache-control", "private, max-age=31536000, immutable");
     return reply.send(bytes);
+  });
+
+  /** Share a design outside the team. The design's bytes sit behind the
+   *  session-gated files route, so a public link is a random token that the
+   *  unauthenticated /v1/share route resolves back to the file. One live
+   *  token per asset: asking again returns the same link rather than minting
+   *  a second one, so revoking it revokes every copy that was handed out. */
+  app.post("/v1/orgs/:orgId/content/assets/:assetId/share", async (req, reply) => {
+    ctx.requireRole(req, "member");
+    const { assetId } = req.params as { assetId: string };
+    const orgId = req.orgId!;
+    const userId = req.userId!;
+    const share = await ctx.inOrg(req, async (client) => {
+      const { rows: assets } = await client.query("SELECT id, file_id FROM content_assets WHERE id = $1", [assetId]);
+      const asset = assets[0];
+      if (!asset) throw new HttpError(404, "Design not found");
+      if (!asset.file_id) throw new HttpError(409, "This design has no image to share yet");
+      const { rows: existing } = await client.query(
+        `SELECT token FROM content_asset_shares
+          WHERE asset_id = $1 AND revoked_at IS NULL ORDER BY created_at DESC LIMIT 1`,
+        [assetId]
+      );
+      if (existing[0]) return { token: existing[0].token as string, created: false };
+      const token = randomBytes(24).toString("base64url");
+      await client.query(
+        `INSERT INTO content_asset_shares (token, tenant_id, asset_id, file_id, created_by)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [token, orgId, assetId, asset.file_id, userId]
+      );
+      await audit(client, {
+        tenantId: orgId, actorUser: userId, action: "content.share",
+        entityType: "content_assets", entityId: assetId, metadata: {},
+      });
+      return { token, created: true };
+    });
+    reply.code(share.created ? 201 : 200);
+    return { token: share.token, path: designSharePath(share.token) };
+  });
+
+  /** Stop sharing: every link handed out for this design stops working. */
+  app.delete("/v1/orgs/:orgId/content/assets/:assetId/share", async (req) => {
+    ctx.requireRole(req, "member");
+    const { assetId } = req.params as { assetId: string };
+    const orgId = req.orgId!;
+    const userId = req.userId!;
+    const revoked = await ctx.inOrg(req, async (client) => {
+      const { rows: assets } = await client.query("SELECT id FROM content_assets WHERE id = $1", [assetId]);
+      if (!assets[0]) throw new HttpError(404, "Design not found");
+      const { rowCount } = await client.query(
+        "UPDATE content_asset_shares SET revoked_at = now() WHERE asset_id = $1 AND revoked_at IS NULL",
+        [assetId]
+      );
+      if (rowCount) {
+        await audit(client, {
+          tenantId: orgId, actorUser: userId, action: "content.unshare",
+          entityType: "content_assets", entityId: assetId, metadata: { links: rowCount },
+        });
+      }
+      return rowCount ?? 0;
+    });
+    return { ok: true, revoked };
   });
 
   /** "Generate more": add another round of designs to a finished campaign,
@@ -229,5 +291,38 @@ export function registerContentPublishingRoutes(app: FastifyInstance, ctx: AppCo
       )
     );
     return { posts: rows };
+  });
+}
+
+/** Where a shared design is fetched from, relative to the API origin. The
+ *  prefix is exempt from authentication in app.ts — the token is the only
+ *  credential, which is the point of a share link. */
+export const DESIGN_SHARE_PREFIX = "/v1/share/designs/";
+export const designSharePath = (token: string): string => `${DESIGN_SHARE_PREFIX}${token}`;
+
+/** The public side of a share link: no session, no API key — the token is
+ *  looked up through the admin pool (there is no tenant context to scope to
+ *  until the row says which one) and the file streams straight back. Cached
+ *  only briefly so a revoked link goes dark within minutes, and marked
+ *  noindex so a link that leaks does not end up in a search engine. */
+export function registerDesignShareRoutes(app: FastifyInstance, ctx: AppContext): void {
+  app.get("/v1/share/designs/:token", async (req, reply) => {
+    const { token } = req.params as { token: string };
+    if (!/^[A-Za-z0-9_-]{16,128}$/.test(token)) throw new HttpError(404, "This link is not valid");
+    const { rows } = await ctx.deps.adminPool.query(
+      `SELECT f.filename, f.mime, f.storage_key
+         FROM content_asset_shares s JOIN files f ON f.id = s.file_id
+        WHERE s.token = $1 AND s.revoked_at IS NULL`,
+      [token]
+    );
+    const row = rows[0];
+    if (!row) throw new HttpError(404, "This link is no longer available");
+    const bytes = await ctx.deps.storage.get(row.storage_key);
+    const download = (req.query as { download?: string }).download === "1";
+    reply.header("content-type", row.mime);
+    reply.header("content-disposition", `${download ? "attachment" : "inline"}; filename="${String(row.filename).replace(/"/g, "")}"`);
+    reply.header("cache-control", "public, max-age=300");
+    reply.header("x-robots-tag", "noindex");
+    return reply.send(bytes);
   });
 }
