@@ -32,6 +32,37 @@ import { HttpError, type AppContext } from "./app.js";
  *   interruption, tool_call, session_started/ended, stt_unavailable.
  */
 
+
+/** Sentences of a reply, with the first one split at a natural clause
+ *  boundary when it is long — so the first audio frame is a short clause
+ *  rather than a whole sentence's worth of synthesis. */
+export function speakableChunks(body: string): string[] {
+  const sentences = (body.match(/[^.!?\n]+[.!?]?/g) ?? [body]).map((x) => x.trim()).filter(Boolean);
+  if (!sentences.length) return [];
+  const first = sentences[0]!;
+  if (first.length > 40) {
+    const cut = first.search(/[,;:—–]\s/);
+    // A lead-in of a few words ("Sure," / "Right, so") plus a real remainder.
+    if (cut >= 2 && cut <= 60 && first.length - cut > 20) {
+      return [first.slice(0, cut + 1).trim(), first.slice(cut + 1).trim(), ...sentences.slice(1)];
+    }
+  }
+  return sentences;
+}
+
+/** Short, spoken acknowledgements a teammate can give the instant it is
+ *  handed the floor, while the reply is still being thought out. Cached
+ *  after first use, so they cost nothing and land in well under a second. */
+const ACK_LINES = ["Sure.", "Okay.", "Right.", "Got it.", "Let me see.", "One moment."];
+function ackLine(seed: string): string {
+  let h = 0;
+  for (const ch of seed) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return ACK_LINES[h % ACK_LINES.length]!;
+}
+const ACKS_ON = () => (process.env.HUDDLE_ACK ?? "on") !== "off";
+/** Synthesis calls kept in flight ahead of playback. */
+const TTS_PREFETCH = 3;
+
 interface SessionCtx {
   tenantId: string;
   userId: string;
@@ -149,6 +180,23 @@ export function registerRtc(app: FastifyInstance, ctx: AppContext): void {
         send({ type: "routing", primary: decision.primaryCandidateId, reasons: decision.reasonCodes, confidence: decision.routingConfidence });
         void persistEvent("routing", { ...decision } as Record<string, unknown>);
         console.log(JSON.stringify({ at: "huddle_routing", ...decision }));
+        // The floor holder acknowledges out loud straight away — a cached
+        // half-second clip — so the wait for the real reply feels like a
+        // person thinking, not a dead line. Fire-and-forget; a real reply
+        // that lands first simply queues behind it.
+        if (voiceEnabled() && ACKS_ON() && decision.primaryCandidateId) {
+          const ackAgent = decision.primaryCandidateId;
+          const mate = teammateByKey.get(ackAgent);
+          void synthesize(
+            ctx.deps.storage,
+            mate ? { kokoro: mate.voice, google: mate.googleVoice } : DEFAULT_VOICE,
+            ackLine(myTurnId)
+          ).then((audio) => {
+            if (closed || interrupted || currentTurnId !== myTurnId) return;
+            send({ type: "ack", speaker: ackAgent });
+            socket.send(audio);
+          }).catch(() => undefined);
+        }
         try {
           // Existing pipeline: context packager (transcript + FTS retrieval +
           // artifacts + memory) and intent execution — unchanged.
@@ -178,33 +226,34 @@ export function registerRtc(app: FastifyInstance, ctx: AppContext): void {
             void persistEvent("floor", { granted: agent, turnId: myTurnId });
             void persistSegment("agent", agent, body);
             // Sentence-level streaming TTS with barge-in between sentences.
-            const sentences = body.match(/[^.!?\n]+[.!?]?/g) ?? [body];
-            for (const sentence of sentences) {
+            // Audio is synthesized a few chunks ahead of what is being sent,
+            // so the gaps between sentences are network time, not synthesis
+            // time; the first chunk is a short clause so it lands fastest.
+            const chunks = speakableChunks(body);
+            const mate = teammateByKey.get(agent);
+            const voice = mate ? { kokoro: mate.voice, google: mate.googleVoice } : DEFAULT_VOICE;
+            const audioFor = (text: string) => voiceEnabled()
+              ? synthesize(ctx.deps.storage, voice, text).catch((err) => {
+                  // Captions carry it; say why so a misconfigured engine is
+                  // visible in the logs rather than silently mute.
+                  console.log(JSON.stringify({ at: "tts_failed", provider: voiceProvider(), error: err instanceof Error ? err.message.slice(0, 200) : String(err) }));
+                  return null;
+                })
+              : Promise.resolve(null);
+            const pending: Array<Promise<Buffer | null>> = chunks.slice(0, TTS_PREFETCH).map(audioFor);
+            for (let i = 0; i < chunks.length; i += 1) {
               if (closed || interrupted || currentTurnId !== myTurnId) break;
-              const clean = sentence.trim();
-              if (!clean) continue;
+              const clean = chunks[i]!;
+              if (i + TTS_PREFETCH < chunks.length) pending.push(audioFor(chunks[i + TTS_PREFETCH]!));
               agentAskedQuestion = clean.endsWith("?");
               send({ type: "caption", speaker: agent, body: clean });
               if (!firstAudioLogged) {
                 firstAudioLogged = true;
                 console.log(JSON.stringify({ at: "huddle_latency", turnId: myTurnId, commitToFirstAudioMs: Date.now() - committedAt }));
               }
-              if (voiceEnabled()) {
-                try {
-                  const mate = teammateByKey.get(agent);
-                  const audio = await synthesize(
-                    ctx.deps.storage,
-                    mate ? { kokoro: mate.voice, google: mate.googleVoice } : DEFAULT_VOICE,
-                    clean
-                  );
-                  if (closed || interrupted) break;
-                  socket.send(audio); // binary frame = audio for the last caption
-                } catch (err) {
-                  // Captions carry it; say why once so a misconfigured engine
-                  // is visible in the logs rather than silently mute.
-                  console.log(JSON.stringify({ at: "tts_failed", provider: voiceProvider(), error: err instanceof Error ? err.message.slice(0, 200) : String(err) }));
-                }
-              }
+              const audio = await pending[i]!;
+              if (closed || interrupted || currentTurnId !== myTurnId) break;
+              if (audio) socket.send(audio); // binary frame = audio for the last caption
             }
             if (activeSpeaker === agent) {
               activeSpeaker = null;
