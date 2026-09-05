@@ -151,7 +151,11 @@ async function openGoogle(events: SttEvents, env: NodeJS.ProcessEnv): Promise<St
     provider: "google",
     write(frame) {
       if (closed || !stream) return;
-      try { stream.write({ audioContent: frame }); } catch { /* the error handler restarts it */ }
+      // The client's streaming helper sends the config itself on the first
+      // write and wraps every chunk as { audioContent } — so this must be the
+      // raw PCM frame. Wrapping it here too nests it and the service rejects
+      // the request as "malordered" with no audio set.
+      try { stream.write(frame); } catch { /* the error handler restarts it */ }
     },
     close() {
       closed = true;
