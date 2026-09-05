@@ -415,6 +415,7 @@ function contentStrategy(request: ModelRequest): unknown {
     designs: angles.map((angle) => ({
       caption: `${angle} treatment`,
       prompt: `${angle} design for: ${ask}. Editorial serif headline, generous margins, restrained palette.`,
+      postText: `${ask.slice(0, 80)}\n\nThis is the ${angle.toLowerCase()} take — made for the people who show up. Join us, share this, or give what you can.\n\n#nonprofit #community #${angle.toLowerCase().replace(/[^a-z]/g, "")}`,
     })),
   };
 }

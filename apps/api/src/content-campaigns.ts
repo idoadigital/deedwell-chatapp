@@ -98,9 +98,9 @@ async function storeDesigns(args: {
          createHash("sha256").update(design.bytes).digest("hex"), storageKey, userId]
       );
       await client.query(
-        `INSERT INTO content_assets (id, tenant_id, content_project_id, file_id, position, prompt, caption)
-         VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-        [uuidv7(), orgId, id, fileId, design.position, design.prompt, design.caption]
+        `INSERT INTO content_assets (id, tenant_id, content_project_id, file_id, position, prompt, caption, post_text)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+        [uuidv7(), orgId, id, fileId, design.position, design.prompt, design.caption, design.postText ?? null]
       );
     });
   }

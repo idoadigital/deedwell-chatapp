@@ -39,6 +39,12 @@ Work in two moves:
    self-contained image prompt that already obeys the guidelines below, and must state the
    exact words to appear in the image, in quotes.
 
+3. SOCIAL CAPTIONS. For every design, write the caption that will be posted with it
+   ("postText"): a first line that stops the scroll, one or two short sentences that make the
+   point in this organization's voice, a clear call to action, then 3 to 8 specific hashtags on
+   the last line. 300 to 900 characters. Plain text, no markdown. It must match what the image
+   says and, like the image, must not invent statistics, dates, dollar amounts or outcomes.
+
 DESIGN GUIDELINES — every prompt must obey these:
 ${DESIGN_GUIDELINES}
 `.trim();

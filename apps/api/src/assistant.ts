@@ -954,7 +954,7 @@ export async function handleUserMessage(
       void done.then(() => withContext(deps.appPool, { tenantId: ids.tenantId, userId: ids.userId }, async (c) => {
         const { rows: proj } = await c.query("SELECT status, error, title FROM content_projects WHERE id = $1", [contentProjectId]);
         const { rows: assets } = await c.query(
-          "SELECT id, file_id, caption FROM content_assets WHERE content_project_id = $1 ORDER BY position", [contentProjectId]
+          "SELECT id, file_id, caption, post_text FROM content_assets WHERE content_project_id = $1 ORDER BY position", [contentProjectId]
         );
         const okay = proj[0]?.status === "ready" && assets.length > 0;
         await insertMessage(c, {
@@ -963,7 +963,7 @@ export async function handleUserMessage(
             ? `Here are ${assets.length} ${label} for "${proj[0].title}". Approve the ones you like on the Content page to schedule or publish them; they're also saved in Artifacts.`
             : `I couldn't finish those designs${proj[0]?.error ? ` — ${String(proj[0].error).slice(0, 200)}` : ""}.`,
           metadata: okay
-            ? { contentProjectId, images: assets.map((a) => ({ assetId: a.id, fileId: a.file_id, caption: a.caption })) }
+            ? { contentProjectId, images: assets.map((a) => ({ assetId: a.id, fileId: a.file_id, caption: a.caption, postText: a.post_text ?? null })) }
             : { contentProjectId },
         });
       })).catch((err) => console.log(JSON.stringify({ at: "chat_content_post_failed", error: String((err as Error).message ?? err).slice(0, 200) })));

@@ -753,6 +753,10 @@ export const ContentStrategyOutput = z.object({
   designs: z.array(z.object({
     caption: z.string().min(1),
     prompt: z.string().min(1),
+    /** The ready-to-post social caption for this design: a short hook, the
+     *  point, a call to action, then hashtags. Optional only so strategies
+     *  stored before it existed still parse. */
+    postText: z.string().min(1).max(2200).optional(),
   })).min(4).max(6),
 });
 export type ContentStrategyOutput = z.infer<typeof ContentStrategyOutput>;

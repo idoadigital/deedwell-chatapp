@@ -24,6 +24,10 @@ export interface DesignBrief {
   caption: string;
   /** The full image prompt, already carrying the design guidelines. */
   prompt: string;
+  /** The social media caption to post alongside the image: hook, point,
+   *  call to action, hashtags. Written from the same strategy so the words
+   *  and the picture say one thing. */
+  postText?: string;
 }
 
 export interface ContentStrategy {

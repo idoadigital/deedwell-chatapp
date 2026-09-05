@@ -7,6 +7,8 @@ export interface RenderedDesign {
   position: number;
   caption: string;
   prompt: string;
+  /** Ready-to-post social caption for this design. */
+  postText: string;
   bytes: Buffer;
   mime: string;
 }
@@ -55,6 +57,7 @@ export async function generateCampaign(opts: {
         position: offset + i,
         caption: brief.caption,
         prompt: brief.prompt,
+        postText: brief.postText ?? fallbackPostText(strategy, brief.caption),
         bytes: image.bytes,
         mime: image.mime,
       };
@@ -70,4 +73,11 @@ export async function generateCampaign(opts: {
     throw new Error(first ? String(first.reason?.message ?? first.reason) : "No designs were generated");
   }
   return { strategy, designs };
+}
+
+/** A model that skipped the caption still leaves the staff something honest
+ *  to post: the campaign's own message and a plain call to action. */
+export function fallbackPostText(strategy: ContentStrategy, caption: string): string {
+  const message = strategy.message.trim().replace(/\s+/g, " ");
+  return `${message}\n\n${caption}. Learn more and get involved — link in bio.`;
 }

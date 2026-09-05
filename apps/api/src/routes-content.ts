@@ -183,7 +183,7 @@ export function registerContentRoutes(app: FastifyInstance, ctx: AppContext): vo
       const project = await client.query("SELECT * FROM content_projects WHERE id = $1", [contentId]);
       if (!project.rows[0]) throw new HttpError(404, "Content project not found");
       const assets = await client.query(
-        `SELECT a.id, a.position, a.caption, a.prompt, a.file_id, a.approval, a.approved_at,
+        `SELECT a.id, a.position, a.caption, a.post_text, a.prompt, a.file_id, a.approval, a.approved_at,
                 f.filename, f.mime
          FROM content_assets a LEFT JOIN files f ON f.id = a.file_id
          WHERE a.content_project_id = $1 ORDER BY a.position`,
@@ -236,7 +236,7 @@ export function registerContentPublishingRoutes(app: FastifyInstance, ctx: AppCo
 
     return ctx.inOrg(req, async (client) => {
       const asset = await client.query(
-        `SELECT a.id, a.file_id, a.approval, a.content_project_id
+        `SELECT a.id, a.file_id, a.approval, a.content_project_id, a.post_text
            FROM content_assets a WHERE a.id = $1`,
         [assetId]
       );
@@ -266,7 +266,7 @@ export function registerContentPublishingRoutes(app: FastifyInstance, ctx: AppCo
              SET scheduled_at = EXCLUDED.scheduled_at, status = 'scheduled', last_error = NULL
            RETURNING *`,
           [uuidv7(), req.orgId, connectorId, row.content_project_id, assetId,
-           connection.connector_type, content ?? "", JSON.stringify([row.file_id].filter(Boolean)),
+           connection.connector_type, (content && content.trim()) || row.post_text || "", JSON.stringify([row.file_id].filter(Boolean)),
            scheduledAt ? new Date(scheduledAt) : new Date(), timezone ?? "UTC",
            `${assetId}:${connectorId}`, req.userId]
         );
@@ -292,6 +292,147 @@ export function registerContentPublishingRoutes(app: FastifyInstance, ctx: AppCo
     );
     return { posts: rows };
   });
+
+  /** Move a queued post, or take it out of the queue. Only posts that have
+   *  not started publishing can change; the worker owns them after that. */
+  app.patch("/v1/orgs/:orgId/content/posts/:postId", async (req) => {
+    ctx.requireRole(req, "member");
+    const { postId } = req.params as { postId: string };
+    const { scheduledAt, timezone } = req.body as { scheduledAt?: string; timezone?: string };
+    const when = scheduledAt ? new Date(scheduledAt) : null;
+    if (!when || Number.isNaN(when.getTime())) throw new HttpError(400, "scheduledAt must be a date");
+    if (when.getTime() < Date.now() - 60_000) throw new HttpError(400, "That time has already passed.");
+    const post = await ctx.inOrg(req, async (client) => {
+      const { rows } = await client.query(
+        `UPDATE scheduled_posts SET scheduled_at = $2::timestamptz, timezone = coalesce($3::text, timezone), status = 'scheduled',
+                next_attempt_at = NULL, error = NULL, updated_at = now()
+          WHERE id = $1 AND status IN ('draft', 'scheduled', 'failed') RETURNING *`,
+        [postId, when.toISOString(), timezone ?? null]
+      );
+      if (!rows[0]) throw new HttpError(409, "That post can't be moved any more.");
+      await audit(client, {
+        tenantId: req.orgId!, actorUser: req.userId, action: "content.reschedule",
+        entityType: "scheduled_posts", entityId: postId, metadata: { scheduledAt: when.toISOString() },
+      });
+      return rows[0];
+    });
+    return { post };
+  });
+
+  app.delete("/v1/orgs/:orgId/content/posts/:postId", async (req) => {
+    ctx.requireRole(req, "member");
+    const { postId } = req.params as { postId: string };
+    await ctx.inOrg(req, async (client) => {
+      const { rowCount } = await client.query(
+        "DELETE FROM scheduled_posts WHERE id = $1 AND status IN ('draft', 'scheduled', 'failed')",
+        [postId]
+      );
+      if (!rowCount) throw new HttpError(409, "That post is already publishing or published.");
+      await audit(client, {
+        tenantId: req.orgId!, actorUser: req.userId, action: "content.unschedule",
+        entityType: "scheduled_posts", entityId: postId, metadata: {},
+      });
+    });
+    return { ok: true };
+  });
+
+  /** When to post. Ranked slots over the coming days from what is known
+   *  about when each platform's audiences are around, shaped by this
+   *  organisation's own queue: slots already taken are skipped and the next
+   *  best kept a few hours clear of them, so a campaign spreads out instead
+   *  of landing in a clump. Honest about its basis — `reason` says why. */
+  app.get("/v1/orgs/:orgId/content/best-times", async (req) => {
+    ctx.requireRole(req, "viewer");
+    const q = req.query as { platform?: string; timezone?: string; days?: string; count?: string };
+    const timezone = q.timezone && isValidTimeZone(q.timezone) ? q.timezone : "UTC";
+    const days = Math.min(28, Math.max(3, Number(q.days) || 14));
+    const count = Math.min(30, Math.max(1, Number(q.count) || 8));
+    const platform = q.platform === "instagram_account" ? "instagram_account" : "facebook_page";
+    const taken = await ctx.inOrg(req, (client) =>
+      client.query(
+        `SELECT scheduled_at FROM scheduled_posts
+          WHERE scheduled_at IS NOT NULL AND scheduled_at > now() - interval '1 day'
+            AND status IN ('scheduled', 'publishing', 'published')`
+      )
+    );
+    const slots = bestTimes({
+      platform, timezone, days, count,
+      taken: taken.rows.map((r) => new Date(r.scheduled_at)),
+      now: new Date(),
+    });
+    return { platform, timezone, slots, suggested: slots[0] ?? null };
+  });
+}
+
+function isValidTimeZone(tz: string): boolean {
+  try { new Intl.DateTimeFormat("en-US", { timeZone: tz }); return true; } catch { return false; }
+}
+
+/** Audience windows by platform, in the viewer's local time. Weekday-first;
+ *  the weights encode broadly agreed engagement patterns rather than a
+ *  guarantee — the reason text says so. */
+const WINDOWS: Record<string, Array<{ days: number[]; hours: number[]; weight: number; why: string }>> = {
+  facebook_page: [
+    { days: [2, 3, 4], hours: [9, 10, 11], weight: 1.0, why: "Mid-week mornings are when Facebook audiences are most active" },
+    { days: [1, 2, 3, 4, 5], hours: [13, 14, 15], weight: 0.85, why: "Early-afternoon weekday lull, when people check their feeds" },
+    { days: [1, 5], hours: [9, 10], weight: 0.7, why: "Monday and Friday mornings still draw steady attention" },
+    { days: [6, 0], hours: [10, 11, 12], weight: 0.6, why: "Late weekend mornings, for a relaxed audience" },
+    { days: [1, 2, 3, 4, 5], hours: [18, 19], weight: 0.55, why: "Early evening, after work" },
+  ],
+  instagram_account: [
+    { days: [1, 2, 3, 4, 5], hours: [11, 12, 13], weight: 1.0, why: "Weekday lunch hours are Instagram's busiest stretch" },
+    { days: [1, 2, 3, 4], hours: [19, 20], weight: 0.85, why: "Weekday evenings, when scrolling peaks" },
+    { days: [2, 3, 4], hours: [8, 9], weight: 0.7, why: "Mid-week mornings, first check of the day" },
+    { days: [6, 0], hours: [10, 11], weight: 0.6, why: "Weekend late mornings" },
+    { days: [5], hours: [16, 17], weight: 0.5, why: "Friday late afternoon, heading into the weekend" },
+  ],
+};
+
+export interface BestTimeSlot { at: string; local: string; score: number; reason: string }
+
+export function bestTimes(opts: {
+  platform: string; timezone: string; days: number; count: number; taken: Date[]; now: Date;
+}): BestTimeSlot[] {
+  const windows = WINDOWS[opts.platform] ?? WINDOWS.facebook_page!;
+  const fmt = new Intl.DateTimeFormat("en-US", {
+    timeZone: opts.timezone, weekday: "short", hour: "numeric", minute: "2-digit", month: "short", day: "numeric", hour12: false,
+  });
+  const parts = (d: Date) => {
+    const p = Object.fromEntries(fmt.formatToParts(d).map((x) => [x.type, x.value]));
+    const dow = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(String(p.weekday).slice(0, 3));
+    return { dow, hour: Number(p.hour) % 24, label: `${p.weekday} ${p.month} ${p.day}, ${p.hour}:${p.minute}` };
+  };
+  const candidates: BestTimeSlot[] = [];
+  // Walk every hour of the horizon in UTC; classify each in the viewer's zone.
+  const start = new Date(opts.now.getTime() + 60 * 60 * 1000);
+  start.setUTCMinutes(0, 0, 0);
+  const end = opts.now.getTime() + opts.days * 24 * 60 * 60 * 1000;
+  for (let t = start.getTime(); t < end; t += 60 * 60 * 1000) {
+    const d = new Date(t);
+    const { dow, hour, label } = parts(d);
+    let best: { weight: number; why: string } | null = null;
+    for (const w of windows) {
+      if (w.days.includes(dow) && w.hours.includes(hour) && (!best || w.weight > best.weight)) best = { weight: w.weight, why: w.why };
+    }
+    if (!best) continue;
+    // Sooner is a little better (a campaign should start), and anything within
+    // three hours of something already queued is crowded.
+    const daysOut = (t - opts.now.getTime()) / (24 * 60 * 60 * 1000);
+    const recency = Math.max(0, 1 - daysOut / (opts.days * 1.5)) * 0.25;
+    const crowded = opts.taken.some((x) => Math.abs(x.getTime() - t) < 3 * 60 * 60 * 1000);
+    if (crowded) continue;
+    const score = Math.round((best.weight + recency) * 100) / 100;
+    candidates.push({ at: d.toISOString(), local: label, score, reason: best.why });
+  }
+  candidates.sort((a, b) => b.score - a.score || a.at.localeCompare(b.at));
+  // Spread the picks out: no two suggestions within six hours of each other.
+  const picked: BestTimeSlot[] = [];
+  for (const c of candidates) {
+    if (picked.length >= opts.count) break;
+    const near = picked.some((p) => Math.abs(new Date(p.at).getTime() - new Date(c.at).getTime()) < 6 * 60 * 60 * 1000);
+    if (!near) picked.push(c);
+  }
+  return picked;
 }
 
 /** Where a shared design is fetched from, relative to the API origin. The
