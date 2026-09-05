@@ -354,15 +354,37 @@ export function registerChatRoutes(app: FastifyInstance, ctx: AppContext): void 
     return reply.status(201).send(result);
   });
 
+  /** A page of a channel, newest-anchored: the most recent `limit` messages,
+   *  or the `limit` before `?before=<iso>` when scrolling back. Ascending in
+   *  the response so the client renders top to bottom. `hasMore` says
+   *  whether an older page exists. Each message carries its attachment (the
+   *  file named by metadata.fileId) so the client can show it without a
+   *  second request. */
   app.get("/v1/orgs/:orgId/channels/:channelId/messages", async (req) => {
     ctx.requireRole(req, "viewer");
     const { channelId } = req.params as { channelId: string };
-    const { rows } = await ctx.inOrg(req, async (client) => {
+    const q = req.query as { before?: string; limit?: string };
+    const limit = Math.min(300, Math.max(20, Number(q.limit) || 120));
+    // The cursor is a message id. Replies land in the same transaction as
+    // the message they answer and so share its timestamp; (created_at, id)
+    // is the total order, and paging by time alone would drop ties.
+    const beforeId = q.before && /^[0-9a-f-]{36}$/.test(q.before) ? q.before : null;
+    const { rows, hasMore } = await ctx.inOrg(req, async (client) => {
       const channel = await client.query("SELECT id FROM channels WHERE id = $1", [channelId]);
       if (!channel.rows[0]) throw new HttpError(404, "Channel not found");
+      let beforeAt: string | null = null;
+      if (beforeId) {
+        const anchor = await client.query("SELECT created_at FROM messages WHERE id = $1 AND channel_id = $2", [beforeId, channelId]);
+        if (!anchor.rows[0]) throw new HttpError(404, "That message is not in this channel");
+        beforeAt = anchor.rows[0].created_at;
+      }
       const messages = await client.query(
-        `SELECT m.id, m.author_kind, m.author_user, m.author_agent, u.display_name AS author_name,
+        `SELECT * FROM (
+         SELECT m.id, m.author_kind, m.author_user, m.author_agent, u.display_name AS author_name,
                 m.body, m.metadata, m.created_at,
+                CASE WHEN f.id IS NULL THEN NULL ELSE jsonb_build_object(
+                  'id', f.id, 'filename', f.filename, 'mime', f.mime, 'size', f.size_bytes
+                ) END AS attachment,
                 -- Grouped in SQL rather than in the client: the counts and the
                 -- "did I react" flag are the same question, and answering them
                 -- here keeps one round trip instead of N.
@@ -379,10 +401,18 @@ export function registerChatRoutes(app: FastifyInstance, ctx: AppContext): void 
                        GROUP BY mr.emoji
                     ) r
                 ), '[]'::jsonb) AS reactions
-         FROM messages m LEFT JOIN users u ON u.id = m.author_user
-         WHERE m.channel_id = $1 ORDER BY m.created_at ASC LIMIT 300`,
-        [channelId, req.userId]
+         FROM messages m
+         LEFT JOIN users u ON u.id = m.author_user
+         LEFT JOIN files f ON (m.metadata->>'fileId') ~ '^[0-9a-f-]{36}$' AND f.id = (m.metadata->>'fileId')::uuid
+         WHERE m.channel_id = $1
+           AND ($3::timestamptz IS NULL OR (m.created_at, m.id) < ($3::timestamptz, $4::uuid))
+         ORDER BY m.created_at DESC, m.id DESC LIMIT $5
+         ) page ORDER BY created_at ASC, id ASC`,
+        [channelId, req.userId, beforeAt, beforeId, limit + 1]
       );
+      // One extra row was asked for purely to learn whether more exist.
+      const more = messages.rows.length > limit;
+      if (more) messages.rows.shift();
 
       // Whether each info-request form is still worth showing. Computed here
       // rather than stored on the message because `messages` is append-only
@@ -410,9 +440,9 @@ export function registerChatRoutes(app: FastifyInstance, ctx: AppContext): void 
           };
         }
       }
-      return messages;
+      return { rows: messages.rows, hasMore: more };
     });
-    return { messages: rows };
+    return { messages: rows, hasMore };
   });
 
   /** Toggle one reaction. Idempotent by construction: the unique constraint
