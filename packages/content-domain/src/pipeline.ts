@@ -1,5 +1,5 @@
 import type { ModelProvider } from "@deedwell/agent-runtime";
-import type { ImageGenerator } from "./images.js";
+import type { ImageGenerator, LogoReference } from "./images.js";
 import { buildStrategy, type OrgContext } from "./strategy.js";
 import { CONTENT_KIND_SPEC, type ContentKind, type ContentStrategy } from "./types.js";
 
@@ -36,6 +36,8 @@ export async function generateCampaign(opts: {
    *  new designs' positions start so they sort after the existing ones. */
   avoid?: string[];
   positionOffset?: number;
+  /** The organization's logo, when Brand Style has one: every design carries it. */
+  logo?: LogoReference | null;
 }): Promise<CampaignResult> {
   const strategy = await buildStrategy({
     model: opts.model,
@@ -43,6 +45,7 @@ export async function generateCampaign(opts: {
     prompt: opts.prompt,
     org: opts.org,
     avoid: opts.avoid,
+    hasLogo: Boolean(opts.logo),
   });
   const offset = opts.positionOffset ?? 0;
 
@@ -50,7 +53,7 @@ export async function generateCampaign(opts: {
   let done = 0;
   const settled = await Promise.allSettled(
     strategy.designs.map(async (brief, i): Promise<RenderedDesign> => {
-      const image = await opts.images.generate(brief.prompt, size);
+      const image = await opts.images.generate(brief.prompt, size, { logo: opts.logo ?? null });
       done += 1;
       opts.onProgress?.(done, strategy.designs.length);
       return {

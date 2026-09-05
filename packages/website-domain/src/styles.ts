@@ -264,6 +264,11 @@ body.buttons-square .card{border-radius:var(--r-md)}
 .faq details[open] summary{margin-bottom:var(--s3)}
 .faq p{color:var(--ink-soft);margin-bottom:0}
 
+/* ---- brand logo (header + footer) ------------------------------------- */
+.brand { display: inline-flex; align-items: center; }
+.brand__logo { display: block; height: 40px; width: auto; max-width: 200px; object-fit: contain; }
+.foot-brand .brand__logo { height: 32px; }
+
 /* ---- team / logos ------------------------------------------------------ */
 .team{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,15rem),1fr));gap:var(--s5)}
 .member{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);padding:var(--s5)}

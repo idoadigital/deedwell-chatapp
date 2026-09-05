@@ -60,14 +60,19 @@ export async function buildStrategy(opts: {
   /** Captions of designs this campaign already has. When the staff ask for
    *  more, the new briefs must be different approaches, not repeats. */
   avoid?: string[];
+  /** Brand Style has a logo: briefs must leave it room and never draw one. */
+  hasLogo?: boolean;
 }): Promise<ContentStrategy> {
   const spec = CONTENT_KIND_SPEC[opts.kind];
+  const logoNote = opts.hasLogo
+    ? " The organization's real logo will be placed on every design by the image model: each prompt must reserve a clean, uncluttered corner for it and must not describe, invent or draw any logo or emblem."
+    : "";
   const more = opts.avoid?.length
     ? ` The campaign already has ${opts.avoid.length} designs (listed in "designs already made"); propose only NEW designs that take clearly different approaches from those, keeping the same strategy.`
     : "";
   const res = await opts.model.complete({
     system: SYSTEM,
-    task: `Plan a ${CONTENT_KIND_LABELS[opts.kind]} campaign. Every design is ${spec.surface} in ${spec.aspect} format.${more}`,
+    task: `Plan a ${CONTENT_KIND_LABELS[opts.kind]} campaign. Every design is ${spec.surface} in ${spec.aspect} format.${more}${logoNote}`,
     outputSchemaRef: "content_strategy",
     dataBlocks: [
       { label: "organization context", content: contextBlock(opts.org) },

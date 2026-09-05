@@ -52,9 +52,11 @@ export const UploadFileInput = z.object({
   // planned replacement and changes nothing downstream of the storage adapter.
   contentBase64: z.string().max(10_000_000),
   mime: z.enum([
-    "text/plain", "text/markdown", "text/html",
+    "text/plain", "text/markdown", "text/html", "text/csv",
     "application/pdf",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    // Rasters: chat attachments, and the Brand Style logo.
+    "image/png", "image/jpeg", "image/webp", "image/gif",
   ]),
 });
 

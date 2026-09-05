@@ -32,6 +32,7 @@ import { registerAdminSiteGenerationRoutes } from "./routes-admin-site-generatio
 import { registerChatRoutes } from "./routes-chat.js";
 import { registerHuddleRoutes } from "./routes-huddle.js";
 import { registerAgentRoutes } from "./routes-agents.js";
+import { registerBrandRoutes } from "./routes-brand.js";
 import { registerGcpRoutes } from "./routes-gcp.js";
 import { registerAdGrantsRoutes } from "./routes-ad-grants.js";
 import { registerAdGrantsConnectWs } from "./ad-grants-connect-ws.js";
@@ -244,6 +245,7 @@ export function buildApp(deps: Deps): FastifyInstance {
   registerChatRoutes(app, ctx);
   registerHuddleRoutes(app, ctx);
   registerAgentRoutes(app, ctx);
+  registerBrandRoutes(app, ctx);
   registerGcpRoutes(app, ctx);
   registerAdGrantsRoutes(app, ctx);
   registerBillingRoutes(app, ctx);

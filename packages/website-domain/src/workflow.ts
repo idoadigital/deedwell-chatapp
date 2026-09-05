@@ -406,8 +406,10 @@ async function designNextPage(ctx: Ctx, siteId: string, after: string): Promise<
   const donateUrl = typeof intake.site_donate_url === "string" ? intake.site_donate_url
     : (BuildInput.safeParse(ctx.state.input).data?.donateUrl ?? null);
   const status = fact("entity_type") ?? fact("registration_status");
+  const logo = await loadSiteLogo(ctx);
   const organization: Organization = {
     name: site.name,
+    logoPath: logo ? `/images/logo.${logo.ext}` : null,
     legalName: fact("legal_name"),
     mission: fact("mission"),
     headquarters: fact("headquarters"),
@@ -470,8 +472,10 @@ async function buildRelease(ctx: Ctx, siteId: string): Promise<StepResult> {
   // it lives with the rest of the design intake.
   const intake = await loadIntake(ctx, siteId);
   const contactEmail = typeof intake.site_contact_email === "string" ? intake.site_contact_email : null;
+  const releaseLogo = await loadSiteLogo(ctx);
   const files = renderSite({
     siteName: site.name, slug: site.slug, pages, theme, registration, contactEmail,
+    logoPath: releaseLogo ? `/images/logo.${releaseLogo.ext}` : null,
   });
   // Designed pages replace the template's rendering wherever the design
   // still matches the copy it was made from.
@@ -505,6 +509,15 @@ async function buildRelease(ctx: Ctx, siteId: string): Promise<StepResult> {
   const prefix = `tenants/${ctx.tenantId}/sites/${siteId}/releases/v${version}`;
   for (const file of files) {
     await ctx.services.storage.put(`${prefix}/${file.path}`, Buffer.from(file.content, "utf8"));
+  }
+
+  // Brand Style's logo travels with every release, at the path the pages use.
+  if (releaseLogo) {
+    try {
+      await ctx.services.storage.put(`${prefix}/images/logo.${releaseLogo.ext}`, releaseLogo.bytes);
+    } catch (err) {
+      console.log(JSON.stringify({ at: "site_logo_copy_failed", error: String((err as Error).message ?? err).slice(0, 160) }));
+    }
   }
 
   // The site's generated photography travels with every release.
@@ -988,4 +1001,23 @@ export function buildWebsiteUpdateWorkflow(): WorkflowDefinition<WebsiteServices
       },
     },
   };
+}
+
+/** Brand Style's logo (org fact brand_logo_file_id → files), as bytes plus
+ *  the extension the site will serve it under. Null when there is none or
+ *  it is not a raster the sanitizer accepts. */
+async function loadSiteLogo(ctx: Ctx): Promise<{ bytes: Buffer; ext: string; mime: string } | null> {
+  const fact = await ctx.client.query("SELECT value FROM org_facts WHERE fact_key = 'brand_logo_file_id' LIMIT 1");
+  const fileId = String(fact.rows[0]?.value ?? "").trim().replace(/^"|"$/g, "");
+  if (!/^[0-9a-f-]{36}$/.test(fileId)) return null;
+  const file = await ctx.client.query("SELECT mime, storage_key FROM files WHERE id = $1", [fileId]);
+  const row = file.rows[0];
+  const ext = row?.mime === "image/png" ? "png" : row?.mime === "image/jpeg" ? "jpg" : row?.mime === "image/webp" ? "webp" : null;
+  if (!row || !ext) return null;
+  try {
+    const bytes = await ctx.services.storage.get(row.storage_key);
+    return { bytes, ext, mime: row.mime };
+  } catch {
+    return null;
+  }
 }

@@ -4,7 +4,8 @@ export { DESIGN_GUIDELINES } from "./guidelines.js";
 export { buildStrategy, type OrgContext } from "./strategy.js";
 export {
   createImageGenerator, OpenAiImageGenerator, MockImageGenerator, VertexImageGenerator, FallbackImageGenerator,
-  type ImageGenerator, type GeneratedImage,
+  LOGO_INSTRUCTION, extOf,
+  type ImageGenerator, type GeneratedImage, type LogoReference, type GenerateOptions,
 } from "./images.js";
 export { generateCampaign, type CampaignResult, type RenderedDesign } from "./pipeline.js";
 export {

@@ -14,9 +14,14 @@ export interface GeneratedImage {
   mime: string;
 }
 
+/** A brand mark to carry into the picture. Only raster formats the site
+ *  sanitizer also accepts, so one file serves designs and the website. */
+export interface LogoReference { bytes: Buffer; mime: string }
+export interface GenerateOptions { logo?: LogoReference | null }
+
 export interface ImageGenerator {
   readonly model: string;
-  generate(prompt: string, size: string): Promise<GeneratedImage>;
+  generate(prompt: string, size: string, opts?: GenerateOptions): Promise<GeneratedImage>;
 }
 
 const OUTPUT_FORMAT = "png";
@@ -40,8 +45,25 @@ export class OpenAiImageGenerator implements ImageGenerator {
     this.quality = opts.quality ?? process.env.CONTENT_IMAGE_QUALITY ?? "high";
   }
 
-  async generate(prompt: string, size: string): Promise<GeneratedImage> {
-    const res = await fetch(`${this.baseUrl}/images/generations`, {
+  async generate(prompt: string, size: string, opts: GenerateOptions = {}): Promise<GeneratedImage> {
+    const timeout = AbortSignal.timeout(Number(process.env.CONTENT_IMAGE_TIMEOUT_MS ?? 180_000));
+    // With a logo, the edits endpoint takes it as an input image and the
+    // prompt places it; without one, plain generation.
+    const res = opts.logo
+      ? await (async () => {
+          const form = new FormData();
+          form.append("model", this.model);
+          form.append("prompt", `${prompt}\n\n${LOGO_INSTRUCTION}`);
+          form.append("n", "1");
+          form.append("size", size);
+          form.append("quality", this.quality);
+          form.append("output_format", OUTPUT_FORMAT);
+          form.append("image[]", new Blob([new Uint8Array(opts.logo!.bytes)], { type: opts.logo!.mime }), `logo.${extOf(opts.logo!.mime)}`);
+          return fetch(`${this.baseUrl}/images/edits`, {
+            method: "POST", headers: { authorization: `Bearer ${this.apiKey}` }, body: form, signal: timeout,
+          });
+        })()
+      : await fetch(`${this.baseUrl}/images/generations`, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${this.apiKey}` },
       body: JSON.stringify({
@@ -53,7 +75,7 @@ export class OpenAiImageGenerator implements ImageGenerator {
         output_format: OUTPUT_FORMAT,
       }),
       // A single high-quality generation is slow; this is generous on purpose.
-      signal: AbortSignal.timeout(Number(process.env.CONTENT_IMAGE_TIMEOUT_MS ?? 180_000)),
+      signal: timeout,
     });
     if (!res.ok) {
       const detail = await res.text().catch(() => "");
@@ -99,7 +121,7 @@ export class VertexImageGenerator implements ImageGenerator {
     this.model = opts.model ?? process.env.VERTEX_IMAGE_MODEL ?? "gemini-2.5-flash-image";
   }
 
-  async generate(prompt: string, size: string, attempt = 0): Promise<GeneratedImage> {
+  async generate(prompt: string, size: string, opts: GenerateOptions = {}, attempt = 0): Promise<GeneratedImage> {
     // The model takes an aspect ratio, not pixels.
     const [w, h] = size.split("x").map(Number);
     const aspectRatio = !w || !h || w === h ? "1:1" : w > h ? (w / h > 1.6 ? "16:9" : "3:2") : (h / w > 1.6 ? "9:16" : "2:3");
@@ -110,7 +132,15 @@ export class VertexImageGenerator implements ImageGenerator {
         method: "POST",
         headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
         body: JSON.stringify({
-          contents: [{ role: "user", parts: [{ text: prompt }] }],
+          contents: [{
+            role: "user",
+            parts: opts.logo
+              ? [
+                  { inlineData: { mimeType: opts.logo.mime, data: opts.logo.bytes.toString("base64") } },
+                  { text: `${prompt}\n\n${LOGO_INSTRUCTION}` },
+                ]
+              : [{ text: prompt }],
+          }],
           generationConfig: { responseModalities: ["IMAGE"], imageConfig: { aspectRatio } },
         }),
         signal: AbortSignal.timeout(120_000),
@@ -119,7 +149,7 @@ export class VertexImageGenerator implements ImageGenerator {
     if ((res.status === 429 || res.status === 503) && attempt < 5) {
       // Per-minute image quota is small; wait it out rather than fail the image.
       await new Promise((r) => setTimeout(r, Math.min(8_000 * 2 ** attempt, 60_000) + Math.floor(Math.random() * 2000)));
-      return this.generate(prompt, size, attempt + 1);
+      return this.generate(prompt, size, opts, attempt + 1);
     }
     if (!res.ok) {
       const body = await res.text().catch(() => "");
@@ -142,16 +172,16 @@ export class FallbackImageGenerator implements ImageGenerator {
   constructor(private readonly primary: ImageGenerator, private readonly secondary: ImageGenerator) {
     this.model = `${primary.model}→${secondary.model}`;
   }
-  async generate(prompt: string, size: string): Promise<GeneratedImage> {
-    if (Date.now() < this.unserviceableUntil) return this.secondary.generate(prompt, size);
+  async generate(prompt: string, size: string, opts: GenerateOptions = {}): Promise<GeneratedImage> {
+    if (Date.now() < this.unserviceableUntil) return this.secondary.generate(prompt, size, opts);
     try {
-      return await this.primary.generate(prompt, size);
+      return await this.primary.generate(prompt, size, opts);
     } catch (err) {
       const message = String((err as Error).message ?? err);
       if (!UNSERVICEABLE.test(message)) throw err;
       this.unserviceableUntil = Date.now() + 10 * 60_000;
       console.log(JSON.stringify({ at: "image_provider_fallback", from: this.primary.model, to: this.secondary.model, reason: message.slice(0, 160) }));
-      return this.secondary.generate(prompt, size);
+      return this.secondary.generate(prompt, size, opts);
     }
   }
 }
@@ -165,4 +195,12 @@ export function createImageGenerator(
   if (kind === "vertex") return new VertexImageGenerator();
   const openai = new OpenAiImageGenerator({ apiKey: opts.apiKey ?? undefined });
   return fallbackKind === "vertex" ? new FallbackImageGenerator(openai, new VertexImageGenerator()) : openai;
+}
+
+/** What every image model is told when a logo comes along. */
+export const LOGO_INSTRUCTION =
+  "The attached image is the organization's real logo. Place it in the design exactly as it is — same shapes, colours and proportions, not redrawn, not restyled, not cropped — small and legible in one corner or in a natural brand position, with clear space around it, so the piece reads as this organization's own.";
+
+export function extOf(mime: string): string {
+  return mime === "image/jpeg" ? "jpg" : mime === "image/webp" ? "webp" : "png";
 }

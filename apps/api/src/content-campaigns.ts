@@ -1,3 +1,4 @@
+import { loadBrandLogo } from "./brand.js";
 import { createHash } from "node:crypto";
 import type { PoolClient } from "pg";
 import { tenantFileKey, uuidv7, withContext } from "@deedwell/database";
@@ -45,9 +46,10 @@ async function runCampaign(args: {
 }): Promise<void> {
   const { deps, orgId, userId, id, kind, prompt } = args;
   try {
-    const org = await withContext(deps.appPool, { tenantId: orgId, userId }, (client) =>
-      loadOrgContext(client, orgId)
-    );
+    const { org, logo } = await withContext(deps.appPool, { tenantId: orgId, userId }, async (client) => ({
+      org: await loadOrgContext(client, orgId),
+      logo: await loadBrandLogo(client, deps.storage),
+    }));
     const apiKey = await readProviderKey(deps.appPool, "openai");
     const result = await generateCampaign({
       model: deps.provider,
@@ -55,6 +57,7 @@ async function runCampaign(args: {
       kind,
       prompt,
       org,
+      logo,
     });
 
     await storeDesigns({ deps, orgId, userId, id, designs: result.designs });
@@ -119,8 +122,9 @@ async function runMoreDesigns(args: {
 }): Promise<void> {
   const { deps, orgId, userId, id, kind, prompt } = args;
   try {
-    const { org, existing } = await withContext(deps.appPool, { tenantId: orgId, userId }, async (client) => ({
+    const { org, logo, existing } = await withContext(deps.appPool, { tenantId: orgId, userId }, async (client) => ({
       org: await loadOrgContext(client, orgId),
+      logo: await loadBrandLogo(client, deps.storage),
       existing: (await client.query(
         "SELECT caption, position FROM content_assets WHERE content_project_id = $1 ORDER BY position",
         [id]
@@ -133,6 +137,7 @@ async function runMoreDesigns(args: {
       kind,
       prompt,
       org,
+      logo,
       avoid: existing.map((a) => a.caption),
       positionOffset: existing.length ? Math.max(...existing.map((a) => a.position)) + 1 : 0,
     });

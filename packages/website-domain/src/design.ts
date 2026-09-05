@@ -29,6 +29,8 @@ export interface SiteDesignSystem { styles: string; header: string; footer: stri
 
 export interface Organization {
   name: string;
+  /** Path of the organization's logo inside the site (e.g. /images/logo.png), when Brand Style has one. */
+  logoPath?: string | null;
   legalName: string | null;
   mission: string | null;
   headquarters: string | null;
@@ -67,6 +69,9 @@ function commonBlocks(args: CommonArgs, forPage: string | null): ModelDataBlock[
     { label: "site", content: JSON.stringify({ siteName: args.site.name, slug: args.site.slug, donateUrl: args.donateUrl }) },
     { label: "site_nav", content: JSON.stringify(args.nav) },
     { label: "organization", content: JSON.stringify(args.organization) },
+    ...(args.organization.logoPath
+      ? [{ label: "site_logo", content: `The organization's real logo is at ${args.organization.logoPath}. In the header, <a class="brand" href="/"> must contain <img class="brand__logo" src="${args.organization.logoPath}" alt="${args.organization.name.replace(/"/g, "'")}"> (height about 40px, width auto) — and the same image in the footer brand. Never draw, describe or replace the logo; never add text next to it that repeats the name unless the logo is a pure symbol.` }]
+      : []),
     { label: "site_images", content: JSON.stringify(images.map((i) => ({ path: i.path, alt: i.alt, purpose: i.purpose, forPage: i.forPage }))) },
     ...(args.brief ? [{ label: "brief", content: JSON.stringify({ objectives: args.brief.objectives, audiences: args.brief.audiences, tone: args.brief.tone, theme: args.brief.theme }) }] : []),
     ...(args.guidance.trim() ? [{ label: "site_settings_guidance", content: args.guidance }] : []),
@@ -87,7 +92,7 @@ export async function designSystem(args: CommonArgs): Promise<{ system: SiteDesi
   const response = await args.provider.complete({
     system: system(`YOUR TASK NOW: write the site's STYLE GUIDE as one HTML document.
 - Exactly one <style> in <head> containing the complete CSS for EVERY class in the markup contract, derived from the design_reference image: its palette (use its dominant colour as the primary accent), typography (system font stacks that evoke its type), spacing, corner radius, card and button styles, section backgrounds, header and footer treatment. Include :root custom properties, a mobile-first responsive layout with breakpoints at 720px and 1024px, visible :focus-visible styles, 44px minimum touch targets, and a print stylesheet. Buttons must look like buttons; .btn--amount and .btn--featured must read as selectable options.
-- <body>: the skip link, the real <header class="site-header"> for this site (brand, the primary nav with AT MOST FIVE links chosen from site_nav, and the header CTA), a <main> that demonstrates every pattern once with short sample text drawn from the organization (this is a style guide, its copy will be replaced), and the real <footer class="site-footer"> for this site (footer nav listing EVERY page in site_nav, contact block, legal line with status and EIN from organization when present, privacy policy link).
+- <body>: the skip link, the real <header class="site-header"> for this site (brand — the logo image from site_logo when one is given, otherwise the site name — the primary nav with AT MOST FIVE links chosen from site_nav, and the header CTA), a <main> that demonstrates every pattern once with short sample text drawn from the organization (this is a style guide, its copy will be replaced), and the real <footer class="site-footer"> for this site (footer nav listing EVERY page in site_nav, contact block, legal line with status and EIN from organization when present, privacy policy link).
 - Use the hero--image variant with the hero image from site_images if one exists.
 No script, no external resources; images only from site_images or inline SVG.`),
     task: `Write the style guide for ${args.site.name} from the reference design.`,

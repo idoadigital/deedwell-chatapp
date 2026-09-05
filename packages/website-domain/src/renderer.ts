@@ -20,6 +20,8 @@ export interface RenderedFile {
 
 export interface RenderSiteInput {
   siteName: string;
+  /** Path of the logo inside the site (/images/logo.png) when Brand Style has one. */
+  logoPath?: string | null;
   slug: string;
   pages: SitePage[];
   theme: SiteTheme;
@@ -28,6 +30,13 @@ export interface RenderSiteInput {
   /** Shown in the footer — funders check registration status. */
   registration?: string | null;
   contactEmail?: string | null;
+}
+
+/** The brand in the header and footer: the logo when there is one, the name otherwise. */
+export function brandMark(input: Pick<RenderSiteInput, "siteName" | "logoPath">): string {
+  return input.logoPath
+    ? `<img class="brand__logo" src="${esc(input.logoPath)}" alt="${esc(input.siteName)}">`
+    : esc(input.siteName);
 }
 
 export function esc(value: string): string {
@@ -292,7 +301,7 @@ export function renderSite(input: RenderSiteInput): RenderedFile[] {
       .join("")}${headerCta}</div>`;
 
   const footer = `<footer class="site"><div class="wrap"><div class="foot-grid">
-<div><div class="foot-brand">${esc(input.siteName)}</div>${
+<div><div class="foot-brand">${brandMark(input)}</div>${
     input.registration ? `<p>${esc(input.registration)}</p>` : ""
   }${input.contactEmail ? `<p><a href="${safeHref(`mailto:${input.contactEmail}`)}">${esc(input.contactEmail)}</a></p>` : ""}</div>
 <div><h2>Pages</h2><ul>${input.pages
@@ -339,7 +348,7 @@ ${body}
       content: shellPage(
         page.title,
         page.seoDescription,
-        `<header class="site"><div class="wrap"><nav class="nav" aria-label="Main"><a class="brand" href="/">${esc(input.siteName)}</a>${nav(page.slug)}</nav></div></header>
+        `<header class="site"><div class="wrap"><nav class="nav" aria-label="Main"><a class="brand" href="/">${brandMark(input)}</a>${nav(page.slug)}</nav></div></header>
 <main id="main">
 ${intro}${blocks}
 </main>
@@ -355,7 +364,7 @@ ${footer}`,
     content: shellPage(
       title,
       message,
-      `<header class="site"><div class="wrap"><nav class="nav" aria-label="Main"><a class="brand" href="/">${esc(input.siteName)}</a>${nav("")}</nav></div></header>
+      `<header class="site"><div class="wrap"><nav class="nav" aria-label="Main"><a class="brand" href="/">${brandMark(input)}</a>${nav("")}</nav></div></header>
 <main id="main"><section class="hero"><div class="wrap"><div class="hero-rule"></div><h1>${esc(title)}</h1><p class="lead">${esc(message)}</p><div class="actions"><a class="button" href="/">Back to home</a></div></div></section></main>
 ${footer}`,
       "/"
