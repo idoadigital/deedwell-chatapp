@@ -381,7 +381,7 @@ export function registerChatRoutes(app: FastifyInstance, ctx: AppContext): void 
       const messages = await client.query(
         `SELECT * FROM (
          SELECT m.id, m.author_kind, m.author_user, m.author_agent, u.display_name AS author_name,
-                m.body, m.metadata, m.created_at,
+                m.body, m.metadata, m.created_at, m.edited_at, m.deleted_at,
                 CASE WHEN f.id IS NULL THEN NULL ELSE jsonb_build_object(
                   'id', f.id, 'filename', f.filename, 'mime', f.mime, 'size', f.size_bytes
                 ) END AS attachment,
@@ -413,6 +413,11 @@ export function registerChatRoutes(app: FastifyInstance, ctx: AppContext): void 
       // One extra row was asked for purely to learn whether more exist.
       const more = messages.rows.length > limit;
       if (more) messages.rows.shift();
+      // A deleted message stays as a tombstone so the thread keeps its shape,
+      // but nothing of what it said leaves the server.
+      for (const m of messages.rows) {
+        if (m.deleted_at) { m.body = ""; m.metadata = {}; m.attachment = null; m.reactions = []; m.deleted = true; }
+      }
 
       // Whether each info-request form is still worth showing. Computed here
       // rather than stored on the message because `messages` is append-only
@@ -489,6 +494,61 @@ export function registerChatRoutes(app: FastifyInstance, ctx: AppContext): void 
     });
   });
 
+  /** Edit your own message. The previous text is kept in message_edits, so
+   *  "edited" is honest — the history exists, it is just not shown. */
+  app.patch("/v1/orgs/:orgId/messages/:messageId", async (req) => {
+    ctx.requireRole(req, "member");
+    const { messageId } = req.params as { messageId: string };
+    const { body } = z.object({ body: z.string().trim().min(1).max(4000) }).parse(req.body);
+    const message = await ctx.inOrg(req, async (client) => {
+      const { rows } = await client.query(
+        "SELECT id, channel_id, author_kind, author_user, body, deleted_at FROM messages WHERE id = $1", [messageId]
+      );
+      const m = rows[0];
+      if (!m) throw new HttpError(404, "Message not found");
+      if (m.deleted_at) throw new HttpError(409, "That message was deleted.");
+      if (m.author_kind !== "user" || m.author_user !== req.userId) throw new HttpError(403, "You can only edit your own messages.");
+      if (m.body === body) return m;
+      await client.query(
+        "INSERT INTO message_edits (id, tenant_id, message_id, previous_body, edited_by) VALUES ($1,$2,$3,$4,$5)",
+        [uuidv7(), req.orgId, messageId, m.body, req.userId]
+      );
+      const { rows: updated } = await client.query(
+        "UPDATE messages SET body = $2, edited_at = now() WHERE id = $1 RETURNING id, channel_id, body, edited_at",
+        [messageId, body]
+      );
+      return updated[0];
+    });
+    ctx.deps.engine.events.emit("event", { type: "message_updated", tenantId: req.orgId, channelId: message.channel_id } as never);
+    return { message: { id: message.id, body: message.body, editedAt: message.edited_at ?? null } };
+  });
+
+  /** Delete: your own message, or any message if you administer the
+   *  workspace. A tombstone stays so the thread keeps its shape. */
+  app.delete("/v1/orgs/:orgId/messages/:messageId", async (req) => {
+    ctx.requireRole(req, "member");
+    const { messageId } = req.params as { messageId: string };
+    const admin = req.orgRole === "admin" || req.orgRole === "owner";
+    const channelId = await ctx.inOrg(req, async (client) => {
+      const { rows } = await client.query(
+        "SELECT id, channel_id, author_kind, author_user, deleted_at FROM messages WHERE id = $1", [messageId]
+      );
+      const m = rows[0];
+      if (!m) throw new HttpError(404, "Message not found");
+      if (m.deleted_at) return m.channel_id as string;
+      const mine = m.author_kind === "user" && m.author_user === req.userId;
+      if (!mine && !admin) throw new HttpError(403, "You can only delete your own messages.");
+      await client.query("UPDATE messages SET deleted_at = now(), deleted_by = $2 WHERE id = $1", [messageId, req.userId]);
+      await audit(client, {
+        tenantId: req.orgId!, actorUser: req.userId, action: "message.delete",
+        entityType: "messages", entityId: messageId, metadata: { own: mine },
+      });
+      return m.channel_id as string;
+    });
+    ctx.deps.engine.events.emit("event", { type: "message_deleted", tenantId: req.orgId, channelId } as never);
+    return { ok: true };
+  });
+
   app.post("/v1/orgs/:orgId/channels/:channelId/messages", async (req, reply) => {
     ctx.requireRole(req, "member");
     const { channelId } = req.params as { channelId: string };
@@ -504,6 +564,10 @@ export function registerChatRoutes(app: FastifyInstance, ctx: AppContext): void 
         const file = await client.query("SELECT id FROM files WHERE id = $1", [input.fileId]);
         if (!file.rows[0]) throw new HttpError(404, "Attached file not found");
       }
+      // "@Michael, what should the budget be?" is addressed to Michael, not
+      // to whoever usually speaks in this channel — the same rule a huddle
+      // applies when a teammate is named out loud.
+      const mentioned = mentionedTeammate(input.body);
       return handleUserMessage(
         ctx.deps, client,
         { tenantId: req.orgId!, userId: req.userId! },
@@ -512,7 +576,7 @@ export function registerChatRoutes(app: FastifyInstance, ctx: AppContext): void 
         input.fileId ?? null,
         input.clientKey ?? null,
         input.huddleId ?? null,
-        null,
+        mentioned,
         input.action ?? null,
         input.timezone ?? null
       );
@@ -523,4 +587,13 @@ export function registerChatRoutes(app: FastifyInstance, ctx: AppContext): void 
     } as never);
     return reply.status(201).send({ messages });
   });
+}
+
+/** The teammate a message is addressed to by name ("@Michael …", "@Maya"),
+ *  or null. Only the roster's names count, so a stray @ cannot re-route. */
+export function mentionedTeammate(body: string): string | null {
+  const m = /(?:^|\s)@([A-Za-z]+)/.exec(body);
+  if (!m) return null;
+  const name = m[1]!.toLowerCase();
+  return TEAMMATES.find((t) => t.name.toLowerCase() === name)?.agentKey ?? null;
 }
