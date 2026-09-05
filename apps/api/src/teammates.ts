@@ -12,22 +12,25 @@ export interface Teammate {
   team: "core" | "grant" | "website";
   /** Kokoro-82M voice id (open-source TTS) — distinct voice per teammate. */
   voice: string;
+  /** Cloud Text-to-Speech voice (Chirp 3 HD) — the same casting, in the
+   *  hosted engine: British teammates stay British. */
+  googleVoice: string;
 }
 
 export const TEAMMATES: Teammate[] = [
-  { agentKey: "core.executive_assistant", name: "Maya", voice: "af_heart", role: "Executive Assistant", team: "core" },
-  { agentKey: "grant.program_planner", name: "Daniel", voice: "am_michael", role: "Project Manager", team: "core" },
-  { agentKey: "grant.funding_strategist", name: "Amara", voice: "af_bella", role: "Funding Strategist", team: "grant" },
-  { agentKey: "grant.opportunity_researcher", name: "David", voice: "am_adam", role: "Grant Researcher", team: "grant" },
-  { agentKey: "grant.eligibility_analyst", name: "Grace", voice: "af_sarah", role: "Eligibility Analyst", team: "grant" },
-  { agentKey: "grant.writer", name: "Sophia", voice: "af_nicole", role: "Grant Writer", team: "grant" },
-  { agentKey: "grant.budget_specialist", name: "Michael", voice: "am_eric", role: "Budget Specialist", team: "grant" },
-  { agentKey: "grant.requirements_analyst", name: "Naomi", voice: "bf_emma", role: "Compliance Reviewer", team: "grant" },
-  { agentKey: "website.digital_strategist", name: "Ava", voice: "af_sky", role: "Website Strategist", team: "website" },
-  { agentKey: "website.seo_accessibility_reviewer", name: "Leo", voice: "bm_george", role: "Website Designer", team: "website" },
-  { agentKey: "website.developer", name: "Noah", voice: "am_liam", role: "Website Developer", team: "website" },
-  { agentKey: "website.copywriter", name: "Emma", voice: "bf_isabella", role: "Website Copywriter", team: "website" },
-  { agentKey: "website.qa_deployment", name: "James", voice: "bm_lewis", role: "Deployment Specialist", team: "website" },
+  { agentKey: "core.executive_assistant", name: "Maya", voice: "af_heart", googleVoice: "en-US-Chirp3-HD-Kore", role: "Executive Assistant", team: "core" },
+  { agentKey: "grant.program_planner", name: "Daniel", voice: "am_michael", googleVoice: "en-US-Chirp3-HD-Charon", role: "Project Manager", team: "core" },
+  { agentKey: "grant.funding_strategist", name: "Amara", voice: "af_bella", googleVoice: "en-US-Chirp3-HD-Aoede", role: "Funding Strategist", team: "grant" },
+  { agentKey: "grant.opportunity_researcher", name: "David", voice: "am_adam", googleVoice: "en-US-Chirp3-HD-Puck", role: "Grant Researcher", team: "grant" },
+  { agentKey: "grant.eligibility_analyst", name: "Grace", voice: "af_sarah", googleVoice: "en-US-Chirp3-HD-Leda", role: "Eligibility Analyst", team: "grant" },
+  { agentKey: "grant.writer", name: "Sophia", voice: "af_nicole", googleVoice: "en-US-Chirp3-HD-Zephyr", role: "Grant Writer", team: "grant" },
+  { agentKey: "grant.budget_specialist", name: "Michael", voice: "am_eric", googleVoice: "en-US-Chirp3-HD-Fenrir", role: "Budget Specialist", team: "grant" },
+  { agentKey: "grant.requirements_analyst", name: "Naomi", voice: "bf_emma", googleVoice: "en-GB-Chirp3-HD-Despina", role: "Compliance Reviewer", team: "grant" },
+  { agentKey: "website.digital_strategist", name: "Ava", voice: "af_sky", googleVoice: "en-US-Chirp3-HD-Callirrhoe", role: "Website Strategist", team: "website" },
+  { agentKey: "website.seo_accessibility_reviewer", name: "Leo", voice: "bm_george", googleVoice: "en-GB-Chirp3-HD-Orus", role: "Website Designer", team: "website" },
+  { agentKey: "website.developer", name: "Noah", voice: "am_liam", googleVoice: "en-US-Chirp3-HD-Iapetus", role: "Website Developer", team: "website" },
+  { agentKey: "website.copywriter", name: "Emma", voice: "bf_isabella", googleVoice: "en-GB-Chirp3-HD-Erinome", role: "Website Copywriter", team: "website" },
+  { agentKey: "website.qa_deployment", name: "James", voice: "bm_lewis", googleVoice: "en-GB-Chirp3-HD-Algenib", role: "Deployment Specialist", team: "website" },
 ];
 
 export const teammateByKey = new Map(TEAMMATES.map((t) => [t.agentKey, t]));

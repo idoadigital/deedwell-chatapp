@@ -3,7 +3,7 @@ import { z } from "zod";
 import { audit, uuidv7 } from "@deedwell/database";
 import { insertMessage } from "./assistant.js";
 import { TEAMMATES, teammateByKey } from "./teammates.js";
-import { synthesize, voiceEnabled } from "./tts.js";
+import { DEFAULT_VOICE, synthesize, voiceEnabled, voiceProvider } from "./tts.js";
 import { HttpError, type AppContext } from "./app.js";
 
 /**
@@ -132,11 +132,11 @@ export function registerHuddleRoutes(app: FastifyInstance, ctx: AppContext): voi
       throw new HttpError(503, "Voice is disabled on this server (VOICE_PROVIDER=off)");
     }
     const mate = teammateByKey.get(query.agent);
-    const voice = mate?.voice ?? "af_heart";
+    const voice = mate ? { kokoro: mate.voice, google: mate.googleVoice } : DEFAULT_VOICE;
     try {
       const wav = await synthesize(ctx.deps.storage, voice, query.text);
       return reply
-        .type("audio/wav")
+        .type(voiceProvider() === "google" ? "audio/mpeg" : "audio/wav")
         .header("cache-control", "private, max-age=86400")
         .send(wav);
     } catch (err) {

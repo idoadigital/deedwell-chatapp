@@ -8,7 +8,8 @@ import { handleUserMessage, type ChannelRow } from "./assistant.js";
 import { TEAMMATES, teammateByKey } from "./teammates.js";
 
 const TEAMMATES_KEYS = TEAMMATES.map((t) => t.agentKey);
-import { synthesize, voiceEnabled } from "./tts.js";
+import { DEFAULT_VOICE, synthesize, voiceEnabled, voiceProvider } from "./tts.js";
+import { openStt, sttProvider, type SttBridge } from "./stt.js";
 import {
   TurnManager, turnConfigFromEnv, classifyWhileAgentSpeaking, routeTurn,
   type CommittedTurn,
@@ -20,7 +21,8 @@ import { HttpError, type AppContext } from "./app.js";
  * transport-agnostic so an SFU/WebRTC backend can slot in later).
  *
  * - Ephemeral single-use tokens (5 min TTL, hashed at rest) gate the socket.
- * - Streaming STT: audio frames proxy to a Vosk server (open source) —
+ * - Streaming STT: audio frames go to the configured engine (Cloud
+ *   Speech-to-Text in production, Vosk for self-hosting — see stt.ts) —
  *   partials stream back live; finals persist and drive the agent pipeline.
  * - Orchestrator: ONE active speaker; agent replies come from the existing
  *   intent pipeline (context packager = existing buildContext: transcript,
@@ -29,8 +31,6 @@ import { HttpError, type AppContext } from "./app.js";
  * - Events (persisted + streamed): transcript_final, speaker_change,
  *   interruption, tool_call, session_started/ended, stt_unavailable.
  */
-
-const STT_URL = process.env.STT_URL ?? "ws://127.0.0.1:2700";
 
 interface SessionCtx {
   tenantId: string;
@@ -191,12 +191,19 @@ export function registerRtc(app: FastifyInstance, ctx: AppContext): void {
               }
               if (voiceEnabled()) {
                 try {
-                  const wav = await synthesize(
-                    ctx.deps.storage, teammateByKey.get(agent)?.voice ?? "af_heart", clean
+                  const mate = teammateByKey.get(agent);
+                  const audio = await synthesize(
+                    ctx.deps.storage,
+                    mate ? { kokoro: mate.voice, google: mate.googleVoice } : DEFAULT_VOICE,
+                    clean
                   );
                   if (closed || interrupted) break;
-                  socket.send(wav); // binary frame = audio for the last caption
-                } catch { /* captions carry it */ }
+                  socket.send(audio); // binary frame = audio for the last caption
+                } catch (err) {
+                  // Captions carry it; say why once so a misconfigured engine
+                  // is visible in the logs rather than silently mute.
+                  console.log(JSON.stringify({ at: "tts_failed", provider: voiceProvider(), error: err instanceof Error ? err.message.slice(0, 200) : String(err) }));
+                }
               }
             }
             if (activeSpeaker === agent) {
@@ -210,52 +217,53 @@ export function registerRtc(app: FastifyInstance, ctx: AppContext): void {
       });
     };
 
-    // ---- streaming STT bridge (Vosk) -------------------------------------
-    let stt: WebSocket | null = null;
-    try {
-      stt = new WebSocket(STT_URL);
-      await new Promise<void>((resolve, reject) => {
-        stt!.once("open", () => resolve());
-        stt!.once("error", (e) => reject(e));
-        setTimeout(() => reject(new Error("stt timeout")), 4000);
-      });
-      stt.send(JSON.stringify({ config: { sample_rate: 16000 } }));
-      sttReady = true;
-      stt.on("message", (data) => {
-        try {
-          const msg = JSON.parse(String(data)) as { partial?: string; text?: string };
-          if (msg.partial !== undefined) {
-            const p = msg.partial.trim();
-            if (p) {
-              if (activeSpeaker) {
-                // Backchannels ("yeah", "mm-hmm") must not steal the floor.
-                const cls = classifyWhileAgentSpeaking(p, turnConfig, agentAskedQuestion);
-                if (cls === "interruption") bargeIn("user interrupted");
-                else if (cls === "backchannel") {
-                  send({ type: "backchannel", body: p });
-                  void persistEvent("backchannel", { body: p.slice(0, 60) });
-                  return; // acknowledged, not a turn
-                }
-              }
-              turns.onPartial(p);
-            }
-            send({ type: "transcript_partial", speaker: "user", body: msg.partial });
-          } else if (msg.text && msg.text.trim()) {
-            // ASR finals are candidate segments — the Turn Manager decides
-            // when the thought is actually complete (hybrid endpointing).
-            if (activeSpeaker) {
-              const cls = classifyWhileAgentSpeaking(msg.text.trim(), turnConfig, agentAskedQuestion);
-              if (cls === "backchannel") {
-                void persistEvent("backchannel", { body: msg.text.trim().slice(0, 60) });
-                return;
-              }
-            }
-            turns.onFinal(msg.text.trim());
+    // ---- streaming STT bridge ---------------------------------------------
+    // Partials and finals arrive the same way whichever engine is behind
+    // openStt; the turn manager and barge-in logic never see the difference.
+    let stt: SttBridge | null = null;
+    const onPartial = (partial: string) => {
+      const p = partial.trim();
+      if (p) {
+        if (activeSpeaker) {
+          // Backchannels ("yeah", "mm-hmm") must not steal the floor.
+          const cls = classifyWhileAgentSpeaking(p, turnConfig, agentAskedQuestion);
+          if (cls === "interruption") bargeIn("user interrupted");
+          else if (cls === "backchannel") {
+            send({ type: "backchannel", body: p });
+            void persistEvent("backchannel", { body: p.slice(0, 60) });
+            return; // acknowledged, not a turn
           }
-        } catch { /* ignore malformed */ }
+        }
+        turns.onPartial(p);
+      }
+      send({ type: "transcript_partial", speaker: "user", body: partial });
+    };
+    const onFinal = (text: string) => {
+      // ASR finals are candidate segments — the Turn Manager decides
+      // when the thought is actually complete (hybrid endpointing).
+      if (activeSpeaker) {
+        const cls = classifyWhileAgentSpeaking(text, turnConfig, agentAskedQuestion);
+        if (cls === "backchannel") {
+          void persistEvent("backchannel", { body: text.slice(0, 60) });
+          return;
+        }
+      }
+      turns.onFinal(text);
+    };
+    try {
+      stt = await openStt({
+        onPartial, onFinal,
+        onLost: (reason) => {
+          if (closed || !sttReady) return;
+          sttReady = false;
+          send({ type: "stt_unavailable", error: `Speech-to-text dropped (${reason}) — type instead.` });
+          void persistEvent("stt_unavailable", { reason: reason.slice(0, 120) });
+        },
       });
-    } catch {
+      sttReady = true;
+    } catch (err) {
       sttReady = false;
+      console.log(JSON.stringify({ at: "stt_unavailable", provider: sttProvider(), error: err instanceof Error ? err.message.slice(0, 200) : String(err) }));
       send({ type: "stt_unavailable", error: "Speech-to-text engine is unavailable — type instead." });
       void persistEvent("stt_unavailable");
     }
@@ -268,13 +276,13 @@ export function registerRtc(app: FastifyInstance, ctx: AppContext): void {
       (state) => send({ type: "state", state: state.toLowerCase() })
     );
 
-    send({ type: "session_started", stt: sttReady, voices: voiceEnabled(), turnConfig });
+    send({ type: "session_started", stt: sttReady, voices: voiceEnabled(), voiceProvider: voiceProvider(), turnConfig });
     void persistEvent("session_started", { stt: sttReady });
 
     socket.on("message", (raw, isBinary) => {
       if (isBinary) {
-        // 16 kHz mono PCM16 frames from the client's AudioWorklet → Vosk.
-        if (sttReady && stt?.readyState === WebSocket.OPEN) stt.send(raw as Buffer);
+        // 16 kHz mono PCM16 frames from the client's AudioWorklet → engine.
+        if (sttReady) stt?.write(raw as Buffer);
         return;
       }
       try {
