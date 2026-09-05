@@ -143,7 +143,10 @@ async function openGoogle(events: SttEvents, env: NodeJS.ProcessEnv): Promise<St
     const old = stream;
     stream = null;
     try { old?.end(); } catch { /* already gone */ }
-    start();
+    // A moment between attempts: a transient blip recovers on the next try,
+    // and a persistent fault reaches the give-up threshold in a second or
+    // two rather than burning every attempt in the same instant.
+    setTimeout(() => { if (!closed) start(); }, 400 * Math.max(1, errors));
   };
   start();
 
