@@ -186,11 +186,12 @@ export async function onAgentClarify(client: PoolClient, args: { tenantId: strin
   const policy = await loadProactivePolicy(client);
   const subject = `chat:${args.channelId}`;
   const delayMs = policy.followUpDelayHours.waiting_on_user * 3600_000;
-  const question = args.question.trim().slice(0, 300);
+  // The first sentence or two: a follow-up quotes it, so keep it readable.
+  const question = args.question.trim().replace(/\s+/g, " ").split(/(?<=[.?!])\s/).slice(0, 2).join(" ").slice(0, 220);
   const intentId = await upsertIntent(client, {
     tenantId: args.tenantId, userId: args.userId, subjectKey: subject, agentKey: args.agentKey,
     intent: `Continue the conversation about: ${args.userMessage.trim().slice(0, 140)}`, status: "waiting_on_user",
-    nextExpectedAction: `answer: ${question}`, nextExpectedActor: "user", followUpEligibleAt: new Date(Date.now() + delayMs),
+    nextExpectedAction: `reply to the question "${question}"`, nextExpectedActor: "user", followUpEligibleAt: new Date(Date.now() + delayMs),
     channelId: args.channelId, metadata: { source: "chat_clarify" },
   });
   await cancelCandidates(client, args.tenantId, { subjectKey: subject }, "a newer question replaced it");
@@ -199,7 +200,7 @@ export async function onAgentClarify(client: PoolClient, args: { tenantId: strin
     type: "waiting_on_user", reason: `${args.agentKey} asked "${question}" and is waiting for an answer`,
     importance: 3, urgency: 2, requiresResponse: true, subjectKey: subject,
     suggestedSendAt: new Date(Date.now() + delayMs), expiresAt: new Date(Date.now() + 5 * 86400_000),
-    relatedEntity: { question, nextExpectedAction: `answer: ${question}` }, metadata: { trigger: "INTENT_WAITING_ON_USER", source: "chat_clarify" },
+    relatedEntity: { question, nextExpectedAction: `reply to the question "${question}"` }, metadata: { trigger: "INTENT_WAITING_ON_USER", source: "chat_clarify" },
   });
   await logEvent(client, args.tenantId, row.id, "candidate_created", row.reason, { agent: args.agentKey, type: "waiting_on_user", dueAt: row.suggested_send_at });
 }

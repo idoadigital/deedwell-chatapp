@@ -161,6 +161,7 @@ export async function deliverCandidate(deps: Deps, client: PoolClient, c: Candid
     nextExpectedActor: decision.intent?.next_expected_actor ?? null,
     hoursSince: (now.getTime() - new Date(decision.intent?.last_activity_at ?? c.created_at).getTime()) / 3600_000,
     lastAgentMessage: lastAgent.rows[0]?.body ?? null, proposedMessage: c.proposed_message ?? null,
+    question: typeof c.related_entity?.question === "string" ? c.related_entity.question : null,
     combined: extras.map((e) => e.intent?.next_expected_action ?? e.proposed_message ?? e.reason),
   };
   const composed = await composeProactiveMessage(deps.provider, ctx);

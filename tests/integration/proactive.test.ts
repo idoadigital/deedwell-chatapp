@@ -137,7 +137,7 @@ describe("Proactive agent messaging", () => {
     const intents = (await env.adminPool.query("SELECT * FROM user_intents WHERE tenant_id = $1 AND subject_key = $2", [f.orgId, `chat:${f.channelId}`])).rows;
     expect(intents).toHaveLength(1);
     expect(intents[0].status).toBe("waiting_on_user");
-    expect(intents[0].next_expected_action).toMatch(/^answer: /);
+    expect(intents[0].next_expected_action).toMatch(/^reply to the question/);
     let rows = await candidates(f.orgId);
     expect(rows.filter((c) => c.subject_key === `chat:${f.channelId}`).map((c) => c.status)).toEqual(["candidate"]);
     // The user comes back: the question is answered, the follow-up is gone.

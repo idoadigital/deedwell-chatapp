@@ -14,6 +14,8 @@ export interface ComposeContext {
   nextExpectedAction: string | null; nextExpectedActor: string | null;
   hoursSince: number; lastAgentMessage: string | null; proposedMessage: string | null;
   combined: string[];
+  /** A question the agent asked in chat and is still waiting on. */
+  question?: string | null;
 }
 
 const SYSTEM = `
@@ -30,6 +32,7 @@ export function situationBlock(c: ComposeContext): string {
     `Agent: ${c.agentName} (${c.agentRole})`, `Organization: ${c.orgName}`, `User: ${c.userName}`,
     `Type: ${c.type}`, `Why now: ${c.reason}`,
     c.goalTitle ? `Goal: ${c.goalTitle}` : "", c.intent ? `Intent: ${c.intent}` : "",
+    c.question ? `The agent asked and is waiting on: "${c.question}"` : "",
     c.nextExpectedAction ? `Next expected action: ${c.nextExpectedAction}`
       : c.proposedMessage ? "Next expected action: as described in the agent's draft"
       : c.type === "work_completed" ? "Next expected action: the user can ask to see the result"
@@ -51,7 +54,11 @@ export async function composeProactiveMessage(model: ModelProvider, c: ComposeCo
       outputSchemaRef: "proactive_message",
       dataBlocks: [{ label: "situation", content: situationBlock(c) }],
     });
-    return ProactiveMessageOutput.parse(JSON.parse(res.text));
+    const raw = JSON.parse(res.text) as Partial<ProactiveMessageOutput>;
+    if (raw && raw.shouldSend === false) {
+      return { message: "", summary: "", shouldSend: false, reason: (raw.reason ?? "not helpful now").toString().slice(0, 300) };
+    }
+    return ProactiveMessageOutput.parse(raw);
   } catch (err) {
     console.log(JSON.stringify({ at: "proactive.compose_fallback", error: String((err as Error).message ?? err).slice(0, 200) }));
     const message = c.proposedMessage ?? fallbackMessage(c);
@@ -63,6 +70,7 @@ export async function composeProactiveMessage(model: ModelProvider, c: ComposeCo
 export function fallbackMessage(c: ComposeContext): string {
   const about = c.goalTitle ?? c.intent ?? "our work";
   const extra = c.combined.length ? ` There ${c.combined.length === 1 ? "is one more thing" : `are also ${c.combined.length} things`} waiting for you: ${c.combined.join("; ")}.` : "";
+  if (c.question) return `Earlier I asked: "${c.question.replace(/\s+/g, " ").slice(0, 160)}" — want to pick that up when you have a moment?${extra}`;
   if (c.type === "work_completed") return `I finished ${about}. Want me to show you what I came up with?${extra}`;
   if (c.type === "blocked") return `I couldn't continue ${about}${c.nextExpectedAction ? ` — ${c.nextExpectedAction}` : ""}. Want to sort that out now?${extra}`;
   if (c.nextExpectedAction) return `Quick update on ${about} — I'm still waiting on one thing: ${c.nextExpectedAction.replace(/\.$/, "")}. Want to finish that now?${extra}`;
