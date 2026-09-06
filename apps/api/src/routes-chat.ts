@@ -593,9 +593,12 @@ export function registerChatRoutes(app: FastifyInstance, ctx: AppContext): void 
         input.timezone ?? null
       );
     });
-    // Wake any live listeners (SSE) in this org.
+    // Wake any live listeners (SSE) in this org. Who posted and whether a
+    // teammate replied lets a client decide what deserves a sound.
     ctx.deps.engine.events.emit("event", {
       type: "message_created", tenantId: req.orgId, channelId,
+      authorUser: req.userId, agentReplies: messages.filter((m) => m.author_kind === "agent").length,
+      huddle: Boolean(input.huddleId),
     } as never);
     return reply.status(201).send({ messages });
   });
