@@ -15,6 +15,6 @@ export {
   type IntegrationEnvironment, type IntegrationStatus, type PlatformIntegrationView,
   type PlatformCredentials,
 } from "./platform-config.js";
-export { ConnectorHealthService, type HealthResult } from "./health.js";
+export { ConnectorHealthService, unseal, type HealthResult } from "./health.js";
 export { startPublishWorker, runPublishBatch, reclaimStalePosts, type WorkerDeps } from "./worker.js";
 export { parseSignedRequest, newConfirmationCode, SignedRequestError, type SignedRequestPayload } from "./data-deletion.js";

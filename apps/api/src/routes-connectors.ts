@@ -4,7 +4,7 @@ import type { PoolClient } from "pg";
 import { audit, uuidv7 } from "@deedwell/database";
 import { decryptSecret, encryptSecret } from "@deedwell/auth";
 import {
-  getProvider, listProviders, readPlatformCredentials,
+  GoogleProvider, getProvider, listProviders, readPlatformCredentials,
   type ConnectionView, type OAuthTokens,
 } from "@deedwell/connectors";
 import { HttpError, type AppContext } from "./app.js";
@@ -101,6 +101,12 @@ export function registerConnectorRoutes(app: FastifyInstance, ctx: AppContext): 
         "tenant tried to connect a provider with no platform credentials");
       throw new HttpError(503, `${provider.label} connections are temporarily unavailable.`);
     }
+    // Optional feature scopes (Google Drive, Calendar…) are asked for only
+    // when a feature needs them; the base connection stays minimal.
+    const { features = [] } = ((req.body ?? {}) as { features?: string[] });
+    const extraScopes = name === "google"
+      ? (Array.isArray(features) ? features : []).flatMap((f) => GoogleProvider.OPTIONAL_SCOPES[String(f)] ?? [])
+      : [];
     const state = randomBytes(32).toString("base64url");
     await ctx.inOrg(req, (client) =>
       client.query(
@@ -109,7 +115,7 @@ export function registerConnectorRoutes(app: FastifyInstance, ctx: AppContext): 
         [uuidv7(), req.orgId, name, hash(state), req.userId, new Date(Date.now() + STATE_TTL_MS)]
       )
     );
-    return { authorizeUrl: provider.authorizeUrl({ state, redirectUri: redirectUriFor(name) }) };
+    return { authorizeUrl: provider.authorizeUrl({ state, redirectUri: redirectUriFor(name), extraScopes }) };
   });
 
   /** Provider redirect lands here. Everything sensitive happens in this

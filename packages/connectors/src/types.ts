@@ -54,7 +54,7 @@ export interface ConnectorProvider {
    *  offering a Connect button that cannot work. */
   isConfigured(): boolean;
   /** Where to send the browser. `state` is already the single-use CSRF value. */
-  authorizeUrl(args: { state: string; redirectUri: string; codeChallenge?: string }): string;
+  authorizeUrl(args: { state: string; redirectUri: string; codeChallenge?: string; extraScopes?: string[] }): string;
   /** Server-side code exchange. Never called from the browser. */
   exchangeCode(args: { code: string; redirectUri: string; codeVerifier?: string }): Promise<OAuthTokens>;
   /** Accounts the user may attach, after authorization. */

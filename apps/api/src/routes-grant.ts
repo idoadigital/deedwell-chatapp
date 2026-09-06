@@ -4,6 +4,7 @@ import { ApprovalDecisionInput, ProvideInfoInput, StartGrantSliceInput } from "@
 import { GRANT_SLICE_WORKFLOW, writeOrgFact } from "@deedwell/grant-domain";
 import type { WorkflowEvent } from "@deedwell/workflows";
 import { HttpError, type AppContext } from "./app.js";
+import { artifactTypeLabel, renderArtifactPdf } from "./artifact-pdf.js";
 import { resolveInfoRequest } from "./fact-fields.js";
 import { PASSPORT_FIELDS } from "@deedwell/grant-domain";
 import { WEBSITE_INTAKE_KEYS } from "@deedwell/website-domain";
@@ -278,24 +279,43 @@ export function registerGrantRoutes(app: FastifyInstance, ctx: AppContext): void
     const { format } = req.query as { format?: string };
 
     if (format === "docx" || format === "pdf") {
-      const storageKey = await ctx.inOrg(req, async (client) => {
+      const { version } = req.query as { version?: string };
+      const wanted = /^\d+$/.test(version ?? "") ? Number(version) : null;
+      const found = await ctx.inOrg(req, async (client) => {
         const { rows } = await client.query(
-          `SELECT av.content->>'docxStorageKey' AS docx_key, av.content->>'pdfStorageKey' AS pdf_key
+          `SELECT a.type, a.title, av.version, av.content, av.created_at, o.name AS org_name,
+                  av.content->>'docxStorageKey' AS docx_key, av.content->>'pdfStorageKey' AS pdf_key
            FROM artifacts a
-           JOIN artifact_versions av ON av.artifact_id = a.id AND av.version = a.current_version
-           WHERE a.id = $1 AND a.type = 'export_package'`,
-          [artifactId]
+           JOIN artifact_versions av ON av.artifact_id = a.id AND av.version = COALESCE($2::int, a.current_version)
+           JOIN organizations o ON o.id = a.tenant_id
+           WHERE a.id = $1`,
+          [artifactId, wanted]
         );
-        const key = format === "docx" ? rows[0]?.docx_key : rows[0]?.pdf_key;
-        if (!key) throw new HttpError(404, "No export available for this artifact");
-        return key as string;
+        return rows[0] as Record<string, any> | undefined;
       });
+      if (!found) throw new HttpError(404, "Artifact not found");
+      const storageKey = format === "docx" ? found.docx_key : found.pdf_key;
+      if (!storageKey && format === "docx") throw new HttpError(404, "No export available for this artifact");
+      // Export packages built by the full-application run carry a stored PDF;
+      // every other artifact — and older packages — is rendered on demand from
+      // the version's content, so any document in Artifacts can be downloaded.
+      const filename = `${String(found.title || artifactTypeLabel(found.type)).replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "").toLowerCase().slice(0, 60) || "document"}.${format}`;
+      if (!storageKey) {
+        const pdf = await renderArtifactPdf({
+          title: String(found.title || artifactTypeLabel(found.type)), type: String(found.type),
+          orgName: String(found.org_name ?? ""), createdAt: found.created_at, version: found.version, content: found.content,
+        });
+        return reply
+          .header("content-disposition", `attachment; filename="${filename}"`)
+          .type("application/pdf")
+          .send(pdf);
+      }
       const buf = await ctx.deps.storage.get(storageKey);
       const contentType = format === "docx"
         ? "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         : "application/pdf";
       return reply
-        .header("content-disposition", `attachment; filename="application.${format}"`)
+        .header("content-disposition", `attachment; filename="${filename}"`)
         .type(contentType)
         .send(buf);
     }
