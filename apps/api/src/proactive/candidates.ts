@@ -179,10 +179,42 @@ export async function handleRunEvent(deps: Deps, event: { tenantId: string; runI
 
 // ---- hooks from the chat and campaign paths ---------------------------------
 
-/** The user wrote in a channel: proactive messages there are answered, and
- *  their presence is fresh. Cheap and inside the request's own transaction. */
+/** A teammate asked the user something in chat and is now waiting. That is
+ *  an intent like any other: if the user does not come back, the same
+ *  teammate may follow up later; the moment they reply, it is cancelled. */
+export async function onAgentClarify(client: PoolClient, args: { tenantId: string; userId: string; channelId: string; agentKey: string; question: string; userMessage: string }): Promise<void> {
+  const policy = await loadProactivePolicy(client);
+  const subject = `chat:${args.channelId}`;
+  const delayMs = policy.followUpDelayHours.waiting_on_user * 3600_000;
+  const question = args.question.trim().slice(0, 300);
+  const intentId = await upsertIntent(client, {
+    tenantId: args.tenantId, userId: args.userId, subjectKey: subject, agentKey: args.agentKey,
+    intent: `Continue the conversation about: ${args.userMessage.trim().slice(0, 140)}`, status: "waiting_on_user",
+    nextExpectedAction: `answer: ${question}`, nextExpectedActor: "user", followUpEligibleAt: new Date(Date.now() + delayMs),
+    channelId: args.channelId, metadata: { source: "chat_clarify" },
+  });
+  await cancelCandidates(client, args.tenantId, { subjectKey: subject }, "a newer question replaced it");
+  const row = await insertCandidate(client, {
+    tenantId: args.tenantId, userId: args.userId, agentKey: args.agentKey, channelId: args.channelId, intentId,
+    type: "waiting_on_user", reason: `${args.agentKey} asked "${question}" and is waiting for an answer`,
+    importance: 3, urgency: 2, requiresResponse: true, subjectKey: subject,
+    suggestedSendAt: new Date(Date.now() + delayMs), expiresAt: new Date(Date.now() + 5 * 86400_000),
+    relatedEntity: { question, nextExpectedAction: `answer: ${question}` }, metadata: { trigger: "INTENT_WAITING_ON_USER", source: "chat_clarify" },
+  });
+  await logEvent(client, args.tenantId, row.id, "candidate_created", row.reason, { agent: args.agentKey, type: "waiting_on_user", dueAt: row.suggested_send_at });
+}
+
+/** The user wrote in a channel: proactive messages there are answered, any
+ *  question a teammate was waiting on is answered, and their presence is
+ *  fresh. Cheap and inside the request's own transaction. */
 export async function onUserMessage(client: PoolClient, ids: { tenantId: string; userId: string; channelId: string }): Promise<void> {
   await markResponded(client, ids.tenantId, ids.userId, ids.channelId);
+  await client.query(
+    `UPDATE user_intents SET status = 'in_progress', next_expected_actor = 'agent', last_activity_at = now()
+      WHERE tenant_id = $1 AND channel_id = $2 AND subject_key = $3 AND status = 'waiting_on_user'`,
+    [ids.tenantId, ids.channelId, `chat:${ids.channelId}`]
+  );
+  await cancelCandidates(client, ids.tenantId, { subjectKey: `chat:${ids.channelId}` }, "the user replied");
   await client.query(
     "UPDATE organization_memberships SET last_active_at = now(), presence = 'active' WHERE tenant_id = $1 AND user_id = $2",
     [ids.tenantId, ids.userId]

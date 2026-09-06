@@ -13,7 +13,7 @@ import { recordEvent, recordSource, setWorkspace } from "./workspace.js";
 import { DEFAULT_CHANNELS, MAYA_WELCOME, TEAMMATES, teammateByKey } from "./teammates.js";
 import { resolveInfoRequest } from "./fact-fields.js";
 import { gcpRoutesChannel, handleGcpTurn } from "./gcp/turns.js";
-import { onUserMessage } from "./proactive/candidates.js";
+import { onAgentClarify, onUserMessage } from "./proactive/candidates.js";
 
 /**
  * The Executive Assistant: conversational entry point (BRD §4.1). It maps a
@@ -745,6 +745,9 @@ export async function handleUserMessage(
       break;
     case "clarify":
       await say(intent.question);
+      // The teammate is now waiting on the user; if they walk away, the
+      // orchestrator may follow up later as the same teammate.
+      await onAgentClarify(client, { tenantId: ids.tenantId, userId: ids.userId, channelId: channel.id, agentKey: persona, question: intent.question, userMessage: body }).catch(() => undefined);
       break;
 
     case "search_grants": {
