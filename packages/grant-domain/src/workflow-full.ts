@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { audit, uuidv7 } from "@deedwell/database";
+import { missionBackground } from "./workflow.js";
 import { runAgentTask } from "@deedwell/agent-runtime";
 import type { StepContext, StepResult, WorkflowDefinition } from "@deedwell/workflows";
 import {
@@ -543,12 +544,14 @@ export function buildGrantFullWorkflow(): WorkflowDefinition<GrantServices> {
         // with its URL so drafted claims stay traceable to a source.
         const researchNotes = z.array(z.string()).parse(ctx.state.researchNotes ?? []);
 
+        const background = await missionBackground(ctx);
         const result = await runAgentTask<SectionDraftOutput>(
           ctx.services.provider, grantWriter,
-          `Draft a grant proposal section titled "${section.title}" that responds to the attached requirements using only the attached organizational facts. Objective: ${section.objective}`,
+          `Draft a grant proposal section titled "${section.title}" that responds to the attached requirements using only the attached organizational facts. Objective: ${section.objective}. The organization_background block is context and voice from the organization's own Mission Profile — use it for framing and tone; every claim must still rest on an attached fact.`,
           [
             { label: "requirements", content: JSON.stringify(sectionReqs) },
             { label: "org_facts", content: JSON.stringify(usable) },
+            ...(background ? [{ label: "organization_background", content: background }] : []),
             ...(researchNotes.length
               ? [{ label: "funder_research", content: researchNotes.join("\n---\n").slice(0, 6000) }]
               : []),

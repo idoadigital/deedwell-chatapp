@@ -7,7 +7,7 @@ import {
   SESSION_TTL_MS,
   verifyPassword,
 } from "@deedwell/auth";
-import { audit, tenantFileKey, uuidv7, withContext } from "@deedwell/database";
+import { audit, tenantFileKey, uuidv7, withContext, invalidateMissionProfile } from "@deedwell/database";
 import {
   AddMemberInput,
   CreateOrgInput,
@@ -225,6 +225,7 @@ export function registerCoreRoutes(app: FastifyInstance, ctx: AppContext): void 
 
   app.post("/v1/orgs/:orgId/facts", async (req, reply) => {
     ctx.requireRole(req, "member");
+    invalidateMissionProfile(req.orgId!);
     const input = ProvideInfoInput.parse(req.body);
     const conflicts: string[] = [];
     await ctx.inOrg(req, async (client) => {
@@ -349,6 +350,7 @@ export function registerCoreRoutes(app: FastifyInstance, ctx: AppContext): void 
 
   app.post("/v1/orgs/:orgId/files", async (req, reply) => {
     ctx.requireRole(req, "member");
+    invalidateMissionProfile(req.orgId!);
     const input = UploadFileInput.parse(req.body);
     const content = Buffer.from(input.contentBase64, "base64");
     if (content.length === 0) throw new HttpError(400, "File is empty");

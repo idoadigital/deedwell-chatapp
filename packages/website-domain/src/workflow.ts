@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { audit, enqueueWebhookEvent, uuidv7, type StorageAdapter } from "@deedwell/database";
+import { audit, enqueueWebhookEvent, loadMissionProfile, missionProfileBlock, uuidv7, type StorageAdapter } from "@deedwell/database";
 import { runAgentTask, type ModelProvider } from "@deedwell/agent-runtime";
 import type { ToolGateway } from "@deedwell/tools";
 import type { StepContext, StepResult, WorkflowDefinition } from "@deedwell/workflows";
@@ -255,10 +255,13 @@ async function writePage(ctx: Ctx, args: {
   orderIdx: number;
   facts: OrgFact[];
   reference: Awaited<ReturnType<typeof loadReferenceTemplate>>;
+  /** The Mission Profile block: brand voice, notes, what the organization says about itself. */
+  profile?: string | null;
 }): Promise<{ placeholders: string[] }> {
   const { input, brief, plan, slug, orderIdx, facts, reference } = args;
   const blocksFor = (extra: { label: string; content: string }[] = []) => [
     { label: "org_facts", content: JSON.stringify(facts) },
+    ...(args.profile ? [{ label: "mission_profile", content: args.profile }] : []),
     { label: "intake", content: JSON.stringify({ siteName: input.siteName, donateUrl: input.donateUrl }) },
     { label: "intake_preferences", content: JSON.stringify(ctx.state.intake ?? {}) },
     { label: "brief", content: JSON.stringify(brief ?? {}) },
@@ -739,11 +742,13 @@ export function buildWebsiteBuildWorkflow(): WorkflowDefinition<WebsiteServices>
         // from the library so consecutive sites do not all look alike.
         const settings = await loadSiteGenerationSettings(ctx.client);
         const reference = await pickReferenceTemplate(ctx.client, ctx.services.storage);
+        const profileBlock = await loadMissionProfile(ctx.client, ctx.services.storage, ctx.tenantId).then(missionProfileBlock).catch(() => null);
         const result = await runAgentTask<WebsiteBriefOutput>(
           ctx.services.provider, digitalStrategist,
-          "Produce a website brief for this organization.",
+          "Produce a website brief for this organization, grounded in its Mission Profile (its own words about its mission, programs, brand voice and knowledge base).",
           [
             { label: "org_facts", content: JSON.stringify(facts) },
+            ...(profileBlock ? [{ label: "mission_profile", content: profileBlock }] : []),
             { label: "intake", content: JSON.stringify({
               siteName: input.siteName,
               // An explicit answer beats the value captured when the site was

@@ -1,7 +1,7 @@
 import { loadBrandLogo } from "./brand.js";
 import { createHash } from "node:crypto";
 import type { PoolClient } from "pg";
-import { tenantFileKey, uuidv7, withContext } from "@deedwell/database";
+import { loadMissionProfile, tenantFileKey, uuidv7, withContext } from "@deedwell/database";
 import {
   createImageGenerator, generateCampaign, readProviderKey,
   type ContentKind, type OrgContext, type RenderedDesign,
@@ -18,20 +18,19 @@ import { onContentCampaignFinished } from "./proactive/candidates.js";
 const MAX_CONCURRENT = Number(process.env.CONTENT_MAX_CONCURRENT ?? 2);
 let running = 0;
 
-async function loadOrgContext(client: PoolClient, orgId: string): Promise<OrgContext> {
-  const [org, facts, knowledge] = await Promise.all([
-    client.query("SELECT name FROM organizations WHERE id = $1", [orgId]),
-    client.query("SELECT fact_key, value FROM org_facts WHERE status <> 'rejected' ORDER BY fact_key LIMIT 60"),
-    client.query(
-      `SELECT filename FROM files WHERE project_id IS NULL ORDER BY created_at DESC LIMIT 12`
-    ),
-  ]);
+async function loadOrgContext(client: PoolClient, orgId: string, storage: AppContext["deps"]["storage"]): Promise<OrgContext> {
+  // The Mission Profile: facts, brand style, the Knowledge Base notes in
+  // full, and document titles (documents are not parsed here, and claiming
+  // to have read them would be worse than naming them).
+  const profile = await loadMissionProfile(client, storage, orgId);
   return {
-    name: org.rows[0]?.name ?? "This nonprofit",
-    facts: facts.rows.map((r) => ({ key: r.fact_key as string, value: String(r.value) })),
-    // Filenames only: the knowledge files themselves are not parsed here, and
-    // claiming to have read them would be worse than naming them.
-    knowledge: knowledge.rows.map((r) => ({ title: r.filename as string, excerpt: "" })),
+    name: profile.orgName,
+    mission: profile.facts.find((f) => f.key === "mission")?.value ?? null,
+    facts: profile.facts.map((f) => ({ key: f.key, value: f.value })),
+    knowledge: [
+      ...profile.notes.map((n) => ({ title: n.title, excerpt: n.text })),
+      ...profile.documents.map((d) => ({ title: d.filename, excerpt: "" })),
+    ],
   };
 }
 
@@ -48,7 +47,7 @@ async function runCampaign(args: {
   const { deps, orgId, userId, id, kind, prompt } = args;
   try {
     const { org, logo } = await withContext(deps.appPool, { tenantId: orgId, userId }, async (client) => ({
-      org: await loadOrgContext(client, orgId),
+      org: await loadOrgContext(client, orgId, deps.storage),
       logo: await loadBrandLogo(client, deps.storage),
     }));
     const apiKey = await readProviderKey(deps.appPool, "openai");
@@ -126,7 +125,7 @@ async function runMoreDesigns(args: {
   const { deps, orgId, userId, id, kind, prompt } = args;
   try {
     const { org, logo, existing } = await withContext(deps.appPool, { tenantId: orgId, userId }, async (client) => ({
-      org: await loadOrgContext(client, orgId),
+      org: await loadOrgContext(client, orgId, deps.storage),
       logo: await loadBrandLogo(client, deps.storage),
       existing: (await client.query(
         "SELECT caption, position FROM content_assets WHERE content_project_id = $1 ORDER BY position",

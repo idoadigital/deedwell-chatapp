@@ -1,6 +1,6 @@
 import type { PoolClient } from "pg";
 import { createHash } from "node:crypto";
-import { audit, tenantFileKey, uuidv7, withContext } from "@deedwell/database";
+import { audit, tenantFileKey, uuidv7, withContext, loadMissionProfile, missionProfileBlock } from "@deedwell/database";
 import { debitTokens, getBalance, loadStripeConfig } from "@deedwell/billing-domain";
 import { runAgentTask } from "@deedwell/agent-runtime";
 import { AgentDefinition, IntentOutput, RESERVED_SITE_SLUGS, type GrantActionRef, type OrgFact } from "@deedwell/schemas";
@@ -32,6 +32,14 @@ Deedwell, a workspace for nonprofit organizations. Read the user's message and t
 workspace context, then choose exactly one action. Execution is deterministic server
 code — your job is understanding, routing, and clear communication. When the team is
 waiting for information, map the user's reply onto the requested fact keys.
+
+MISSION PROFILE: the mission_profile block is what this organization has told Deedwell
+about itself — its details, mission, brand style, and the notes and documents in its
+Knowledge Base. Every teammate works from it. Use it: call the organization by its name,
+ground answers in its mission and programs, match its brand voice, and never ask for
+something the profile already holds (an EIN, website, mission, colours…) — when the team
+is waiting for a fact that is already in the profile, map it from there. Do not invent
+anything the profile does not say; if it is missing, say so or ask.
 
 IDENTITY: context.speaker is who YOU are in this conversation — in teammate DMs that
 is another teammate, not Maya, and every word you write is in that teammate's voice.
@@ -685,11 +693,15 @@ export async function handleUserMessage(
     // the full roster, so agents can answer for themselves and the team.
     const mate = teammateByKey.get(persona);
     const speaker = mate ? { name: mate.name, role: mate.role } : { name: "Maya", role: "Executive Assistant" };
+    // Every teammate works from the Mission Profile: what the organization
+    // has told Deedwell about itself, its brand, and its knowledge base.
+    const profile = await loadMissionProfile(client, deps.storage, ids.tenantId).catch(() => null);
     const result = await runAgentTask<IntentOutput>(
       deps.provider, executiveAssistant,
       `Choose the single best action for the user's message. You are speaking as ${speaker.name}, the ${speaker.role} — any "answer" text is in ${speaker.name}'s voice.`,
       [
         { label: "user_message", content: body },
+        ...(profile ? [{ label: "mission_profile", content: missionProfileBlock(profile) }] : []),
         { label: "context", content: JSON.stringify({
           ...context,
           now: formatNow(timezone),

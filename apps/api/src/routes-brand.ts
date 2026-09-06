@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { audit, uuidv7 } from "@deedwell/database";
+import { audit, invalidateMissionProfile, uuidv7 } from "@deedwell/database";
 import { HttpError, type AppContext } from "./app.js";
 import { BRAND_LOGO_FACT, LOGO_MAX_BYTES, LOGO_MIMES } from "./brand.js";
 
@@ -25,6 +25,7 @@ export function registerBrandRoutes(app: FastifyInstance, ctx: AppContext): void
 
   app.put("/v1/orgs/:orgId/brand/logo", async (req) => {
     ctx.requireRole(req, "member");
+    invalidateMissionProfile(req.orgId!);
     const { fileId } = z.object({ fileId: z.string().uuid() }).parse(req.body);
     const file = await ctx.inOrg(req, async (client) => {
       const { rows } = await client.query("SELECT id, filename, mime, size_bytes FROM files WHERE id = $1", [fileId]);
@@ -44,6 +45,7 @@ export function registerBrandRoutes(app: FastifyInstance, ctx: AppContext): void
 
   app.delete("/v1/orgs/:orgId/brand/logo", async (req) => {
     ctx.requireRole(req, "member");
+    invalidateMissionProfile(req.orgId!);
     await ctx.inOrg(req, async (client) => {
       // Cleared, not deleted: an empty value is "no logo".
       await setLogoFact(client, req.orgId!, req.userId!, "");

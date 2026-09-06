@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { audit, uuidv7, type StorageAdapter } from "@deedwell/database";
+import { audit, loadMissionProfile, uuidv7, type StorageAdapter } from "@deedwell/database";
 import { runAgentTask, type ModelProvider } from "@deedwell/agent-runtime";
 import type { ToolGateway } from "@deedwell/tools";
 import type { StepContext, StepResult, WorkflowDefinition } from "@deedwell/workflows";
@@ -237,14 +237,18 @@ export function buildGrantSliceWorkflow(): WorkflowDefinition<GrantServices> {
         const usableFacts = facts.filter(
           (f) => f.status === "verified" || f.status === "user_certified"
         );
+        // The Mission Profile's notes and brand voice as background: tone and
+        // framing come from here; every claim still rests on an attached fact.
+        const background = await missionBackground(ctx);
 
         const result = await runAgentTask<SectionDraftOutput>(
           ctx.services.provider,
           grantWriter,
-          `Draft a grant proposal section titled "${input.sectionTitle}" that responds to the attached requirements using only the attached organizational facts.`,
+          `Draft a grant proposal section titled "${input.sectionTitle}" that responds to the attached requirements using only the attached organizational facts. The organization_background block is context and voice from the organization's own Mission Profile — draw on it for framing and tone, but every claim must still rest on an attached fact.`,
           [
             { label: "requirements", content: JSON.stringify(requirements) },
             { label: "org_facts", content: JSON.stringify(usableFacts) },
+            ...(background ? [{ label: "organization_background", content: background }] : []),
           ]
         );
         await recordModelUsage(ctx, grantWriter.agentKey, result.tokensEstimated);
@@ -365,4 +369,20 @@ export function buildGrantSliceWorkflow(): WorkflowDefinition<GrantServices> {
       },
     },
   };
+}
+
+/** The Mission Profile's brand voice and Knowledge Base notes, as background
+ *  for the writer. Null when the organization has written nothing yet. */
+export async function missionBackground(ctx: { client: import("pg").PoolClient; tenantId: string; services: { storage: StorageAdapter } }): Promise<string | null> {
+  try {
+    const profile = await loadMissionProfile(ctx.client, ctx.services.storage, ctx.tenantId);
+    const voice = profile.facts.find((f) => f.key === "brand_voice")?.value;
+    const lines = [
+      voice ? `Brand voice: ${voice}` : "",
+      ...profile.notes.map((n) => `Note — ${n.title}: ${n.text.replace(/\s+/g, " ")}`),
+    ].filter(Boolean);
+    return lines.length ? lines.join("\n").slice(0, 8000) : null;
+  } catch {
+    return null;
+  }
 }
