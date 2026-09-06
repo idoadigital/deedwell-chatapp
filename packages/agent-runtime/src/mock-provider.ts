@@ -48,6 +48,8 @@ export class MockModelProvider implements ModelProvider {
       design_tokens: designTokens,
       page_composition: pageComposition,
       design_critique: designCritique,
+      logo_brief: logoBrief,
+      logo_concepts: logoConcepts,
     };
     const produced = generators[request.outputSchemaRef](request);
     // The designer answers with a document, not a JSON object.
@@ -416,6 +418,53 @@ function contentStrategy(request: ModelRequest): unknown {
       caption: `${angle} treatment`,
       prompt: `${angle} design for: ${ask}. Editorial serif headline, generous margins, restrained palette.`,
       postText: `${ask.slice(0, 80)}\n\nThis is the ${angle.toLowerCase()} take — made for the people who show up. Join us, share this, or give what you can.\n\n#nonprofit #community #${angle.toLowerCase().replace(/[^a-z]/g, "")}`,
+    })),
+  };
+}
+
+/** A brief that reads like one, from whatever the request and context say —
+ *  so the logo generator's whole flow runs in mock mode. */
+function logoBrief(request: ModelRequest): unknown {
+  const ask = request.dataBlocks.find((b) => b.label === "logo request")?.content ?? "";
+  const context = request.dataBlocks.find((b) => b.label === "organization context")?.content ?? "";
+  const name = (/^legal_name: (.+)$/m.exec(context) ?? /^Organization: (.+)$/m.exec(context))?.[1]?.trim() || "Your organization";
+  const primary = /brand_primary_color: (#[0-9a-fA-F]{6})/.exec(context)?.[1];
+  const accent = /brand_accent_color: (#[0-9a-fA-F]{6})/.exec(context)?.[1];
+  const wantsWordmark = /wordmark/i.test(ask);
+  return {
+    organizationName: name,
+    tagline: /^tagline: (.+)$/m.exec(context)?.[1]?.trim() ?? null,
+    description: (/^mission: (.+)$/m.exec(context)?.[1] ?? `${name} is a nonprofit.`).slice(0, 1200),
+    objectives: ["trust", "human connection", "progress"],
+    audience: "Supporters, partners and the people the organization serves",
+    personality: ["Modern", "Human", "Trustworthy"],
+    logoType: wantsWordmark ? "wordmark" : "ai_choice",
+    visualStyle: ["Minimal", "Contemporary"],
+    colors: primary
+      ? { mode: "existing", palette: [primary, ...(accent ? [accent] : [])], notes: null }
+      : { mode: "suggested", palette: ["#0d5527", "#dae470"], notes: "Deep green with a warm lime accent." },
+    symbolism: ["growth", "connection"],
+    avoid: ["overly corporate", "generic heart icons", "gradients"],
+    designerNotes: `Develop a modern, human-centred identity for ${name}. ${ask.slice(0, 200)}`.trim(),
+  };
+}
+
+function logoConcepts(request: ModelRequest): unknown {
+  const brief = request.dataBlocks.find((b) => b.label === "approved brief")?.content ?? "";
+  const fixed = /"logoType":\s*"(wordmark|lettermark|emblem|symbol_wordmark|combination)"/.exec(brief)?.[1];
+  const set: Array<[string, string, string]> = [
+    ["Clear Voice", "Typography-led", "wordmark"],
+    ["Rising Path", "Abstract symbol", "symbol_wordmark"],
+    ["Common Ground", "Geometric", "combination"],
+    ["Open Hand", "Organic", "symbol_wordmark"],
+    ["Keystone", "Minimal emblem", "emblem"],
+  ];
+  return {
+    concepts: set.map(([title, approach, type]) => ({
+      title,
+      approach,
+      logoType: fixed ?? type,
+      direction: `${approach} direction: a single clean mark with the organization name set in a modern sans-serif, generous margins, flat colour.`,
     })),
   };
 }

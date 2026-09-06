@@ -33,6 +33,7 @@ import { registerChatRoutes } from "./routes-chat.js";
 import { registerHuddleRoutes } from "./routes-huddle.js";
 import { registerAgentRoutes } from "./routes-agents.js";
 import { registerBrandRoutes } from "./routes-brand.js";
+import { registerBrandLogoGeneratorRoutes } from "./routes-brand-logo-generator.js";
 import { registerGcpRoutes } from "./routes-gcp.js";
 import { registerAdGrantsRoutes } from "./routes-ad-grants.js";
 import { registerAdGrantsConnectWs } from "./ad-grants-connect-ws.js";
@@ -246,6 +247,7 @@ export function buildApp(deps: Deps): FastifyInstance {
   registerHuddleRoutes(app, ctx);
   registerAgentRoutes(app, ctx);
   registerBrandRoutes(app, ctx);
+  registerBrandLogoGeneratorRoutes(app, ctx);
   registerGcpRoutes(app, ctx);
   registerAdGrantsRoutes(app, ctx);
   registerBillingRoutes(app, ctx);

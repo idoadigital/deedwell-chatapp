@@ -17,7 +17,13 @@ export interface GeneratedImage {
 /** A brand mark to carry into the picture. Only raster formats the site
  *  sanitizer also accepts, so one file serves designs and the website. */
 export interface LogoReference { bytes: Buffer; mime: string }
-export interface GenerateOptions { logo?: LogoReference | null }
+export interface GenerateOptions {
+  logo?: LogoReference | null;
+  /** Ask for real alpha (a logo, not a picture). OpenAI honours it as a
+   *  request parameter; other models only through the prompt, so callers
+   *  still verify the bytes they get back. */
+  transparent?: boolean;
+}
 
 export interface ImageGenerator {
   readonly model: string;
@@ -73,6 +79,7 @@ export class OpenAiImageGenerator implements ImageGenerator {
         size,
         quality: this.quality,
         output_format: OUTPUT_FORMAT,
+        ...(opts.transparent ? { background: "transparent" } : {}),
       }),
       // A single high-quality generation is slow; this is generous on purpose.
       signal: timeout,

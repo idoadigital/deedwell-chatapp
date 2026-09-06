@@ -56,7 +56,7 @@ export function registerBrandRoutes(app: FastifyInstance, ctx: AppContext): void
 /** Choosing a logo is a decision, not a claim about the organisation, so it
  *  is written directly rather than through the fact-conflict flow (which
  *  would park a replacement as a "conflict" to review). */
-async function setLogoFact(client: { query: (sql: string, params?: unknown[]) => Promise<unknown> }, tenantId: string, userId: string, value: string): Promise<void> {
+export async function setLogoFact(client: { query: (sql: string, params?: unknown[]) => Promise<unknown> }, tenantId: string, userId: string, value: string): Promise<void> {
   await client.query(
     `INSERT INTO org_facts (id, tenant_id, fact_key, value, status, certified_by)
      VALUES ($1, $2, $3, $4, 'user_certified', $5)
