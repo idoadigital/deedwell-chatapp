@@ -66,6 +66,12 @@ export const ProactivePrefs = z.object({
   enabled: z.boolean().optional(),
   notifications: z.boolean().optional(),
   quietHours: z.object({ start: z.number().int().min(0).max(23), end: z.number().int().min(0).max(23) }).nullable().optional(),
+  /** Audible cues in the dashboard — stored with the membership so they follow the user across devices. */
+  sounds: z.object({
+    messages: z.boolean().optional(),
+    notifications: z.boolean().optional(),
+    volume: z.number().min(0).max(1).optional(),
+  }).optional(),
 });
 export type ProactivePrefs = z.infer<typeof ProactivePrefs>;
 
