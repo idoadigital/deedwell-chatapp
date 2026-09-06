@@ -75,7 +75,7 @@ const GOAL_TITLES: Record<string, (project: string, org: string) => string> = {
 const isAdGrants = (definition: string) => definition.startsWith("ad-grants");
 const humanKey = (k: string) => k.replace(/_/g, " ").replace(/\bein\b/i, "EIN").replace(/\burl\b/i, "URL");
 
-async function handleRunEvent(deps: Deps, event: { tenantId: string; runId: string; status: string; step: string }): Promise<void> {
+export async function handleRunEvent(deps: Deps, event: { tenantId: string; runId: string; status: string; step: string }): Promise<void> {
   await withContext(deps.appPool, { tenantId: event.tenantId, userId: null }, async (client) => {
     const run = (await client.query(
       `SELECT r.id, r.definition, r.status, r.state, r.created_by, r.project_id, p.name AS project_name, o.name AS org_name,

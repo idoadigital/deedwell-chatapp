@@ -76,6 +76,25 @@ describe("Proactive agent messaging", () => {
     expect(log).toEqual(["candidate_created", "delivered"]);
   });
 
+  it("backfill: a run already waiting before the bridge saw it gets its intent and follow-up on the next tick", async () => {
+    const s = await startSlice(env, "proactive-backfill");
+    await drainAll();
+    // Pretend the bridge never ran: wipe what it derived.
+    await env.adminPool.query("DELETE FROM proactive_log WHERE tenant_id = $1", [s.orgId]);
+    await env.adminPool.query("DELETE FROM proactive_candidates WHERE tenant_id = $1", [s.orgId]);
+    await env.adminPool.query("DELETE FROM user_intents WHERE tenant_id = $1", [s.orgId]);
+    await runProactiveTick(env.deps, new Date());
+    const intents = (await env.adminPool.query("SELECT status, run_id FROM user_intents WHERE tenant_id = $1", [s.orgId])).rows;
+    expect(intents).toHaveLength(1);
+    expect(intents[0]).toMatchObject({ status: "waiting_on_user", run_id: s.runId });
+    const rows = await candidates(s.orgId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].type).toBe("waiting_on_user");
+    // Idempotent: another tick creates nothing new.
+    await runProactiveTick(env.deps, new Date());
+    expect(await candidates(s.orgId)).toHaveLength(1);
+  });
+
   it("scenario 2 + 9: the user acts before the follow-up is due, so it is cancelled — and a completed goal cancels the rest", async () => {
     const s = await startSlice(env, "proactive-2");
     await drainAll();

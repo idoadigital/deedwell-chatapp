@@ -7,6 +7,7 @@ import { composeProactiveMessage, type ComposeContext } from "./compose.js";
 import { inQuietHours, loadProactivePolicy, quietHoursEnd, scoreCandidate, type ProactivePolicy, ProactivePrefs } from "./policy.js";
 import { derivePresence, type Presence } from "./presence.js";
 import { cancelCandidates, loadLedger, loadUserActivity, logEvent, setCandidateStatus, type Ledger, type UserActivity } from "./store.js";
+import { handleRunEvent } from "./candidates.js";
 
 /**
  * The only component that may turn a proposal into a chat message.
@@ -216,6 +217,7 @@ export interface TickStats { claimed: number; delivered: number; scheduled: numb
  *  processes — claims use SKIP LOCKED, the way the publish worker does. */
 export async function runProactiveTick(deps: Deps, now = new Date(), limit = 50): Promise<TickStats> {
   const stats: TickStats = { claimed: 0, delivered: 0, scheduled: 0, suppressed: 0, cancelled: 0, expired: 0 };
+  await backfillWaitingRuns(deps).catch((err) => console.error(JSON.stringify({ at: "proactive.backfill_error", error: String((err as Error).message ?? err).slice(0, 300) })));
   const expired = await deps.adminPool.query(
     `UPDATE proactive_candidates SET status = 'expired' WHERE status IN ('candidate','scheduled','approved') AND expires_at IS NOT NULL AND expires_at < $1 RETURNING id, tenant_id`,
     [now]
@@ -279,6 +281,24 @@ export async function runProactiveTick(deps: Deps, now = new Date(), limit = 50)
     }
   }
   return stats;
+}
+
+/** Runs that were already waiting on the user before the bridge existed (or
+ *  whose event was missed) get their intent and follow-up on the next tick,
+ *  so existing stalled work is followed up too. Cheap: only runs with no
+ *  intent yet, a few at a time. */
+export async function backfillWaitingRuns(deps: Deps, limit = 10): Promise<number> {
+  const { rows } = await deps.adminPool.query(
+    `SELECT r.id, r.tenant_id, r.status, r.current_step FROM workflow_runs r
+      WHERE r.status IN ('waiting_for_info','waiting_approval') AND r.updated_at > now() - interval '30 days'
+        AND NOT EXISTS (SELECT 1 FROM user_intents i WHERE i.run_id = r.id)
+      ORDER BY r.updated_at DESC LIMIT $1`,
+    [limit]
+  );
+  for (const r of rows) {
+    await handleRunEvent(deps, { tenantId: r.tenant_id, runId: r.id, status: r.status, step: r.current_step });
+  }
+  return rows.length;
 }
 
 export { cancelCandidates };
