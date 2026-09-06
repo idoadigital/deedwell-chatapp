@@ -58,6 +58,12 @@ describe("workspace API", () => {
     expect(res.body.approvals.length).toBe(1);
     expect(res.body.approvals[0].status).toBe("pending");
     expect(res.body.approvals[0].project_name).toBe("CYD 2026 Application");
+    // The chat message that raised it carries the approval's current status.
+    const chans = await api(env.app, "GET", `/v1/orgs/${s.orgId}/channels`, { token: s.token });
+    const projectChannel = chans.body.channels.find((c: { project_id: string | null }) => c.project_id === s.projectId);
+    const msgs = await api(env.app, "GET", `/v1/orgs/${s.orgId}/channels/${projectChannel.id}/messages`, { token: s.token });
+    const raised = msgs.body.messages.find((m: { metadata: { approvalId?: string } }) => m.metadata?.approvalId === res.body.approvals[0].id);
+    expect(raised?.metadata.approvalStatus).toBe("pending");
     expect(res.body.approvals[0].run_id).toBe(s.runId);
   });
 

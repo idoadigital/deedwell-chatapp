@@ -445,6 +445,18 @@ export function registerChatRoutes(app: FastifyInstance, ctx: AppContext): void 
           };
         }
       }
+      // The current state of every approval a message raised, so a decision
+      // already made is shown as such instead of live buttons on an old message.
+      const approvalRows = messages.rows.filter((m) => typeof m.metadata?.approvalId === "string");
+      if (approvalRows.length) {
+        const ids = [...new Set(approvalRows.map((m) => m.metadata.approvalId as string))];
+        const decided = await client.query("SELECT id, status, decided_at FROM approvals WHERE id = ANY($1::uuid[])", [ids]);
+        const byId = new Map(decided.rows.map((r) => [r.id as string, r]));
+        for (const m of approvalRows) {
+          const a = byId.get(m.metadata.approvalId as string);
+          m.metadata = { ...m.metadata, approvalStatus: a?.status ?? "unknown", approvalDecidedAt: a?.decided_at ?? null };
+        }
+      }
       return { rows: messages.rows, hasMore: more };
     });
     return { messages: rows, hasMore };
