@@ -89,7 +89,7 @@ export function registerChatRoutes(app: FastifyInstance, ctx: AppContext): void 
                 p.type AS project_type,
                 (SELECT MAX(created_at) FROM messages m WHERE m.channel_id = c.id) AS last_message_at
          FROM channels c LEFT JOIN projects p ON p.id = c.project_id
-         ORDER BY c.kind, c.created_at`
+         ORDER BY c.kind, c.created_at, c.name`
       );
       const runs = await client.query(
         `SELECT r.id, r.project_id, p.name AS project_name, r.definition, r.status,
@@ -267,7 +267,7 @@ export function registerChatRoutes(app: FastifyInstance, ctx: AppContext): void 
                 p.type AS project_type,
                 (SELECT MAX(created_at) FROM messages m WHERE m.channel_id = c.id) AS last_message_at
          FROM channels c LEFT JOIN projects p ON p.id = c.project_id
-         ORDER BY c.kind, c.created_at`
+         ORDER BY c.kind, c.created_at, c.name`
       );
     });
     return { channels: rows, teammates: TEAMMATES };
