@@ -35,6 +35,7 @@ import { registerAgentRoutes } from "./routes-agents.js";
 import { registerBrandRoutes } from "./routes-brand.js";
 import { registerBrandLogoGeneratorRoutes } from "./routes-brand-logo-generator.js";
 import { registerDriveRoutes } from "./routes-drive.js";
+import { registerProactiveRoutes } from "./routes-proactive.js";
 import { registerGcpRoutes } from "./routes-gcp.js";
 import { registerAdGrantsRoutes } from "./routes-ad-grants.js";
 import { registerAdGrantsConnectWs } from "./ad-grants-connect-ws.js";
@@ -250,6 +251,7 @@ export function buildApp(deps: Deps): FastifyInstance {
   registerBrandRoutes(app, ctx);
   registerBrandLogoGeneratorRoutes(app, ctx);
   registerDriveRoutes(app, ctx);
+  registerProactiveRoutes(app, ctx);
   registerGcpRoutes(app, ctx);
   registerAdGrantsRoutes(app, ctx);
   registerBillingRoutes(app, ctx);

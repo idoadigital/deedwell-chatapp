@@ -7,6 +7,7 @@ import {
   type ContentKind, type OrgContext, type RenderedDesign,
 } from "@deedwell/content-domain";
 import type { AppContext } from "./app.js";
+import { onContentCampaignFinished } from "./proactive/candidates.js";
 
 /**
  * Content Studio campaigns, shared by the /content routes and the chat: a
@@ -68,6 +69,7 @@ async function runCampaign(args: {
         [id, JSON.stringify(result.strategy)]
       )
     );
+    void onContentCampaignFinished(deps, { tenantId: orgId, userId, projectId: id, status: "ready" });
   } catch (err) {
     await withContext(deps.appPool, { tenantId: orgId, userId }, (client) =>
       client.query(
@@ -75,6 +77,7 @@ async function runCampaign(args: {
         [id, String((err as Error).message ?? err).slice(0, 500)]
       )
     ).catch(() => {});
+    void onContentCampaignFinished(deps, { tenantId: orgId, userId, projectId: id, status: "failed", error: String((err as Error).message ?? err).slice(0, 200) });
     throw err;
   }
 }

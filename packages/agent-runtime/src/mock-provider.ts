@@ -50,6 +50,7 @@ export class MockModelProvider implements ModelProvider {
       design_critique: designCritique,
       logo_brief: logoBrief,
       logo_concepts: logoConcepts,
+      proactive_message: proactiveMessage,
     };
     const produced = generators[request.outputSchemaRef](request);
     // The designer answers with a document, not a JSON object.
@@ -467,4 +468,24 @@ function logoConcepts(request: ModelRequest): unknown {
       direction: `${approach} direction: a single clean mark with the organization name set in a modern sans-serif, generous margins, flat colour.`,
     })),
   };
+}
+
+/** Phrases the orchestrator's brief as a short teammate message; declines
+ *  when the brief itself says nothing is left for the user to do. */
+function proactiveMessage(request: ModelRequest): unknown {
+  const brief = request.dataBlocks.find((b) => b.label === "situation")?.content ?? "";
+  const next = /next expected action: (.+)/i.exec(brief)?.[1]?.trim();
+  const goal = /goal: (.+)/i.exec(brief)?.[1]?.trim();
+  const type = /type: (.+)/i.exec(brief)?.[1]?.trim();
+  const nothing = /nothing for the user to do/i.test(brief);
+  const draft = /Draft from the agent: (.+)/i.exec(brief)?.[1]?.trim();
+  const combined = /Also waiting for the user \(combine briefly\): (.+)/i.exec(brief)?.[1]?.trim();
+  const message = draft
+    ? `${draft}${combined ? ` There is also something else waiting for you: ${combined.replace(/^\d+\. /, "")}` : ""}`
+    : type === "work_completed"
+    ? `I finished ${goal ? `the work on ${goal}` : "what we discussed"}. Want me to show you?`
+    : next
+      ? `Quick update on ${goal ?? "our work"} — I'm still waiting on one thing: ${next.replace(/\.$/, "")}. Want to finish that now?`
+      : `We started on ${goal ?? "something"} and haven't finished. Do you still want to continue?`;
+  return { message, summary: message.slice(0, 120), shouldSend: !nothing, reason: nothing ? "No user action is pending." : null };
 }

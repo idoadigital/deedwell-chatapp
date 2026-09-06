@@ -127,5 +127,9 @@ export async function createDeps(overrides: Partial<{
   attachEngineBridge(deps);
   const { attachWorkspaceBridge } = await import("./workspace.js");
   attachWorkspaceBridge(deps);
+  // Proactive messaging: goal/intent memory and follow-up candidates from the
+  // same milestone events. Delivery is decided later by the orchestrator.
+  const { attachProactiveBridge } = await import("./proactive/candidates.js");
+  attachProactiveBridge(deps);
   return deps;
 }

@@ -16,7 +16,7 @@ import {
   WebsiteBriefOutput,
   type AgentDefinition,
   DesignLanguage, DesignTokens, PageComposition, CriticReport,
-  LogoBriefOutput, LogoConceptsOutput,
+  LogoBriefOutput, LogoConceptsOutput, ProactiveMessageOutput,
 } from "@deedwell/schemas";
 import { MockModelProvider } from "./mock-provider.js";
 import { OpenAiProvider } from "./openai-provider.js";
@@ -71,7 +71,8 @@ export interface ModelRequest {
     | "page_composition"
     | "design_critique"
     | "logo_brief"
-    | "logo_concepts";
+    | "logo_concepts"
+    | "proactive_message";
 }
 
 export interface ModelResponse {
@@ -152,6 +153,7 @@ const OUTPUT_SCHEMAS: Record<ModelRequest["outputSchemaRef"], z.ZodTypeAny> = {
   content_strategy: ContentStrategyOutput,
   logo_brief: LogoBriefOutput,
   logo_concepts: LogoConceptsOutput,
+  proactive_message: ProactiveMessageOutput,
 };
 
 /**

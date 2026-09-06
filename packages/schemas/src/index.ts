@@ -931,3 +931,4 @@ export const CompleteWebsiteRequestInput = z.object({
 
 export * from "./website-builder.js";
 export * from "./logo.js";
+export * from "./proactive.js";

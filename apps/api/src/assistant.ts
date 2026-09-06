@@ -13,6 +13,7 @@ import { recordEvent, recordSource, setWorkspace } from "./workspace.js";
 import { DEFAULT_CHANNELS, MAYA_WELCOME, TEAMMATES, teammateByKey } from "./teammates.js";
 import { resolveInfoRequest } from "./fact-fields.js";
 import { gcpRoutesChannel, handleGcpTurn } from "./gcp/turns.js";
+import { onUserMessage } from "./proactive/candidates.js";
 
 /**
  * The Executive Assistant: conversational entry point (BRD §4.1). It maps a
@@ -555,6 +556,9 @@ export async function handleUserMessage(
       ...(huddleId ? { huddleId } : {}),
     },
   }));
+  // Proactive messaging: the user speaking here answers anything an agent
+  // proactively said in this channel, and refreshes their presence.
+  await onUserMessage(client, { tenantId: ids.tenantId, userId: ids.userId, channelId: channel.id }).catch(() => undefined);
 
   // The user's timezone: taken from the client when sent (and remembered),
   // otherwise the last known value — voice huddle turns carry no payload.

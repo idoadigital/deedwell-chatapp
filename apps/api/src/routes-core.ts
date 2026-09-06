@@ -20,6 +20,7 @@ import {
 } from "@deedwell/schemas";
 import { extractDocumentText, extractFactsFromDocument, writeOrgFact } from "@deedwell/grant-domain";
 import { HttpError, SESSION_COOKIE_NAME, type AppContext } from "./app.js";
+import { proactiveNotificationItems } from "./routes-proactive.js";
 
 const MAX_FILE_BYTES = 8_000_000;
 
@@ -533,7 +534,10 @@ export function registerCoreRoutes(app: FastifyInstance, ctx: AppContext): void 
         [req.orgId]
       );
       const href = (projectName: string) => (projectName === "Google Ad Grant" ? "/dashboard/ad-grants" : null);
+      // Proactive agent messages join the same list, each linking to its message.
+      const proactive = await proactiveNotificationItems(client, req.orgId!, req.userId!).catch(() => []);
       return [
+        ...proactive,
         ...waiting.rows.map((r) => ({
           id: `run:${r.run_id}`, kind: "waiting_info", projectName: r.project_name,
           title: `${r.project_name} needs your input`,

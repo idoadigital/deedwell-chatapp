@@ -61,6 +61,15 @@ async function main(): Promise<void> {
     }
   }
 
+  // Proactive messaging: evaluates due follow-up candidates. Same claim
+  // pattern as the publish worker; PROACTIVE_WORKER=off disables it here.
+  if (process.env.PROACTIVE_WORKER !== "off") {
+    const { startProactiveWorker } = await import("./proactive/worker.js");
+    const stopProactive = startProactiveWorker(deps, { log: app.log });
+    abort.signal.addEventListener("abort", () => stopProactive());
+    for (const signal of ["SIGTERM", "SIGINT"] as const) process.once(signal, () => stopProactive());
+  }
+
   await app.listen({ port, host: "0.0.0.0" });
 
   const shutdown = async () => {
