@@ -34,14 +34,24 @@ function toView(row: Record<string, any>): ConnectionView {
   };
 }
 
-/** Page access tokens live in metadata; they must never be serialised out. */
+/** Page access tokens live in metadata — including inside each staged
+ *  candidate of a pending authorization — and must never be serialised out,
+ *  so the scrub is recursive. */
 function sanitizeMetadata(metadata: Record<string, unknown>): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(metadata)) {
-    if (/token|secret|password/i.test(key)) continue;
-    out[key] = value;
+  return scrub(metadata) as Record<string, unknown>;
+}
+
+function scrub(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(scrub);
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [key, inner] of Object.entries(value as Record<string, unknown>)) {
+      if (/token|secret|password/i.test(key)) continue;
+      out[key] = scrub(inner);
+    }
+    return out;
   }
-  return out;
+  return value;
 }
 
 function seal(tokens: OAuthTokens) {
@@ -154,6 +164,14 @@ export function registerConnectorRoutes(app: FastifyInstance, ctx: AppContext): 
       const pending = uuidv7();
       const { access, refresh } = seal(tokens);
       await withTenant(deps, stateRow.tenant_id, stateRow.created_by, async (client) => {
+        // A fresh authorization supersedes any earlier one the user walked
+        // away from before choosing accounts; those rows would otherwise
+        // linger as needs_attention forever.
+        await client.query(
+          `UPDATE connector_connections SET status = 'disconnected', disconnected_at = now(), metadata = '{}'
+           WHERE provider = $1 AND connector_type = 'pending_selection' AND status <> 'disconnected'`,
+          [name]
+        );
         await client.query(
           `INSERT INTO connector_connections
              (id, tenant_id, provider, connector_type, provider_account_id, provider_account_name,

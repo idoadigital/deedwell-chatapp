@@ -21,7 +21,8 @@ describe("Connectors: OAuth callback", () => {
       providerUserId: "u1", accessToken: "tok", refreshToken: null, expiresAt: null, scopes: ["pages_manage_posts"],
     });
     vi.spyOn(MetaProvider.prototype, "listAccounts").mockResolvedValue([
-      { connectorType: "facebook_page", providerAccountId: "page-1", name: "Deedwell Page", handle: null, avatarUrl: null },
+      { connectorType: "facebook_page", providerAccountId: "page-1", name: "Deedwell Page", handle: null, avatarUrl: null,
+        metadata: { pageAccessToken: "PAGE-SECRET" } },
     ]);
   });
   afterAll(async () => { vi.restoreAllMocks(); await env.close(); });
@@ -43,10 +44,37 @@ describe("Connectors: OAuth callback", () => {
     const pending = list.body.connections.find((c: any) => c.provider === "meta" && c.connectorType === "pending_selection");
     expect(pending).toBeTruthy();
     expect(cb.body).toContain(pending.id);
+    // The staged candidates reach the picker, their page tokens do not.
+    expect(pending.metadata.candidates).toHaveLength(1);
+    expect(JSON.stringify(list.body)).not.toContain("PAGE-SECRET");
 
     // Single use: replaying the redirect is refused.
     const replay = await env.app.inject({ method: "GET", url: `/v1/connectors/meta/callback?code=abc&state=${state}` });
     expect(replay.body).toContain('"ok":false');
     expect(replay.body).toContain("already been used");
+  });
+
+  it("retires an abandoned authorization when a new one lands, and selection connects the page", async () => {
+    const authorize = async () => {
+      const auth = await api(env.app, "POST", `/v1/orgs/${orgId}/connectors/meta/authorize`, { token, body: {} });
+      const state = new URL(auth.body.authorizeUrl).searchParams.get("state");
+      await env.app.inject({ method: "GET", url: `/v1/connectors/meta/callback?code=abc&state=${state}` });
+    };
+    await authorize();
+    await authorize();
+    let list = await api(env.app, "GET", `/v1/orgs/${orgId}/connectors`, { token });
+    const pendings = list.body.connections.filter((c: any) => c.connectorType === "pending_selection");
+    expect(pendings).toHaveLength(1);
+
+    const sel = await api(env.app, "POST", `/v1/orgs/${orgId}/connectors/meta/select`, {
+      token, body: { pendingId: pendings[0].id, accountIds: ["page-1"] },
+    });
+    expect(sel.status).toBe(200);
+    list = await api(env.app, "GET", `/v1/orgs/${orgId}/connectors`, { token });
+    const page = list.body.connections.find((c: any) => c.connectorType === "facebook_page");
+    expect(page?.status).toBe("connected");
+    expect(page.accountName).toBe("Deedwell Page");
+    expect(JSON.stringify(list.body)).not.toContain("PAGE-SECRET");
+    expect(list.body.connections.filter((c: any) => c.connectorType === "pending_selection")).toHaveLength(0);
   });
 });
