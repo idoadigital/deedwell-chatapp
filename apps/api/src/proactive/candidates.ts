@@ -78,7 +78,7 @@ const humanKey = (k: string) => k.replace(/_/g, " ").replace(/\bein\b/i, "EIN").
 export async function handleRunEvent(deps: Deps, event: { tenantId: string; runId: string; status: string; step: string }): Promise<void> {
   await withContext(deps.appPool, { tenantId: event.tenantId, userId: null }, async (client) => {
     const run = (await client.query(
-      `SELECT r.id, r.definition, r.status, r.state, r.created_by, r.project_id, p.name AS project_name, o.name AS org_name,
+      `SELECT r.id, r.definition, r.status, r.state, r.created_by, r.project_id, r.updated_at, p.name AS project_name, o.name AS org_name,
               (SELECT id FROM channels c WHERE c.tenant_id = r.tenant_id AND c.project_id = r.project_id LIMIT 1) AS channel_id
          FROM workflow_runs r JOIN projects p ON p.id = r.project_id JOIN organizations o ON o.id = r.tenant_id WHERE r.id = $1`,
       [event.runId]
@@ -117,17 +117,20 @@ export async function handleRunEvent(deps: Deps, event: { tenantId: string; runI
         intentText = `Approve the ${humanKey(String(approval?.kind ?? "next step"))} for ${title.toLowerCase()}`;
       }
       const delayMs = policy.followUpDelayHours.waiting_on_user * 3600_000;
+      // The clock starts when the run began waiting, not when this ran — a
+      // backfilled run may have been waiting for days.
+      const waitingSince: Date = run.updated_at ? new Date(run.updated_at) : new Date();
       const intentId = await upsertIntent(client, {
         tenantId, userId, subjectKey: subject, goalId, agentKey, intent: intentText, status: "waiting_on_user",
-        nextExpectedAction: nextAction, nextExpectedActor: "user", followUpEligibleAt: new Date(Date.now() + delayMs),
-        channelId: run.channel_id, runId: run.id, metadata: { step: event.step },
+        nextExpectedAction: nextAction, nextExpectedActor: "user", followUpEligibleAt: new Date(waitingSince.getTime() + delayMs),
+        channelId: run.channel_id, runId: run.id, metadata: { step: event.step }, lastActivityAt: waitingSince,
       });
       // One open follow-up per subject; a repeat milestone re-arms the clock.
       await cancelCandidates(client, tenantId, { subjectKey: subject }, "milestone re-raised");
       const row = await insertCandidate(client, {
         tenantId, userId, agentKey, channelId: run.channel_id, intentId, goalId, type: "waiting_on_user",
         reason: `${title} is waiting on the user to ${nextAction}`, importance: isAdGrants(run.definition) ? 4 : 3, urgency: 3,
-        requiresResponse: true, subjectKey: subject, suggestedSendAt: new Date(Date.now() + delayMs), expiresAt: new Date(Date.now() + 10 * 86400_000),
+        requiresResponse: true, subjectKey: subject, suggestedSendAt: new Date(Math.max(Date.now(), waitingSince.getTime() + delayMs)), expiresAt: new Date(Date.now() + 10 * 86400_000),
         relatedEntity: { runId: run.id, projectId: run.project_id, nextExpectedAction: nextAction }, metadata: { trigger: "INTENT_WAITING_ON_USER" },
       });
       await logEvent(client, tenantId, row.id, "candidate_created", row.reason, { agent: agentKey, type: "waiting_on_user", dueAt: row.suggested_send_at });

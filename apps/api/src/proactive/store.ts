@@ -35,21 +35,23 @@ export interface IntentInput {
   tenantId: string; userId: string; subjectKey: string; goalId?: string | null; agentKey: string; intent: string;
   status: string; nextExpectedAction?: string | null; nextExpectedActor?: "user" | "agent" | null;
   followUpEligibleAt?: Date | null; channelId?: string | null; runId?: string | null; metadata?: Record<string, unknown>;
+  /** When the situation actually arose (a run's updated_at), so a backfilled intent is not "0 hours old". */
+  lastActivityAt?: Date | null;
 }
 export async function upsertIntent(client: PoolClient, i: IntentInput): Promise<string> {
   const { rows } = await client.query(
     `INSERT INTO user_intents (id, tenant_id, user_id, subject_key, goal_id, agent_key, intent, status, next_expected_action,
-                               next_expected_actor, follow_up_eligible_at, channel_id, run_id, metadata)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+                               next_expected_actor, follow_up_eligible_at, channel_id, run_id, metadata, last_activity_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,COALESCE($15, now()))
      ON CONFLICT (tenant_id, subject_key) DO UPDATE SET
        goal_id = COALESCE(EXCLUDED.goal_id, user_intents.goal_id), agent_key = EXCLUDED.agent_key, intent = EXCLUDED.intent,
        status = EXCLUDED.status, next_expected_action = EXCLUDED.next_expected_action, next_expected_actor = EXCLUDED.next_expected_actor,
-       follow_up_eligible_at = EXCLUDED.follow_up_eligible_at, last_activity_at = now(),
+       follow_up_eligible_at = EXCLUDED.follow_up_eligible_at, last_activity_at = COALESCE($15, now()),
        resolved_at = CASE WHEN EXCLUDED.status IN ('completed','abandoned') THEN now() ELSE NULL END,
        channel_id = COALESCE(EXCLUDED.channel_id, user_intents.channel_id), metadata = user_intents.metadata || EXCLUDED.metadata
      RETURNING id`,
     [uuidv7(), i.tenantId, i.userId, i.subjectKey, i.goalId ?? null, i.agentKey, i.intent, i.status, i.nextExpectedAction ?? null,
-     i.nextExpectedActor ?? null, i.followUpEligibleAt ?? null, i.channelId ?? null, i.runId ?? null, JSON.stringify(i.metadata ?? {})]
+     i.nextExpectedActor ?? null, i.followUpEligibleAt ?? null, i.channelId ?? null, i.runId ?? null, JSON.stringify(i.metadata ?? {}), i.lastActivityAt ?? null]
   );
   return rows[0].id as string;
 }
