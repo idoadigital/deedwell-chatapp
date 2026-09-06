@@ -131,7 +131,12 @@ export function registerConnectorRoutes(app: FastifyInstance, ctx: AppContext): 
     try {
       // The state row is the ONLY thing that establishes which tenant this
       // authorization belongs to — never a query parameter the caller controls.
-      const claimed = await deps.appPool.query(
+      // Nothing is known about the tenant yet, so this is the one cross-tenant
+      // claim in the flow: it runs on the admin pool like the worker's run
+      // claiming, and the unguessable state hash is the whole credential. On
+      // the RLS-bound app pool the row is invisible and every callback would
+      // report "already used or expired".
+      const claimed = await deps.adminPool.query(
         `UPDATE connector_oauth_states SET consumed_at = now()
          WHERE state_hash = $1 AND provider = $2 AND consumed_at IS NULL AND expires_at > now()
          RETURNING tenant_id, created_by`,
