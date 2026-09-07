@@ -262,8 +262,9 @@ export function registerContentPublishingRoutes(app: FastifyInstance, ctx: AppCo
              (id, tenant_id, connector_id, content_project_id, content_asset_id, platform, content,
               media, scheduled_at, timezone, status, idempotency_key, created_by)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'scheduled',$11,$12)
-           ON CONFLICT (tenant_id, idempotency_key) DO UPDATE
-             SET scheduled_at = EXCLUDED.scheduled_at, status = 'scheduled', last_error = NULL
+           ON CONFLICT (tenant_id, idempotency_key) WHERE idempotency_key IS NOT NULL DO UPDATE
+             SET scheduled_at = EXCLUDED.scheduled_at, status = 'scheduled', error = NULL,
+                 next_attempt_at = NULL, updated_at = now()
            RETURNING *`,
           [uuidv7(), req.orgId, connectorId, row.content_project_id, assetId,
            connection.connector_type, (content && content.trim()) || row.post_text || "", JSON.stringify([row.file_id].filter(Boolean)),

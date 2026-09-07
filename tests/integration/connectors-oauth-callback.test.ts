@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { MetaProvider } from "@deedwell/connectors";
+import { uuidv7 } from "@deedwell/database";
 import { api, createOrg, createTestEnv, registerUser, type TestEnv } from "../helpers.js";
 
 /** The provider redirects back with only `code` and `state`. The state row is
@@ -10,11 +11,12 @@ describe("Connectors: OAuth callback", () => {
   let env: TestEnv;
   let token: string;
   let orgId: string;
+  let userId: string;
 
   beforeAll(async () => {
     process.env.SESSION_ENCRYPTION_KEY ??= Buffer.alloc(32, 7).toString("base64");
     env = await createTestEnv();
-    ({ token } = await registerUser(env.app, "connectors@example.org"));
+    ({ token, userId } = await registerUser(env.app, "connectors@example.org"));
     orgId = await createOrg(env.app, token, "connectors-org");
     vi.spyOn(MetaProvider.prototype, "isConfigured").mockReturnValue(true);
     vi.spyOn(MetaProvider.prototype, "exchangeCode").mockResolvedValue({
@@ -76,5 +78,30 @@ describe("Connectors: OAuth callback", () => {
     expect(page.accountName).toBe("Deedwell Page");
     expect(JSON.stringify(list.body)).not.toContain("PAGE-SECRET");
     expect(list.body.connections.filter((c: any) => c.connectorType === "pending_selection")).toHaveLength(0);
+  });
+
+  it("queues an approved design for a connected page, idempotently per destination", async () => {
+    const list = await api(env.app, "GET", `/v1/orgs/${orgId}/connectors`, { token });
+    const page = list.body.connections.find((c: any) => c.connectorType === "facebook_page" && c.status === "connected");
+    const projectId = uuidv7();
+    const assetId = uuidv7();
+    await env.adminPool.query(
+      `INSERT INTO content_projects (id, tenant_id, kind, title, prompt, status, created_by) VALUES ($1,$2,'social','Spring drive','posts','ready',$3)`,
+      [projectId, orgId, userId]
+    );
+    await env.adminPool.query(
+      `INSERT INTO content_assets (id, tenant_id, content_project_id, position, prompt, post_text, approval) VALUES ($1,$2,$3,0,'p','Join our spring drive!','approved')`,
+      [assetId, orgId, projectId]
+    );
+    const first = await api(env.app, "POST", `/v1/orgs/${orgId}/content/assets/${assetId}/publish`, { token, body: { connectorIds: [page.id] } });
+    expect(first.status, first.raw).toBe(202);
+    expect(first.body.posts[0].status).toBe("scheduled");
+    expect(first.body.posts[0].content).toBe("Join our spring drive!");
+    // Publishing the same design to the same page again reuses the row.
+    const again = await api(env.app, "POST", `/v1/orgs/${orgId}/content/assets/${assetId}/publish`, { token, body: { connectorIds: [page.id], content: "Updated copy" } });
+    expect(again.status).toBe(202);
+    expect(again.body.posts[0].id).toBe(first.body.posts[0].id);
+    const posts = await api(env.app, "GET", `/v1/orgs/${orgId}/content/posts`, { token });
+    expect(posts.body.posts.filter((p: any) => p.content_asset_id === assetId)).toHaveLength(1);
   });
 });
