@@ -69,10 +69,14 @@ export function registerAdGrantsConnectWs(app: FastifyInstance, ctx: AppContext)
         onError: (error) => send({ type: "error", error }),
         onConnected: ({ storageState }) => {
           void withContext(ctx.deps.appPool, { tenantId: session.tenantId, userId: session.userId }, async (client) => {
+            // The browser session cannot tell us which account signed in; the
+            // Google connector usually can, so the hint is the real address
+            // whenever the workspace has one connected.
+            const google = await ctx.deps.googleConnections.describe(client, session.tenantId).catch(() => null);
             await saveGoogleSession(client, {
               tenantId: session.tenantId,
               connectedBy: session.userId,
-              accountHint: "Connected Google account",
+              accountHint: google?.accountHandle ?? "Connected Google account",
               storageState,
             });
             await ctx.deps.adminPool.query(

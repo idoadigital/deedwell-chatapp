@@ -1,4 +1,5 @@
 import type { Pool } from "pg";
+import { GoogleConnectionService } from "@deedwell/connectors";
 import {
   createAdminPool,
   createAppPool,
@@ -44,6 +45,10 @@ export interface Deps {
   grantSource: GrantSourceProvider;
   /** External grant platform (GCP). Null = feature off; all behaviour local. */
   gcp: GcpGrantPlatform | null;
+  /** The one way any feature obtains a Google access token (scopes checked,
+   *  refresh handled, audited). Drive, the Ad Grants account and future
+   *  Google integrations all go through it. */
+  googleConnections: GoogleConnectionService;
 }
 
 export async function createDeps(overrides: Partial<{
@@ -123,6 +128,7 @@ export async function createDeps(overrides: Partial<{
     engine,
     grantSource: createGrantSource(),
     gcp: "gcp" in overrides ? (overrides.gcp ?? null) : createGcpGrantPlatform(),
+    googleConnections: new GoogleConnectionService(appPool),
   };
   const { executiveAssistant, attachEngineBridge } = await import("./assistant.js");
   await seedAgentDefinitions(adminPool, [

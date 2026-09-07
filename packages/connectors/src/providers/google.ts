@@ -1,4 +1,5 @@
 import type { ConnectorProvider, OAuthTokens, SelectableAccount } from "../types.js";
+import { GOOGLE_SERVICES } from "../google-services.js";
 
 const AUTH = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN = "https://oauth2.googleapis.com/token";
@@ -24,12 +25,12 @@ export class GoogleProvider implements ConnectorProvider {
     "https://www.googleapis.com/auth/gmail.send",
   ];
 
-  /** Requested later, per feature, via the same connect flow with extra scopes. */
-  static readonly OPTIONAL_SCOPES: Record<string, string[]> = {
-    calendar: ["https://www.googleapis.com/auth/calendar.events"],
-    drive: ["https://www.googleapis.com/auth/drive.file"],
-    sheets: ["https://www.googleapis.com/auth/spreadsheets"],
-  };
+  /** Requested later, per feature, via the same connect flow with extra
+   *  scopes. Derived from the service catalogue (google-services.ts) so a new
+   *  Google integration is declared in exactly one place. */
+  static readonly OPTIONAL_SCOPES: Record<string, string[]> = Object.fromEntries(
+    GOOGLE_SERVICES.filter((s) => !s.base).map((s) => [s.key, s.scopes])
+  );
 
   // Credentials are injected from platform_integrations — one Deedwell OAuth
   // client authorizes Google accounts for every workspace.
@@ -42,13 +43,16 @@ export class GoogleProvider implements ConnectorProvider {
     return Boolean(this.clientId && this.clientSecret);
   }
 
-  authorizeUrl({ state, redirectUri, extraScopes = [] }: { state: string; redirectUri: string; extraScopes?: string[] }): string {
+  authorizeUrl({ state, redirectUri, extraScopes = [], scopes }: { state: string; redirectUri: string; extraScopes?: string[]; scopes?: string[] }): string {
     const url = new URL(AUTH);
     url.searchParams.set("client_id", this.clientId ?? "");
     url.searchParams.set("redirect_uri", redirectUri);
     url.searchParams.set("response_type", "code");
     url.searchParams.set("state", state);
-    url.searchParams.set("scope", [...this.scopes, ...extraScopes].join(" "));
+    // `scopes` (incremental authorization) replaces the base set: only the
+    // permissions still missing are shown on Google's consent screen, and
+    // include_granted_scopes below folds the earlier grant into the new token.
+    url.searchParams.set("scope", [...new Set(scopes ?? [...this.scopes, ...extraScopes])].join(" "));
     // offline + consent is what actually returns a refresh token; without it
     // the connection dies in an hour and scheduled work stops.
     url.searchParams.set("access_type", "offline");

@@ -4,7 +4,7 @@ import type { PoolClient } from "pg";
 import { audit, uuidv7 } from "@deedwell/database";
 import { decryptSecret, encryptSecret } from "@deedwell/auth";
 import {
-  GoogleProvider, getProvider, listProviders, readPlatformCredentials,
+  GoogleProvider, getProvider, listProviders, readPlatformCredentials, scopesForServices, serviceByKey,
   type ConnectionView, type OAuthTokens,
 } from "@deedwell/connectors";
 import { HttpError, type AppContext } from "./app.js";
@@ -114,9 +114,25 @@ export function registerConnectorRoutes(app: FastifyInstance, ctx: AppContext): 
     // Optional feature scopes (Google Drive, Calendar…) are asked for only
     // when a feature needs them; the base connection stays minimal.
     const { features = [] } = ((req.body ?? {}) as { features?: string[] });
+    const wanted = Array.isArray(features) ? features.map(String).filter((f) => serviceByKey(f)) : [];
     const extraScopes = name === "google"
-      ? (Array.isArray(features) ? features : []).flatMap((f) => GoogleProvider.OPTIONAL_SCOPES[String(f)] ?? [])
+      ? wanted.flatMap((f) => GoogleProvider.OPTIONAL_SCOPES[f] ?? [])
       : [];
+    // Incremental authorization: a workspace that already has a Google
+    // account connected is asked only for the scopes it is still missing;
+    // include_granted_scopes folds the earlier grant into the new token, so
+    // nothing already working is re-consented or lost. Nothing missing means
+    // there is nothing to authorize.
+    let scopes: string[] | undefined;
+    if (name === "google") {
+      const { connection, missing } = await ctx.inOrg(req, (client) =>
+        deps.googleConnections.missingFor(client, req.orgId!, scopesForServices(wanted))
+      );
+      if (connection && connection.status === "connected") {
+        if (!missing.length) return { authorizeUrl: null, alreadyGranted: true, connectionId: connection.id };
+        scopes = [...scopesForServices(["identity"]), ...missing];
+      }
+    }
     const state = randomBytes(32).toString("base64url");
     await ctx.inOrg(req, (client) =>
       client.query(
@@ -125,7 +141,31 @@ export function registerConnectorRoutes(app: FastifyInstance, ctx: AppContext): 
         [uuidv7(), req.orgId, name, hash(state), req.userId, new Date(Date.now() + STATE_TTL_MS)]
       )
     );
-    return { authorizeUrl: provider.authorizeUrl({ state, redirectUri: redirectUriFor(name), extraScopes }) };
+    return { authorizeUrl: provider.authorizeUrl({ state, redirectUri: redirectUriFor(name), extraScopes, ...(scopes ? { scopes } : {}) }), alreadyGranted: false };
+  });
+
+  /** Google, in detail: the connected account, every Google service with
+   *  whether its permissions are granted (and which are still needed), and
+   *  the Ad Grants browser session — a separate credential the automation
+   *  signs in with, reported here so the connector is the one place to look. */
+  app.get("/v1/orgs/:orgId/connectors/google/services", async (req) => {
+    ctx.requireRole(req, "viewer");
+    return ctx.inOrg(req, async (client) => {
+      const connection = await deps.googleConnections.describe(client, req.orgId!);
+      const session = (await client.query(
+        `SELECT google_account_hint, status, connected_at, last_used_at FROM google_sessions
+          WHERE tenant_id = $1 AND status = 'active' ORDER BY connected_at DESC LIMIT 1`,
+        [req.orgId]
+      )).rows[0] as Record<string, any> | undefined;
+      return {
+        connection,
+        services: connection?.services ?? (await import("@deedwell/connectors")).serviceStatuses([]),
+        grantedScopes: connection?.grantedScopes ?? [],
+        browserSession: session
+          ? { connected: true, accountHint: session.google_account_hint, status: session.status, connectedAt: session.connected_at, lastUsedAt: session.last_used_at }
+          : { connected: false, accountHint: null, status: null, connectedAt: null, lastUsedAt: null },
+      };
+    });
   });
 
   /** Provider redirect lands here. Everything sensitive happens in this
@@ -217,10 +257,13 @@ export function registerConnectorRoutes(app: FastifyInstance, ctx: AppContext): 
 
       const created: ConnectionView[] = [];
       for (const account of chosen) {
-        // Replace any existing live connection to the same account.
-        await client.query(
+        // Replace any existing live connection to the same account. For Google
+        // the new row carries the union of scopes (incremental auth), so the
+        // grant is recorded as a permission change on the same account.
+        const replaced = await client.query(
           `UPDATE connector_connections SET status = 'disconnected', disconnected_at = now()
-           WHERE provider = $1 AND connector_type = $2 AND provider_account_id = $3 AND status <> 'disconnected'`,
+           WHERE provider = $1 AND connector_type = $2 AND provider_account_id = $3 AND status <> 'disconnected'
+           RETURNING scopes`,
           [name, account.connectorType, account.providerAccountId]
         );
         const id = uuidv7();
@@ -240,6 +283,12 @@ export function registerConnectorRoutes(app: FastifyInstance, ctx: AppContext): 
            JSON.stringify(account.metadata ?? {}), pendingId]
         );
         created.push(toView(rows[0]));
+        if (name === "google") {
+          await deps.googleConnections.recordGrant(client, req.orgId!, {
+            connectionId: id, previousScopes: (replaced.rows[0]?.scopes as string[] | undefined) ?? [],
+            scopes: rows[0].scopes ?? [], actorUserId: req.userId ?? null,
+          });
+        }
       }
       await client.query(
         `UPDATE connector_connections SET status = 'disconnected', disconnected_at = now(), metadata = '{}'
@@ -262,10 +311,15 @@ export function registerConnectorRoutes(app: FastifyInstance, ctx: AppContext): 
       // simply matches nothing.
       const { rows } = await client.query(
         `UPDATE connector_connections SET status = 'disconnected', disconnected_at = now()
-         WHERE id = $1 AND status <> 'disconnected' RETURNING provider`,
+         WHERE id = $1 AND status <> 'disconnected' RETURNING *`,
         [id]
       );
       if (!rows[0]) throw new HttpError(404, "Connection not found");
+      // Google: also give the grant back at Google (best effort), so a
+      // disconnected account is not still authorized on Google's side.
+      if (rows[0].provider === "google" && rows[0].connector_type === "google_account") {
+        await deps.googleConnections.revokeAtProvider(client, req.orgId!, rows[0], req.userId ?? null);
+      }
       await audit(client, {
         tenantId: req.orgId!, actorUser: req.userId, action: "connector.disconnected",
         entityType: "connector_connections", entityId: id, metadata: { provider: rows[0].provider },

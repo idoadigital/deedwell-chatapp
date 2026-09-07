@@ -122,7 +122,7 @@ export function buildApp(deps: Deps): FastifyInstance {
     // by nature, since the SPA itself is what shows the login screen.
     if (
       !url.startsWith("/v1/") || url.startsWith("/v1/auth/") || url.startsWith("/v1/rtc") ||
-      url.startsWith("/v1/ad-grants/google-connect") || url.startsWith("/v1/ad-grants/google-oauth/callback") ||
+      url.startsWith("/v1/ad-grants/google-connect") ||
       url.startsWith("/v1/billing/stripe/webhook") ||
       // Unsubscribe links carry their own HMAC (see routes-email.ts).
       url.startsWith("/v1/email/unsubscribe") ||
