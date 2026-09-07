@@ -53,7 +53,7 @@ async function latestApproval(
 const ENROLLMENT_FIELDS: Array<[string, string]> = [
   ["country", "Country"], ["legal_name", "Organization legal name"], ["website_url", "Website"], ["ein", "EIN / tax ID"],
   ["mission", "Mission"], ["primary_contact_name", "Contact name"], ["primary_contact_email", "Contact email"],
-  ["techsoup_validation_token", "TechSoup validation token"],
+  ["phone", "Phone"], ["mailing_address", "Mailing address"], ["goodstack_reference", "Goodstack reference"],
 ];
 /** Marks each submitted value with what the automation reported for that
  *  field — filled, not found on Google's form, unverified — so the preview
@@ -168,24 +168,54 @@ export function buildAdGrantsWorkflow(): WorkflowDefinition<GrantServices> {
             complete: true,
           };
         }
-        return { state: ctx.state, next: "techsoup_validation" };
+        return { state: ctx.state, next: "collect_documents" };
       },
 
       // -----------------------------------------------------------------
-      async techsoup_validation(ctx): Promise<StepResult> {
+      // Phase 2 — Document collection. Google and Goodstack ask for the IRS
+      // determination letter, EIN confirmation, articles of incorporation,
+      // an authorized representative's ID and authorization letter, and a
+      // logo. Uploads land in the project's files; the person confirms.
+      async collect_documents(ctx): Promise<StepResult> {
         const facts = await fetchUsableFacts(ctx, eligibilityAnalyst.agentKey);
-        const hasToken = facts.some((f) => f.key === "techsoup_validation_token");
-        if (!hasToken) {
+        const answered = facts.some((f) => f.key === "documents_status");
+        const uploaded = (await ctx.client.query(
+          "SELECT 1 FROM file_links WHERE project_id = $1 LIMIT 1", [ctx.projectId]
+        )).rowCount ?? 0;
+        if (!answered && !uploaded) {
           return {
             state: ctx.state,
+            wait: { kind: "info", payload: { missingFacts: ["documents_status"], context: "documents" }, resumeStep: "collect_documents" },
+          };
+        }
+        return { state: { ...ctx.state, documentsUploaded: uploaded > 0 }, next: "goodstack_verification" };
+      },
+
+      // -----------------------------------------------------------------
+      // Phase 3 — Third-party verification. Google validates nonprofits
+      // through Goodstack (its validation partner) as part of the Google for
+      // Nonprofits signup; the person completes it there and records the
+      // outcome here. A pre-existing TechSoup token no longer satisfies
+      // this — Google stopped accepting it.
+      async goodstack_verification(ctx): Promise<StepResult> {
+        const facts = await fetchUsableFacts(ctx, eligibilityAnalyst.agentKey);
+        const status = facts.find((f) => f.key === "goodstack_validation_status")?.value ?? "";
+        if (!/^verified/i.test(status)) {
+          return {
+            state: { ...ctx.state, goodstackStatus: status || null },
             wait: {
               kind: "info",
-              payload: { missingFacts: ["techsoup_validation_token"], context: "techsoup" },
-              resumeStep: "techsoup_validation",
+              payload: { missingFacts: ["goodstack_validation_status", "goodstack_reference"], context: "goodstack" },
+              resumeStep: "goodstack_verification",
             },
           };
         }
-        return { state: ctx.state, next: "connect_google_account" };
+        return { state: { ...ctx.state, goodstackStatus: status }, next: "connect_google_account" };
+      },
+
+      /** Runs parked here before the Goodstack change resume into it. */
+      async techsoup_validation(ctx): Promise<StepResult> {
+        return { state: ctx.state, next: "goodstack_verification" };
       },
 
       // -----------------------------------------------------------------
@@ -296,7 +326,24 @@ export function buildAdGrantsWorkflow(): WorkflowDefinition<GrantServices> {
         if (review.status === "rejected") {
           return { state: { ...ctx.state, reviewRejectionReason: review.reason ?? null }, next: "handle_review_rejection" };
         }
-        return { state: ctx.state, next: "activate_ad_grants_product" };
+        return { state: ctx.state, next: "activate_google_products" };
+      },
+
+      // -----------------------------------------------------------------
+      // Phase 6 — Activate Google products. Approved nonprofits may also
+      // take Google Workspace for Nonprofits; that is a choice for the
+      // person (and a Workspace admin login Deedwell never holds), so it is
+      // asked, recorded, and never blocks the grant.
+      async activate_google_products(ctx): Promise<StepResult> {
+        const facts = await fetchUsableFacts(ctx, applicationAgent.agentKey);
+        const choice = facts.find((f) => f.key === "google_workspace_choice")?.value ?? null;
+        if (!choice) {
+          return {
+            state: ctx.state,
+            wait: { kind: "info", payload: { missingFacts: ["google_workspace_choice"], context: "google_products" }, resumeStep: "activate_google_products" },
+          };
+        }
+        return { state: { ...ctx.state, googleWorkspaceChoice: choice }, next: "activate_ad_grants_product" };
       },
 
       // -----------------------------------------------------------------
@@ -455,7 +502,26 @@ export function buildAdGrantsWorkflow(): WorkflowDefinition<GrantServices> {
         await emailOrgAdmins(ctx.client, ctx.tenantId, "ad_grants_live", {
           orgName: await orgNameOf(ctx.client, ctx.tenantId), campaignId: campaignId ?? null,
         }, { dedupe: `ad_grants_live:${ctx.runId}` });
-        return { state: { ...ctx.state, result: "completed", googleCampaignId: campaignId }, complete: true };
+        return { state: { ...ctx.state, googleCampaignId: campaignId }, next: "onboard_client" };
+      },
+
+      // -----------------------------------------------------------------
+      // Phase 9 — Congratulations & ongoing care. The campaign is live; the
+      // grant is active. Next steps go in the timeline (the congratulations
+      // email went out with the campaign), and the run completes.
+      async onboard_client(ctx): Promise<StepResult> {
+        await ctx.client.query(
+          `INSERT INTO workspace_events (id, tenant_id, project_id, run_id, event_type, title, summary, status, agent_key, completed_at)
+           VALUES ($1,$2,$3,$4,'ad_grants:onboarded',$5,$6,'completed',$7, now())`,
+          [uuidv7(), ctx.tenantId, ctx.projectId, ctx.runId, "Your Google Ad Grant is active",
+           "Your first campaign is live. Deedwell keeps it within Google's Ad Grants policies (5% click-through, active management) and reports back as results come in.",
+           applicationAgent.agentKey]
+        );
+        await audit(ctx.client, {
+          tenantId: ctx.tenantId, actorAgent: applicationAgent.agentKey, action: "ad_grants.onboarded",
+          entityType: "workflow_run", entityId: ctx.runId, metadata: { campaignId: ctx.state.googleCampaignId ?? null },
+        });
+        return { state: { ...ctx.state, result: "completed" }, complete: true };
       },
     },
   };

@@ -27,7 +27,9 @@ const ENROLLMENT_FIELDS = (facts: Record<string, string>) => [
   { key: "mission", label: "Mission", patterns: [/mission/i, /describe your organi[sz]ation|about your organi[sz]ation/i], value: facts.mission },
   { key: "primary_contact_name", label: "Contact name", patterns: [/contact name|your name|full name/i, /first name/i], value: facts.primary_contact_name },
   { key: "primary_contact_email", label: "Contact email", patterns: [/contact email|email address|^email$/i], value: facts.primary_contact_email },
-  { key: "techsoup_validation_token", label: "TechSoup validation token", patterns: [/techsoup/i, /validation token|validation code/i], value: facts.techsoup_validation_token },
+  { key: "phone", label: "Phone", patterns: [/phone/i], value: facts.phone },
+  { key: "mailing_address", label: "Mailing address", patterns: [/street|address line|mailing address|^address/i], value: facts.mailing_address },
+  { key: "goodstack_reference", label: "Goodstack reference", patterns: [/goodstack|validation reference|validation id|verification code/i], value: facts.goodstack_reference },
 ];
 
 /** Lands on the enrollment form: the marketing page's call to action, or

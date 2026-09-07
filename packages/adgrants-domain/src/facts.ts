@@ -4,8 +4,8 @@
  * derived from extracted funder requirements — Ad Grants has one fixed set
  * of program rules, so the list is just fixed.
  *
- * techsoup_validation_token is deliberately NOT included here — it's gated
- * by its own techsoup_validation step so the checklist shows it as a
+ * goodstack_validation_status is deliberately NOT included here — it's gated
+ * by its own goodstack_verification step so the checklist shows it as a
  * distinct stage, not folded into the general facts gate.
  */
 export function requiredAdGrantsFactKeys(): string[] {

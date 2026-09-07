@@ -5,7 +5,7 @@ import { api, createOrg, createTestEnv, registerUser, type TestEnv } from "../he
  * The Ad Grants workflow's data-gathering stages, end to end over HTTP, with
  * browser automation off (AD_GRANTS_AUTOMATION unset in test env — see
  * setup-env.ts): check_ad_grants_facts → verify_eligibility →
- * techsoup_validation → connect_google_account, where it parks honestly
+ * collect_documents → goodstack_verification → connect_google_account, where it parks honestly
  * instead of simulating a Google connection.
  */
 
@@ -69,16 +69,24 @@ describe("Ad Grants application — data-gathering stages", () => {
 
     const status = await api(env.app, "GET", `/v1/orgs/${orgId}/ad-grants/status`, { token });
     expect(status.body.run.status).toBe("waiting_for_info");
-    expect(status.body.waitingContext).toBe("techsoup");
+    expect(status.body.waitingContext).toBe("documents");
 
     const eligibility = status.body.artifacts.find((a: any) => a.type === "ad_grants_eligibility");
     expect(eligibility).toBeTruthy();
   });
 
-  it("parks at connect_google_account once TechSoup validation is on record", async () => {
+  it("parks at connect_google_account once documents are confirmed and Goodstack verification is on record", async () => {
+    const docs = await api(env.app, "POST", `/v1/orgs/${orgId}/runs/${runId}/provide-info`, {
+      token, body: { facts: [{ key: "documents_status", value: "Will provide later" }] },
+    });
+    expect(docs.status).toBe(200);
+    await env.deps.engine.drain("test-worker");
+    const mid = await api(env.app, "GET", `/v1/orgs/${orgId}/ad-grants/status`, { token });
+    expect(mid.body.waitingContext).toBe("goodstack");
+    expect(mid.body.questions.map((q: any) => q.key)).toEqual(["goodstack_validation_status", "goodstack_reference"]);
     const res = await api(env.app, "POST", `/v1/orgs/${orgId}/runs/${runId}/provide-info`, {
       token,
-      body: { facts: [{ key: "techsoup_validation_token", value: "TS-VALIDATED-12345" }] },
+      body: { facts: [{ key: "goodstack_validation_status", value: "Verified by Goodstack" }] },
     });
     expect(res.status).toBe(200);
     await env.deps.engine.drain("test-worker");
@@ -96,7 +104,7 @@ describe("Ad Grants application — data-gathering stages", () => {
     const steps = status.body.events.map((e: any) => e.event_type);
     for (const expected of [
       "step:check_ad_grants_facts", "step:verify_eligibility",
-      "step:techsoup_validation", "step:connect_google_account",
+      "step:collect_documents", "step:goodstack_verification", "step:connect_google_account",
     ]) {
       expect(steps).toContain(expected);
     }

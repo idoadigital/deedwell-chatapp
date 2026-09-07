@@ -5,7 +5,7 @@ import { createDeps } from "./bootstrap.js";
 /**
  * Standalone poller for external review latency (production entry, run as
  * its own process alongside worker.ts — NOT part of the tight 500ms worker
- * loop, since Google's and TechSoup's review can take days).
+ * loop, since Google's and Goodstack's review can take days).
  *
  * This never determines review status itself — it only wakes any run
  * parked on await_google_review often enough that the step re-checks. The

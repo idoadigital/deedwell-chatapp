@@ -19,8 +19,12 @@ const CONTEXT_REASONS: Record<string, (label: string) => string> = {
     `The writer cites only certified facts; your ${label.toLowerCase()} is needed for a claim in the draft.`,
   ad_grants_facts: (label) =>
     `Google Ad Grants requires your ${label.toLowerCase()} before the application can proceed.`,
-  techsoup: (label) =>
-    `Google requires a completed TechSoup nonprofit verification before Google for Nonprofits enrollment — your ${label.toLowerCase()} isn't on record yet.`,
+  goodstack: (label) =>
+    `Google for Nonprofits verifies your organization through Goodstack during signup — your ${label.toLowerCase()} isn't on record yet.`,
+  documents: (label) =>
+    `Google and Goodstack ask for supporting documents (IRS determination letter, EIN confirmation, articles of incorporation, an authorized representative's ID and authorization letter, your logo). Upload what you have and confirm your ${label.toLowerCase()}.`,
+  google_products: (label) =>
+    `Approved nonprofits can also take Google Workspace for Nonprofits at no cost. Your ${label.toLowerCase()} is optional and never delays the grant.`,
 };
 
 const fieldByKey = new Map(PASSPORT_FIELDS.map((f) => [f.key, f]));
@@ -119,6 +123,8 @@ export async function resolveInfoRequest(
     fields: describeInfoRequest(parsed.missingFacts ?? [], context),
     context,
     stage: parsed.stage ?? null,
-    allowSkip: false,
+    // Optional questions (documents can follow later; Workspace is a choice)
+    // may be skipped; verification and required facts may not.
+    allowSkip: context === "documents" || context === "google_products",
   };
 }

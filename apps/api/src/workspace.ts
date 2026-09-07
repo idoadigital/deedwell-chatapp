@@ -207,10 +207,30 @@ const STEP_EVENTS: Record<string, { title: string; summary: string; agent: strin
     summary: "Comparing your organization's certified facts against the Google Ad Grants eligibility rules.",
     agent: "ad_grants.eligibility_analyst",
   },
-  techsoup_validation: {
-    title: "Waiting on TechSoup validation",
-    summary: "Google Ad Grants requires a completed TechSoup nonprofit verification before enrollment.",
+  collect_documents: {
+    title: "Collecting supporting documents",
+    summary: "IRS determination letter, EIN confirmation, articles of incorporation, authorized representative ID and authorization letter, logo.",
     agent: "ad_grants.eligibility_analyst",
+  },
+  goodstack_verification: {
+    title: "Waiting on Goodstack verification",
+    summary: "Google for Nonprofits verifies your organization through Goodstack before enrollment can be approved.",
+    agent: "ad_grants.eligibility_analyst",
+  },
+  techsoup_validation: {
+    title: "Moving to Goodstack verification",
+    summary: "Google now verifies nonprofits through Goodstack instead of TechSoup.",
+    agent: "ad_grants.eligibility_analyst",
+  },
+  activate_google_products: {
+    title: "Choosing Google products",
+    summary: "Google Workspace for Nonprofits is optional; Ad Grants continues either way.",
+    agent: "ad_grants.application_agent",
+  },
+  onboard_client: {
+    title: "Grant active — next steps",
+    summary: "The campaign is live; Deedwell keeps it within Ad Grants policy and reports results.",
+    agent: "ad_grants.application_agent",
   },
   connect_google_account: {
     title: "Waiting to connect your Google account",
@@ -229,7 +249,7 @@ const STEP_EVENTS: Record<string, { title: string; summary: string; agent: strin
   },
   await_google_review: {
     title: "Waiting on Google's review",
-    summary: "Google (and TechSoup) are reviewing the enrollment; this can take several days.",
+    summary: "Google (with Goodstack) is reviewing the enrollment; this can take several days.",
     agent: "ad_grants.application_agent",
   },
   handle_review_rejection: {
@@ -273,7 +293,11 @@ export function phaseForStep(step: string): string {
   if (["generate_content", "apply_patch"].includes(step)) return "Writing pages";
   if (["build_release"].includes(step)) return "Building and testing";
   if (["publish_gate"].includes(step)) return "Ready to publish";
-  if (["check_ad_grants_facts", "verify_eligibility", "techsoup_validation"].includes(step)) return "Checking eligibility";
+  if (["check_ad_grants_facts", "verify_eligibility"].includes(step)) return "Checking eligibility";
+  if (["collect_documents"].includes(step)) return "Collecting documents";
+  if (["goodstack_verification", "techsoup_validation"].includes(step)) return "Goodstack verification";
+  if (["activate_google_products"].includes(step)) return "Choosing Google products";
+  if (["onboard_client"].includes(step)) return "Grant active";
   if (["connect_google_account"].includes(step)) return "Connecting your Google account";
   if (["enroll_google_nonprofits", "submit_enrollment"].includes(step)) return "Enrolling in Google for Nonprofits";
   if (["await_google_review", "handle_review_rejection"].includes(step)) return "Waiting on Google's review";
@@ -293,9 +317,10 @@ const DEFINITION_STEPS: Record<string, string[]> = {
   "website-build": ["discovery", "intake_brief", "brief_gate", "generate_content", "build_release", "publish_gate"],
   "website-update": ["apply_patch", "build_release", "publish_gate"],
   "ad-grants-application": [
-    "check_ad_grants_facts", "verify_eligibility", "techsoup_validation", "connect_google_account",
+    "check_ad_grants_facts", "verify_eligibility", "collect_documents", "goodstack_verification", "connect_google_account",
     "enroll_google_nonprofits", "submit_enrollment", "await_google_review", "handle_review_rejection",
-    "activate_ad_grants_product", "submit_activation", "draft_campaign_plan", "publish_campaign",
+    "activate_google_products", "activate_ad_grants_product", "submit_activation", "draft_campaign_plan", "publish_campaign",
+    "onboard_client",
   ],
 };
 

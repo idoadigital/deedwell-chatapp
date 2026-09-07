@@ -6,7 +6,7 @@ export interface AdGrantsEligibilityResult {
 }
 
 // Entity types Ad Grants does not accept, matched against PASSPORT_FIELDS'
-// entity_type choices. This is a pre-screen only — Google's and TechSoup's
+// entity_type choices. This is a pre-screen only — Google's and Goodstack's
 // own review is the actual, final determination; this exists so an
 // obviously-ineligible org isn't walked through the rest of the workflow
 // first.

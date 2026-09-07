@@ -11,8 +11,9 @@ const ALLOWED_HOSTS = [
   "google.com",
   "ads.google.com",
   "myaccount.google.com",
-  "www.techsoup.org",
-  "techsoup.org",
+  "goodstack.org",
+  "app.goodstack.org",
+  "percent.org",
 ];
 
 export function isAllowedUrl(url: string): boolean {
@@ -28,6 +29,6 @@ export function isAllowedUrl(url: string): boolean {
 
 export function assertAllowedUrl(url: string): void {
   if (!isAllowedUrl(url)) {
-    throw new Error(`Refusing to navigate outside the Google/TechSoup allowlist: ${url}`);
+    throw new Error(`Refusing to navigate outside the Google/Goodstack allowlist: ${url}`);
   }
 }
