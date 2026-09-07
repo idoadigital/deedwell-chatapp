@@ -232,6 +232,7 @@ export const ArtifactType = z.enum([
   "ad_grants_enrollment_snapshot",
   "ad_grants_campaign_plan",
   "ad_grants_activation_snapshot",
+  "task_deliverable",
 ]);
 export type ArtifactType = z.infer<typeof ArtifactType>;
 
@@ -269,6 +270,7 @@ export const AgentDefinition = z.object({
     // "none" marks agents whose work is deterministic system logic (e.g. the
     // eligibility engine) — listed in the directory, never sent to a model.
     "none",
+    "agent_task_result",
   ]),
   maxOutputRetries: z.number().int().min(0).max(5).default(2),
 });
@@ -850,6 +852,19 @@ export const IntentOutput = z.discriminatedUnion("action", [
   }),
   z.object({ action: z.literal("approve"), note: z.string().max(500).nullable() }),
   z.object({ action: z.literal("reject"), note: z.string().max(500).nullable() }),
+  /** Tasks: hand a piece of work to a teammate, once or on a schedule. Unknown
+   *  scheduling details are null — the assistant asks before creating. */
+  z.object({
+    action: z.literal("create_task"),
+    title: z.string().min(2).max(200),
+    instructions: z.string().max(4000).nullable(),
+    agentKey: z.string().max(80).nullable(),
+    priority: z.enum(["low", "normal", "high", "urgent"]).nullable(),
+    recurring: z.boolean().nullable(),
+    cron: z.string().max(120).nullable(),
+    runAt: z.string().max(64).nullable(),
+    requiresApproval: z.boolean().nullable(),
+  }),
   z.object({ action: z.literal("status") }),
   z.object({ action: z.literal("answer"), text: z.string().min(1).max(2000) }),
   z.object({ action: z.literal("clarify"), question: z.string().min(1).max(500) }),
@@ -932,4 +947,5 @@ export const CompleteWebsiteRequestInput = z.object({
 
 export * from "./website-builder.js";
 export * from "./logo.js";
+export * from "./tasks.js";
 export * from "./proactive.js";

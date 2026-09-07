@@ -102,6 +102,9 @@ importers:
       '@deedwell/content-domain':
         specifier: workspace:*
         version: link:../../packages/content-domain
+      '@deedwell/tasks-domain':
+        specifier: workspace:*
+        version: link:../../packages/tasks-domain
 
   apps/desktop:
     dependencies:
@@ -211,6 +214,21 @@ importers:
   packages/observability: {}
 
   packages/schemas: {}
+
+  packages/tasks-domain:
+    dependencies:
+      '@deedwell/agent-runtime':
+        specifier: workspace:*
+        version: link:../agent-runtime
+      '@deedwell/database':
+        specifier: workspace:*
+        version: link:../database
+      '@deedwell/schemas':
+        specifier: workspace:*
+        version: link:../schemas
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
 
   packages/tools: {}
 

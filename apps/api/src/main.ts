@@ -64,6 +64,14 @@ async function main(): Promise<void> {
     }
   }
 
+  // Agent tasks: runs due tasks (one-off and cron). TASKS_WORKER=off disables it.
+  if (process.env.TASKS_WORKER !== "off") {
+    const { startTaskWorker } = await import("./tasks/worker.js");
+    const stopTasks = startTaskWorker(deps, { log: app.log });
+    abort.signal.addEventListener("abort", () => stopTasks());
+    for (const signal of ["SIGTERM", "SIGINT"] as const) process.once(signal, () => stopTasks());
+  }
+
   // Proactive messaging: evaluates due follow-up candidates. Same claim
   // pattern as the publish worker; PROACTIVE_WORKER=off disables it here.
   if (process.env.PROACTIVE_WORKER !== "off") {

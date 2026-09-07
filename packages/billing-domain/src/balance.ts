@@ -29,6 +29,12 @@ export async function resumeRunsWaitingPayment(client: Queryable, tenantId: stri
       WHERE tenant_id = $1 AND status = 'waiting_payment'`,
     [tenantId]
   );
+  // Agent tasks parked for the same reason go back in the queue too.
+  await client.query(
+    `UPDATE agent_tasks SET status = 'queued', blocked_reason = NULL, next_run_at = coalesce(next_run_at, now())
+      WHERE tenant_id = $1 AND status = 'blocked' AND blocked_reason = 'out_of_tokens'`,
+    [tenantId]
+  ).catch(() => undefined);
   return rowCount ?? 0;
 }
 

@@ -22,6 +22,7 @@ import { extractDocumentText, extractFactsFromDocument, writeOrgFact } from "@de
 import { HttpError, SESSION_COOKIE_NAME, type AppContext } from "./app.js";
 import { requireTokens } from "./billing-gate.js";
 import { proactiveNotificationItems } from "./routes-proactive.js";
+import { taskNotificationItems } from "./tasks/store.js";
 
 const MAX_FILE_BYTES = 8_000_000;
 
@@ -540,8 +541,10 @@ export function registerCoreRoutes(app: FastifyInstance, ctx: AppContext): void 
       const href = (projectName: string) => (projectName === "Google Ad Grant" ? "/dashboard/ad-grants" : null);
       // Proactive agent messages join the same list, each linking to its message.
       const proactive = await proactiveNotificationItems(client, req.orgId!, req.userId!).catch(() => []);
+      const tasks = await taskNotificationItems(client, req.orgId!).catch(() => []);
       return [
         ...proactive,
+        ...tasks,
         ...waiting.rows.map((r) => ({
           id: `run:${r.run_id}`, kind: "waiting_info", projectName: r.project_name,
           title: `${r.project_name} needs your input`,

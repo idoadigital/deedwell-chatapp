@@ -51,6 +51,8 @@ export class MockModelProvider implements ModelProvider {
       logo_brief: logoBrief,
       logo_concepts: logoConcepts,
       proactive_message: proactiveMessage,
+      agent_task_result: agentTaskResult,
+      task_schedule_reply: taskScheduleReply,
     };
     const produced = generators[request.outputSchemaRef](request);
     // The designer answers with a document, not a JSON object.
@@ -488,4 +490,43 @@ function proactiveMessage(request: ModelRequest): unknown {
       ? `Quick update on ${goal ?? "our work"} — I'm still waiting on one thing: ${next.replace(/\.$/, "")}. Want to finish that now?`
       : `We started on ${goal ?? "something"} and haven't finished. Do you still want to continue?`;
   return { message, summary: message.slice(0, 120), shouldSend: !nothing, reason: nothing ? "No user action is pending." : null };
+}
+
+/** A believable deliverable from the task's own words, so tests and demos
+ *  see the full runner path (document, notes, optional image, question). */
+function agentTaskResult(request: ModelRequest): unknown {
+  const task = request.dataBlocks.find((b) => b.label === "task")?.content ?? "";
+  const title = /title: (.+)/i.exec(task)?.[1]?.trim() ?? "Task";
+  const instructions = /instructions: ([\s\S]+?)(\n[a-z ]+:|$)/i.exec(task)?.[1]?.trim() ?? "";
+  const wantsImage = /\b(image|graphic|poster|flyer|logo|design)\b/i.test(`${title} ${instructions}`);
+  const needs = /\[needs user\]/i.test(instructions) ? "Which program should this cover?" : null;
+  return {
+    summary: `Completed "${title}": researched the request, drafted the deliverable, and noted follow-ups.`,
+    progressNotes: ["Reviewed the mission profile and instructions", "Drafted the deliverable", "Checked it against the request"],
+    deliverables: needs ? [] : [{ title, body: `# ${title}\n\n${instructions || "Summary of the work."}\n\n## Findings\n\n- Point one\n- Point two\n\n## Next steps\n\n1. Review\n2. Share` }],
+    imageRequests: wantsImage && !needs ? [{ title: `${title} image`, prompt: `A clean, warm illustration for: ${title}` }] : [],
+    needsFromUser: needs,
+  };
+}
+
+/** Rule-based reading of a scheduling reply, mirroring mock-intent's style. */
+function taskScheduleReply(request: ModelRequest): unknown {
+  const reply = (request.dataBlocks.find((b) => b.label === "reply")?.content ?? "").toLowerCase();
+  const recurring = /\b(recurring|repeat|every|each|weekly|daily|monthly|routine)\b/.test(reply) ? true
+    : /\b(one[- ]?time|once|just once|one[- ]?off|single)\b/.test(reply) ? false : null;
+  let cron: string | null = null;
+  const at = /\bat (\d{1,2})(?::(\d{2}))?\s*(am|pm)?/.exec(reply);
+  let hour = at ? Number(at[1]) : 9; const minute = at?.[2] ? Number(at[2]) : 0;
+  if (at?.[3] === "pm" && hour < 12) hour += 12; if (at?.[3] === "am" && hour === 12) hour = 0;
+  const dayNames = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+  const day = dayNames.findIndex((d) => reply.includes(d));
+  if (/\bweekday/.test(reply)) cron = `${minute} ${hour} * * 1-5`;
+  else if (day >= 0) cron = `${minute} ${hour} * * ${day}`;
+  else if (/\b(daily|every day)\b/.test(reply)) cron = `${minute} ${hour} * * *`;
+  else if (/\b(monthly|every month|first of)\b/.test(reply)) cron = `${minute} ${hour} 1 * *`;
+  else if (/\bweekly\b/.test(reply)) cron = `${minute} ${hour} * * 1`;
+  const confirm = /\b(yes|confirm|go ahead|looks good|create it|do it|sounds good|ok(ay)?|yep|sure)\b/.test(reply) ? true
+    : /\b(cancel|never ?mind|stop|forget it|no thanks)\b/.test(reply) ? false : null;
+  const priority = /\burgent\b/.test(reply) ? "urgent" : /\bhigh priority\b/.test(reply) ? "high" : /\blow priority\b/.test(reply) ? "low" : null;
+  return { recurring, cron, runAt: null, confirm, changes: { title: null, instructions: null, agentKey: null, priority, requiresApproval: /\b(approval|approve first|check with me)\b/.test(reply) ? true : null } };
 }

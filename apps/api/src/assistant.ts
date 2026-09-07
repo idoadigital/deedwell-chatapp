@@ -14,6 +14,7 @@ import { DEFAULT_CHANNELS, MAYA_WELCOME, TEAMMATES, teammateByKey } from "./team
 import { resolveInfoRequest } from "./fact-fields.js";
 import { gcpRoutesChannel, handleGcpTurn } from "./gcp/turns.js";
 import { onAgentClarify, onUserMessage } from "./proactive/candidates.js";
+import { decideTaskFromChat, handleTaskConversation, startTaskDraft } from "./tasks/chat.js";
 
 /**
  * The Executive Assistant: conversational entry point (BRD §4.1). It maps a
@@ -373,6 +374,11 @@ async function buildContext(client: PoolClient, tenantId: string, channel: Chann
     pendingIntent,
     lastAssistantRequest,
     pendingApprovals: approvals.rows,
+    // Tasks waiting for a go-ahead in this channel — "approve" reaches them
+    // when no workflow approval is pending.
+    waitingTasks: (await client.query(
+      "SELECT count(*)::int AS n FROM agent_tasks WHERE channel_id = $1 AND status = 'waiting_approval'", [channel.id]
+    ).catch(() => ({ rows: [{ n: 0 }] }))).rows[0]?.n ?? 0,
     waitingRuns: waiting.rows.map((r) => {
       let missingFacts: string[] = [];
       try {
@@ -603,6 +609,14 @@ export async function handleUserMessage(
     ms: Date.now() - contextStart,
   }));
 
+  // An open task conversation (one-time or recurring? how often? confirm?) or
+  // a question from a blocked task takes this reply before anything else.
+  if (!fileId && await handleTaskConversation(deps, client, {
+    tenantId: ids.tenantId, userId: ids.userId, channelId: channel.id, body, agentKey: persona, say,
+  })) {
+    return out;
+  }
+
   // A saved application intent blocked on a document resumes automatically the
   // moment the file arrives — the user never repeats "apply for #N" (spec §12).
   if (fileId && context.pendingIntent && (context.pendingIntent as { type?: string }).type === "start_application") {
@@ -741,6 +755,11 @@ export async function handleUserMessage(
   switch (intent.action) {
     case "answer":
       await say(intent.text);
+      break;
+    case "create_task":
+      await startTaskDraft(deps, client, {
+        tenantId: ids.tenantId, userId: ids.userId, channelId: channel.id, agentKeyFallback: persona, say, intent,
+      });
       break;
     case "clarify":
       await say(intent.question);
@@ -1052,7 +1071,11 @@ export async function handleUserMessage(
     case "reject": {
       const target = context.pendingApprovals[0];
       if (!target) {
-        await say(`There's nothing waiting for approval${channel.kind === "project" ? " in this project" : ""} right now.`);
+        const decidedTask = await decideTaskFromChat(deps, client, {
+          tenantId: ids.tenantId, userId: ids.userId, channelId: channel.id,
+          decision: intent.action === "approve" ? "approved" : "rejected", note: intent.note, say,
+        });
+        if (!decidedTask) await say(`There's nothing waiting for approval${channel.kind === "project" ? " in this project" : ""} right now.`);
         break;
       }
       const decision = intent.action === "approve" ? "approved" : "rejected";

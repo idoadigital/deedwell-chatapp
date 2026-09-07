@@ -19,6 +19,7 @@ export interface AssistantContext {
   lastAssistantRequest?: string | null;
   lastUploadedFileId: string | null;
   pendingApprovals: Array<{ id: string; kind: string }>;
+  waitingTasks?: number;
   waitingRuns: Array<{ id: string; status: string; missingFacts: string[] }>;
   hasSite: boolean;
   knownUrls?: Record<string, string>;
@@ -126,11 +127,18 @@ export function mockIntent(request: ModelRequest): IntentOutput {
     return { action: "build_website", siteName: null };
   }
 
-  if (/\b(approve[d]?|publish it|go ahead|ship it|looks good|lgtm|yes do it)\b/.test(lower) && ctx.pendingApprovals?.length) {
+  if (/\b(approve[d]?|publish it|go ahead|ship it|looks good|lgtm|yes do it)\b/.test(lower) && (ctx.pendingApprovals?.length || ctx.waitingTasks)) {
     return { action: "approve", note: null };
   }
-  if (/\b(reject|decline|don'?t (publish|apply|pursue)|do not (publish|apply|pursue)|send it back)\b/.test(lower) && ctx.pendingApprovals?.length) {
+  if (/\b(reject|decline|don'?t (publish|apply|pursue)|do not (publish|apply|pursue)|send it back)\b/.test(lower) && (ctx.pendingApprovals?.length || ctx.waitingTasks)) {
     return { action: "reject", note: null };
+  }
+
+  if (/\b(task|routine|chore|remind|every (day|week|month|monday|tuesday|wednesday|thursday|friday|weekday)|each (week|month|day)|weekly|monthly|daily)\b/.test(lower)
+    && /\b(set up|create|add|schedule|have|ask|get|assign|make)\b/.test(lower) && !/\bwebsite\b/.test(lower)) {
+    const recurring = /\b(every|each|weekly|monthly|daily|routine|recurring)\b/.test(lower) ? true : /\b(once|one[- ]?time)\b/.test(lower) ? false : null;
+    const title = text.replace(/^(please |can you |could you )?(set up|create|add|schedule|have|ask|get|assign|make) (a |an |the )?(task (to |for )?|routine (to |for )?)?/i, "").replace(/[.?!]+$/, "").trim();
+    return { action: "create_task", title: (title || text).slice(0, 200), instructions: text, agentKey: null, priority: /urgent/.test(lower) ? "urgent" : null, recurring, cron: null, runAt: null, requiresApproval: null };
   }
 
   if (/\b(social (media )?(post|image|graphic|content)|instagram|facebook post|linkedin post|flyer|event (graphic|promo|poster)|buying guide)\b/.test(lower)

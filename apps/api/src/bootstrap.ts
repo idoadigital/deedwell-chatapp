@@ -32,6 +32,7 @@ import { ALL_AD_GRANTS_AGENTS, buildAdGrantsWorkflow } from "@deedwell/adgrants-
 import { createImageGenerator, readProviderKey } from "@deedwell/content-domain";
 import { createGcpGrantPlatform, type GcpGrantPlatform } from "./gcp/platform.js";
 import { canSpendChecker } from "./billing-gate.js";
+import { registerBuiltInTaskHandlers } from "./tasks/handlers.js";
 
 export interface Deps {
   adminPool: Pool;
@@ -99,6 +100,7 @@ export async function createDeps(overrides: Partial<{
     // key Platform Admin keeps; "mock" in tests.
     images: async () => createImageGenerator({ apiKey: await readProviderKey(appPool, "openai") }),
   };
+  registerBuiltInTaskHandlers();
   const engine = new PgWorkflowEngine<GrantServices>(
     adminPool,
     appPool,

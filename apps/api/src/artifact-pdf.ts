@@ -178,6 +178,8 @@ export function artifactBlocks(type: string, content: unknown): Block[] {
       const rest = { ...c }; delete rest.checks;
       return [...out, ...(Object.keys(rest).length ? structured(rest, 0) : [])];
     }
+    case "task_deliverable":
+      return markdownBlocks(str(c.body));
     default:
       return structured(c, 0);
   }
