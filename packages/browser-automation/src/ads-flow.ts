@@ -1,5 +1,6 @@
 import type { Page } from "playwright";
 import { assertAllowedUrl } from "./allowlist.js";
+import { assertSignedIn, clickFirst, fillField, report, settle, type FieldResult, type FillReport } from "./fill.js";
 
 /**
  * Builds a campaign in the Google Ads UI from an approved campaign plan, up
@@ -26,22 +27,22 @@ interface CampaignPlan {
   geoTargets: string[];
 }
 
-export async function buildCampaign(page: Page, plan: CampaignPlan): Promise<void> {
+export async function buildCampaign(page: Page, plan: CampaignPlan): Promise<FillReport> {
   assertAllowedUrl(ADS_NEW_CAMPAIGN_URL);
   await page.goto(ADS_NEW_CAMPAIGN_URL, { waitUntil: "domcontentloaded", timeout: 30_000 });
+  await settle(page);
+  assertSignedIn(page);
+  const results: FieldResult[] = [];
+  const notes: string[] = [];
+  if (await clickFirst(page, [/new campaign|create campaign/i], ["button", "link"])) notes.push("Started a new campaign from the Ads overview.");
 
-  const nameField = page.getByLabel(/campaign name/i);
-  if (await nameField.count()) await nameField.first().fill(plan.campaignName);
+  results.push(await fillField(page, { key: "campaignName", label: "Campaign name", patterns: [/campaign name/i], value: plan.campaignName }));
+  results.push(await fillField(page, { key: "dailyBudgetUsd", label: "Daily budget", patterns: [/daily budget|budget/i], value: String(plan.dailyBudgetUsd) }));
 
-  const budgetField = page.getByLabel(/daily budget/i);
-  if (await budgetField.count()) await budgetField.first().fill(String(plan.dailyBudgetUsd));
-
-  for (const geo of plan.geoTargets) {
-    const geoField = page.getByLabel(/location/i);
-    if (await geoField.count()) {
-      await geoField.first().fill(geo);
-      await page.keyboard.press("Enter").catch(() => {});
-    }
+  for (const [i, geo] of plan.geoTargets.entries()) {
+    const r = await fillField(page, { key: `geo${i + 1}`, label: `Location ${i + 1}`, patterns: [/location/i, /target/i], value: geo });
+    if (r.status === "filled") await page.keyboard.press("Enter").catch(() => {});
+    results.push(r);
   }
 
   for (const group of plan.adGroups) {
@@ -75,6 +76,8 @@ export async function buildCampaign(page: Page, plan: CampaignPlan): Promise<voi
     const urlField = page.getByLabel(/sitelink.*url/i);
     if (await urlField.count()) await urlField.last().fill(link.url);
   }
+  results.push({ key: "adGroups", label: "Ad groups", status: plan.adGroups.length ? "unverified" : "empty", note: `${plan.adGroups.length} ad group(s) entered; verify in the Ads UI before enabling.` });
+  return report(page, results, notes);
 }
 
 /** The one irrevocable click — the workflow only calls this after its own

@@ -43,18 +43,27 @@ export interface ResearchService {
  * flag — a step must never guess that a session or a submission is still
  * good.
  */
+/** Per-field outcome of driving one of Google's forms (structural copy of
+ *  browser-automation's FillReport, so this package stays Playwright-free). */
+export interface GoogleFillReport {
+  url: string;
+  title: string;
+  fields: Array<{ key: string; label: string; status: "filled" | "not_found" | "empty" | "unverified"; strategy?: string; note?: string }>;
+  notes: string[];
+}
+
 export interface GoogleAutomationService {
   checkSession(tenantId: string): Promise<{ connected: boolean; accountHint: string | null }>;
-  runNonprofitsEnrollment(tenantId: string, facts: Record<string, string>): Promise<{ screenshotKey: string }>;
+  runNonprofitsEnrollment(tenantId: string, facts: Record<string, string>): Promise<{ screenshotKey: string; report?: GoogleFillReport }>;
   /** Re-fills and submits in one call — each service call runs in its own
    *  fresh headless session (see session.ts), so nothing from the earlier
    *  "prepare" call's in-page state survives the human approval wait
    *  between them. Re-deriving the fill from `facts` right before the
    *  irrevocable click is what makes this both correct and idempotent. */
-  submitNonprofitsEnrollment(tenantId: string, facts: Record<string, string>): Promise<{ submitted: boolean }>;
+  submitNonprofitsEnrollment(tenantId: string, facts: Record<string, string>): Promise<{ submitted: boolean; report?: GoogleFillReport }>;
   checkGoogleReviewStatus(tenantId: string): Promise<{ status: "pending" | "approved" | "rejected"; reason?: string }>;
-  runAdGrantsActivation(tenantId: string): Promise<{ screenshotKey: string }>;
-  submitAdGrantsActivation(tenantId: string): Promise<{ submitted: boolean }>;
+  runAdGrantsActivation(tenantId: string): Promise<{ screenshotKey: string; report?: GoogleFillReport }>;
+  submitAdGrantsActivation(tenantId: string): Promise<{ submitted: boolean; report?: GoogleFillReport }>;
   publishCampaign(tenantId: string, plan: unknown): Promise<{ campaignId: string }>;
 }
 

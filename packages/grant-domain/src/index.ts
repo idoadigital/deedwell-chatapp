@@ -50,5 +50,6 @@ export {
   type ResearchPageResult,
   type ResearchService,
   type GoogleAutomationService,
+  type GoogleFillReport,
 } from "./workflow.js";
 export { extractDocumentText, stripHtml } from "./documents.js";

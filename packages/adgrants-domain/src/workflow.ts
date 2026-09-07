@@ -51,9 +51,18 @@ async function latestApproval(
  *  taken alongside), and the Google page it concerns. Rendered by the
  *  dashboard's "Preview submission" before Approve. */
 const ENROLLMENT_FIELDS: Array<[string, string]> = [
-  ["legal_name", "Organization legal name"], ["website_url", "Website"], ["ein", "EIN / tax ID"],
-  ["mission", "Mission"], ["techsoup_validation_token", "TechSoup validation token"],
+  ["country", "Country"], ["legal_name", "Organization legal name"], ["website_url", "Website"], ["ein", "EIN / tax ID"],
+  ["mission", "Mission"], ["primary_contact_name", "Contact name"], ["primary_contact_email", "Contact email"],
+  ["techsoup_validation_token", "TechSoup validation token"],
 ];
+/** Marks each submitted value with what the automation reported for that
+ *  field — filled, not found on Google's form, unverified — so the preview
+ *  can show it without cross-referencing the raw report. */
+function withFillStatus<T extends { key: string }>(submission: T[], report: import("@deedwell/grant-domain").GoogleFillReport | undefined): Array<T & { fill?: string; note?: string }> {
+  if (!report) return submission;
+  const byKey = new Map(report.fields.map((f) => [f.key, f]));
+  return submission.map((s) => { const f = byKey.get(s.key); return f ? { ...s, fill: f.status, ...(f.note ? { note: f.note } : {}) } : s; });
+}
 function submissionFrom(facts: Record<string, string>, fields: Array<[string, string]>): Array<{ key: string; label: string; value: string | null }> {
   return fields.map(([key, label]) => ({ key, label, value: facts[key] ?? null }));
 }
@@ -200,8 +209,9 @@ export function buildAdGrantsWorkflow(): WorkflowDefinition<GrantServices> {
         const facts = await fetchUsableFacts(ctx, applicationAgent.agentKey);
         const factsMap = Object.fromEntries(facts.map((f) => [f.key, f.value]));
         let screenshotKey: string;
+        let report: import("@deedwell/grant-domain").GoogleFillReport | undefined;
         try {
-          ({ screenshotKey } = await ctx.services.google!.runNonprofitsEnrollment(ctx.tenantId, factsMap));
+          ({ screenshotKey, report } = await ctx.services.google!.runNonprofitsEnrollment(ctx.tenantId, factsMap));
         } catch (err) {
           if (isSessionExpired(err)) return googleReconnectWait(ctx, "enroll_google_nonprofits");
           throw err;
@@ -216,7 +226,8 @@ export function buildAdGrantsWorkflow(): WorkflowDefinition<GrantServices> {
           ctx, "ad_grants_enrollment_submit", {
             artifactId: artifact.artifactId, screenshotKey,
             form: "Google for Nonprofits enrollment", googleUrl: GOOGLE_PAGES.nonprofits,
-            submission: submissionFrom(factsMap, ENROLLMENT_FIELDS),
+            submission: withFillStatus(submissionFrom(factsMap, ENROLLMENT_FIELDS), report),
+            fillReport: report ?? null,
           }, applicationAgent.agentKey
         );
         return {
@@ -320,8 +331,9 @@ export function buildAdGrantsWorkflow(): WorkflowDefinition<GrantServices> {
         const blocked = needsGoogle(ctx);
         if (blocked) return blocked;
         let screenshotKey: string;
+        let report: import("@deedwell/grant-domain").GoogleFillReport | undefined;
         try {
-          ({ screenshotKey } = await ctx.services.google!.runAdGrantsActivation(ctx.tenantId));
+          ({ screenshotKey, report } = await ctx.services.google!.runAdGrantsActivation(ctx.tenantId));
         } catch (err) {
           if (isSessionExpired(err)) return googleReconnectWait(ctx, "activate_ad_grants_product");
           throw err;
@@ -336,7 +348,8 @@ export function buildAdGrantsWorkflow(): WorkflowDefinition<GrantServices> {
           ctx, "ad_grants_activation_submit", {
             artifactId: artifact.artifactId, screenshotKey,
             form: "Google Ad Grants activation", googleUrl: GOOGLE_PAGES.grants,
-            submission: [{ key: "action", label: "Action", value: "Accept the Google Ad Grants program terms and activate Ad Grants on your Google for Nonprofits account" }],
+            submission: withFillStatus([{ key: "accept_terms", label: "Action", value: "Accept the Google Ad Grants program terms and activate Ad Grants on your Google for Nonprofits account" }], report),
+            fillReport: report ?? null,
           }, applicationAgent.agentKey
         );
         return {

@@ -77,17 +77,18 @@ export function createGoogleAutomation(deps: GoogleAutomationDeps): GoogleAutoma
 
     async runNonprofitsEnrollment(tenantId, facts) {
       return withSession(tenantId, async (page) => {
-        await fillNonprofitsEnrollment(page, facts);
+        const report = await fillNonprofitsEnrollment(page, facts);
         const screenshotKey = await screenshot(deps.storage, tenantId, page);
-        return { screenshotKey };
+        return { screenshotKey, report };
       });
     },
 
     async submitNonprofitsEnrollment(tenantId, facts) {
       return withSession(tenantId, async (page) => {
-        await fillNonprofitsEnrollment(page, facts);
-        await clickSubmitEnrollment(page);
-        return { submitted: true };
+        const report = await fillNonprofitsEnrollment(page, facts);
+        const submitted = await clickSubmitEnrollment(page);
+        if (!submitted) throw new Error("Could not find the submit button on Google's enrollment form — nothing was submitted.");
+        return { submitted, report };
       });
     },
 
@@ -97,17 +98,18 @@ export function createGoogleAutomation(deps: GoogleAutomationDeps): GoogleAutoma
 
     async runAdGrantsActivation(tenantId) {
       return withSession(tenantId, async (page) => {
-        await fillAdGrantsActivation(page);
+        const report = await fillAdGrantsActivation(page);
         const screenshotKey = await screenshot(deps.storage, tenantId, page);
-        return { screenshotKey };
+        return { screenshotKey, report };
       });
     },
 
     async submitAdGrantsActivation(tenantId) {
       return withSession(tenantId, async (page) => {
-        await fillAdGrantsActivation(page);
-        await clickActivate(page);
-        return { submitted: true };
+        const report = await fillAdGrantsActivation(page);
+        const submitted = await clickActivate(page);
+        if (!submitted) throw new Error("Could not find the activate button on Google's Ad Grants page — nothing was submitted.");
+        return { submitted, report };
       });
     },
 
@@ -121,3 +123,5 @@ export function createGoogleAutomation(deps: GoogleAutomationDeps): GoogleAutoma
     },
   };
 }
+
+export type { FillReport, FieldResult, FieldStatus } from "./fill.js";
