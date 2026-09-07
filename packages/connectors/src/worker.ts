@@ -20,10 +20,21 @@ const STALE_LOCK_MS = Number(process.env.PUBLISH_STALE_LOCK_MS ?? 10 * 60_000);
 
 const backoffMs = (attempt: number) => Math.min(2 ** attempt * 60_000, 6 * 60 * 60_000);
 
+export interface MediaRef {
+  tenantId: string;
+  fileId: string;
+  /** The design the file belongs to, when the post came from Content Studio. */
+  assetId: string | null;
+  createdBy: string;
+}
+
 export interface WorkerDeps {
+  /** Must be the admin pool: the worker claims posts across every tenant, and
+   *  on the RLS-bound app pool the queue is simply empty. */
   pool: Pool;
-  /** Turns stored file ids into URLs the provider can fetch. */
-  mediaUrlFor: (tenantId: string, fileId: string) => string;
+  /** Turns a stored file into a URL the provider can fetch with no session —
+   *  Meta downloads media server-side, so a session-gated URL never works. */
+  mediaUrlFor: (ref: MediaRef) => string | Promise<string>;
   log?: { info: (o: unknown, m?: string) => void; error: (o: unknown, m?: string) => void };
 }
 
@@ -76,9 +87,12 @@ async function publishOne(deps: WorkerDeps, post: Record<string, any>): Promise<
     if (connection.status === "disconnected") throw new Error("That account is no longer connected to Deedwell.");
 
     const media = (post.media ?? []) as string[];
+    const mediaUrls = await Promise.all(media.map((fileId) => deps.mediaUrlFor({
+      tenantId: post.tenant_id, fileId, assetId: post.content_asset_id ?? null, createdBy: post.created_by,
+    })));
     const result = await SocialPublishingService.publish({
       content: post.content,
-      mediaUrls: media.map((fileId) => deps.mediaUrlFor(post.tenant_id, fileId)),
+      mediaUrls,
       connection: {
         provider: connection.provider,
         connectorType: connection.connector_type,
@@ -91,7 +105,7 @@ async function publishOne(deps: WorkerDeps, post: Record<string, any>): Promise<
     await pool.query(
       `UPDATE scheduled_posts
           SET status = 'published', published_at = now(), provider_post_id = $2,
-              last_error = NULL, locked_at = NULL
+              error = NULL, locked_at = NULL
         WHERE id = $1`,
       [post.id, result.providerPostId]
     );
@@ -106,7 +120,7 @@ async function publishOne(deps: WorkerDeps, post: Record<string, any>): Promise<
 
     await pool.query(
       `UPDATE scheduled_posts
-          SET status = $2, last_error = $3, locked_at = NULL, next_attempt_at = $4
+          SET status = $2, error = $3, locked_at = NULL, next_attempt_at = $4
         WHERE id = $1`,
       [post.id, giveUp ? "failed" : "scheduled", message.slice(0, 500),
        giveUp ? null : new Date(Date.now() + backoffMs(attempts))]

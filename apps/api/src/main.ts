@@ -3,6 +3,7 @@ import { buildApp } from "./app.js";
 import { createDeps } from "./bootstrap.js";
 import { startPublishWorker } from "@deedwell/connectors";
 import { sweepPendingWebhooks } from "./webhooks.js";
+import { publishingMediaPath } from "./routes-content.js";
 
 async function main(): Promise<void> {
   // Migrate before createDeps — dependency wiring seeds agent definitions.
@@ -49,10 +50,12 @@ async function main(): Promise<void> {
   // Scheduled social publishing runs in-process alongside the API. It claims
   // work with SKIP LOCKED, so running several API instances is safe; set
   // PUBLISH_WORKER=off on instances that should not publish.
+  // The queue spans every tenant, so the worker runs on the admin pool (on the
+  // app pool RLS hides all of it) and hands Meta a public share link per image.
   const stopPublishWorker = process.env.PUBLISH_WORKER === "off" ? null : startPublishWorker({
-    pool: deps.appPool,
-    mediaUrlFor: (tenantId, fileId) =>
-      `${process.env.API_ORIGIN ?? "https://coworkers.deedwell.org"}/v1/orgs/${tenantId}/files/${fileId}/content`,
+    pool: deps.adminPool,
+    mediaUrlFor: async (ref) =>
+      `${process.env.API_ORIGIN ?? "https://coworkers.deedwell.org"}${await publishingMediaPath(deps.adminPool, ref)}`,
     log: app.log,
   });
   if (stopPublishWorker) {

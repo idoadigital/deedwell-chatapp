@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import type { FastifyInstance } from "fastify";
+import type { Pool } from "pg";
 import { audit, uuidv7 } from "@deedwell/database";
 import { readProviderKey, type ContentKind } from "@deedwell/content-domain";
 import { canStartCampaign, startCampaign, startMoreDesigns } from "./content-campaigns.js";
@@ -234,7 +235,9 @@ export function registerContentPublishingRoutes(app: FastifyInstance, ctx: AppCo
     };
     if (!connectorIds?.length) throw new HttpError(400, "Choose at least one destination.");
 
-    return ctx.inOrg(req, async (client) => {
+    // The response goes out only after the transaction commits: the worker
+    // and the dashboard's refresh both read straight after the 202.
+    const queued = await ctx.inOrg(req, async (client) => {
       const asset = await client.query(
         `SELECT a.id, a.file_id, a.approval, a.content_project_id, a.post_text
            FROM content_assets a WHERE a.id = $1`,
@@ -261,14 +264,16 @@ export function registerContentPublishingRoutes(app: FastifyInstance, ctx: AppCo
           `INSERT INTO scheduled_posts
              (id, tenant_id, connector_id, content_project_id, content_asset_id, platform, content,
               media, scheduled_at, timezone, status, idempotency_key, created_by)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'scheduled',$11,$12)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,coalesce($9::timestamptz, now()),$10,'scheduled',$11,$12)
            ON CONFLICT (tenant_id, idempotency_key) WHERE idempotency_key IS NOT NULL DO UPDATE
-             SET scheduled_at = EXCLUDED.scheduled_at, status = 'scheduled', error = NULL,
+             SET scheduled_at = EXCLUDED.scheduled_at, content = EXCLUDED.content, media = EXCLUDED.media,
+                 timezone = EXCLUDED.timezone, status = 'scheduled', error = NULL,
                  next_attempt_at = NULL, updated_at = now()
            RETURNING *`,
           [uuidv7(), req.orgId, connectorId, row.content_project_id, assetId,
            connection.connector_type, (content && content.trim()) || row.post_text || "", JSON.stringify([row.file_id].filter(Boolean)),
-           scheduledAt ? new Date(scheduledAt) : new Date(), timezone ?? "UTC",
+           // "Now" is the database's now: the worker compares against the same clock.
+           scheduledAt ? new Date(scheduledAt) : null, timezone ?? "UTC",
            `${assetId}:${connectorId}`, req.userId]
         );
         queued.push(rows[0]);
@@ -278,8 +283,9 @@ export function registerContentPublishingRoutes(app: FastifyInstance, ctx: AppCo
         action: scheduledAt ? "content.scheduled" : "content.publish_now",
         entityType: "scheduled_posts", metadata: { assetId, destinations: connectorIds.length },
       });
-      return reply.status(202).send({ posts: queued });
+      return queued;
     });
+    return reply.status(202).send({ posts: queued });
   });
 
   app.get("/v1/orgs/:orgId/content/posts", async (req) => {
@@ -441,6 +447,28 @@ export function bestTimes(opts: {
  *  credential, which is the point of a share link. */
 export const DESIGN_SHARE_PREFIX = "/v1/share/designs/";
 export const designSharePath = (token: string): string => `${DESIGN_SHARE_PREFIX}${token}`;
+
+/** The publish worker needs a URL Meta can download with no session, which is
+ *  exactly what a share link is. One live link per design image is reused;
+ *  publishing a design to a public feed is at least as public as the link.
+ *  Runs on the admin pool — the worker has no tenant context. */
+export async function publishingMediaPath(
+  pool: Pool, ref: { tenantId: string; assetId: string | null; fileId: string; createdBy: string }
+): Promise<string> {
+  if (!ref.assetId) throw new Error("This post's image is not attached to a design, so it cannot be published.");
+  const { rows } = await pool.query(
+    `SELECT token FROM content_asset_shares
+      WHERE asset_id = $1 AND file_id = $2 AND revoked_at IS NULL ORDER BY created_at DESC LIMIT 1`,
+    [ref.assetId, ref.fileId]
+  );
+  if (rows[0]) return designSharePath(rows[0].token);
+  const token = randomBytes(24).toString("base64url");
+  await pool.query(
+    `INSERT INTO content_asset_shares (token, tenant_id, asset_id, file_id, created_by) VALUES ($1, $2, $3, $4, $5)`,
+    [token, ref.tenantId, ref.assetId, ref.fileId, ref.createdBy]
+  );
+  return designSharePath(token);
+}
 
 /** The public side of a share link: no session, no API key — the token is
  *  looked up through the admin pool (there is no tenant context to scope to
