@@ -62,6 +62,10 @@ function scheduleFor(input: { isRecurring?: boolean; cronExpression?: string | n
 }
 
 async function defaultChannel(client: PoolClient, tenantId: string, agentKey: string): Promise<string | null> {
+  // An org that has never opened chat has no channels yet; the teammate
+  // still needs somewhere to report, so provision the defaults first.
+  const { ensureChannels } = await import("../assistant.js");
+  await ensureChannels(client, tenantId).catch(() => undefined);
   const dm = await client.query("SELECT id FROM channels WHERE tenant_id = $1 AND key = $2", [tenantId, `dm:${agentKey}`]);
   if (dm.rows[0]) return dm.rows[0].id;
   const general = await client.query("SELECT id FROM channels WHERE tenant_id = $1 AND key = 'general'", [tenantId]);
