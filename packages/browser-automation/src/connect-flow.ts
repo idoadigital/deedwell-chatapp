@@ -1,4 +1,5 @@
-import { chromium, type BrowserContext } from "playwright";
+import type { BrowserContext } from "playwright";
+import { launchBrowser, newHumanContext } from "./launch.js";
 import { isGoogleAuthenticated } from "./session.js";
 import { dispatchInput, startScreencast, type RelayInputEvent } from "./live-relay.js";
 
@@ -39,7 +40,7 @@ export async function startGoogleConnectFlow(handlers: ConnectFlowHandlers): Pro
   let closed = false;
   let pollTimer: ReturnType<typeof setInterval> | undefined;
   let stopScreencast: (() => Promise<void>) | undefined;
-  const browser = await chromium.launch({ headless: true });
+  const browser = await launchBrowser();
 
   const close = async () => {
     if (closed) return;
@@ -53,7 +54,7 @@ export async function startGoogleConnectFlow(handlers: ConnectFlowHandlers): Pro
     // Fixed viewport matching the screencast's max dimensions — the client
     // scales its display to this same size, so pointer coordinates it sends
     // back map onto the real page without any per-client negotiation.
-    const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+    const context = await newHumanContext(browser, { viewport: { width: 1280, height: 800 } });
     const page = await context.newPage();
     stopScreencast = await startScreencast(page, (frame) => handlers.onFrame(frame.data));
     await page

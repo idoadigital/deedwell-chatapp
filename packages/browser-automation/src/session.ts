@@ -1,4 +1,5 @@
-import { chromium, type Browser, type BrowserContext, type BrowserContextOptions, type Page } from "playwright";
+import type { Browser, BrowserContext, BrowserContextOptions, Page } from "playwright";
+import { launchBrowser, newHumanContext } from "./launch.js";
 
 export class SessionExpiredError extends Error {
   constructor() {
@@ -20,9 +21,9 @@ export async function withGoogleSession<T>(
   storageState: unknown,
   fn: (ctx: { page: Page; context: BrowserContext; browser: Browser }) => Promise<T>
 ): Promise<T> {
-  const browser = await chromium.launch({ headless: true });
+  const browser = await launchBrowser();
   try {
-    const context = await browser.newContext({
+    const context = await newHumanContext(browser, {
       storageState: storageState as BrowserContextOptions["storageState"],
     });
     try {
