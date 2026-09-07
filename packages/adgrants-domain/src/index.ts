@@ -9,4 +9,4 @@ export {
   revokeGoogleSession,
   type StoredGoogleSession,
 } from "./google-session-store.js";
-export { buildAdGrantsWorkflow, AD_GRANTS_WORKFLOW } from "./workflow.js";
+export { buildAdGrantsWorkflow, AD_GRANTS_WORKFLOW, GOOGLE_PAGES } from "./workflow.js";

@@ -46,6 +46,23 @@ async function latestApproval(
   return rows[0];
 }
 
+/** What the person is approving, in their words: the exact values the
+ *  automation typed into Google's form (a screenshot of the filled form is
+ *  taken alongside), and the Google page it concerns. Rendered by the
+ *  dashboard's "Preview submission" before Approve. */
+const ENROLLMENT_FIELDS: Array<[string, string]> = [
+  ["legal_name", "Organization legal name"], ["website_url", "Website"], ["ein", "EIN / tax ID"],
+  ["mission", "Mission"], ["techsoup_validation_token", "TechSoup validation token"],
+];
+function submissionFrom(facts: Record<string, string>, fields: Array<[string, string]>): Array<{ key: string; label: string; value: string | null }> {
+  return fields.map(([key, label]) => ({ key, label, value: facts[key] ?? null }));
+}
+export const GOOGLE_PAGES = {
+  nonprofits: "https://www.google.com/nonprofits/",
+  grants: "https://www.google.com/grants/",
+  ads: "https://ads.google.com/",
+} as const;
+
 async function requestApproval(ctx: Ctx, kind: string, payload: unknown, agentKey: string): Promise<string> {
   const approvalId = uuidv7();
   await ctx.client.query(
@@ -196,7 +213,11 @@ export function buildAdGrantsWorkflow(): WorkflowDefinition<GrantServices> {
           changeSummary: "Prepared the Google for Nonprofits enrollment form for approval",
         });
         const approvalId = await requestApproval(
-          ctx, "ad_grants_enrollment_submit", { artifactId: artifact.artifactId, screenshotKey }, applicationAgent.agentKey
+          ctx, "ad_grants_enrollment_submit", {
+            artifactId: artifact.artifactId, screenshotKey,
+            form: "Google for Nonprofits enrollment", googleUrl: GOOGLE_PAGES.nonprofits,
+            submission: submissionFrom(factsMap, ENROLLMENT_FIELDS),
+          }, applicationAgent.agentKey
         );
         return {
           state: { ...ctx.state, enrollmentArtifactId: artifact.artifactId },
@@ -312,7 +333,11 @@ export function buildAdGrantsWorkflow(): WorkflowDefinition<GrantServices> {
           changeSummary: "Prepared Ad Grants product activation for approval",
         });
         const approvalId = await requestApproval(
-          ctx, "ad_grants_activation_submit", { artifactId: artifact.artifactId, screenshotKey }, applicationAgent.agentKey
+          ctx, "ad_grants_activation_submit", {
+            artifactId: artifact.artifactId, screenshotKey,
+            form: "Google Ad Grants activation", googleUrl: GOOGLE_PAGES.grants,
+            submission: [{ key: "action", label: "Action", value: "Accept the Google Ad Grants program terms and activate Ad Grants on your Google for Nonprofits account" }],
+          }, applicationAgent.agentKey
         );
         return {
           state: { ...ctx.state, activationArtifactId: artifact.artifactId },
@@ -362,8 +387,19 @@ export function buildAdGrantsWorkflow(): WorkflowDefinition<GrantServices> {
           content: result.output, agentKey: campaignStrategist.agentKey,
           changeSummary: `Drafted "${result.output.campaignName}" with ${result.output.adGroups.length} ad group(s)`,
         });
+        const plan = result.output;
         const approvalId = await requestApproval(
-          ctx, "ad_grants_campaign_publish", { artifactId: artifact.artifactId }, campaignStrategist.agentKey
+          ctx, "ad_grants_campaign_publish", {
+            artifactId: artifact.artifactId,
+            form: "Google Ads campaign", googleUrl: GOOGLE_PAGES.ads,
+            submission: [
+              { key: "campaignName", label: "Campaign name", value: plan.campaignName },
+              { key: "dailyBudgetUsd", label: "Daily budget (USD)", value: String(plan.dailyBudgetUsd) },
+              { key: "geoTargets", label: "Locations", value: plan.geoTargets.join(", ") },
+              ...plan.adGroups.map((g, i) => ({ key: `adGroup${i + 1}`, label: `Ad group ${i + 1}: ${g.name}`, value: `${g.keywords.length} keywords · ${g.headlines.length} headlines · ${g.finalUrl}` })),
+              { key: "sitelinks", label: "Sitelinks", value: plan.sitelinks.map((l) => `${l.text} → ${l.url}`).join("\n") || null },
+            ],
+          }, campaignStrategist.agentKey
         );
         return {
           state: { ...ctx.state, campaignArtifactId: artifact.artifactId },

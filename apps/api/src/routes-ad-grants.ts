@@ -182,6 +182,25 @@ export function registerAdGrantsRoutes(app: FastifyInstance, ctx: AppContext): v
     return reply.status(201).send({ ...result, wsPath: `/v1/ad-grants/google-connect?token=${result.token}` });
   });
 
+  // ---- approval preview: the filled Google form, before Approve ----------
+  // Screenshots are tenant files in object storage keyed inside the approval
+  // payload; the approval row is RLS-scoped, so the id alone cannot reach
+  // another workspace's image.
+  app.get("/v1/orgs/:orgId/approvals/:approvalId/preview", async (req, reply) => {
+    ctx.requireRole(req, "viewer");
+    const { approvalId } = req.params as { approvalId: string };
+    const row = await ctx.inOrg(req, async (client) =>
+      (await client.query("SELECT payload FROM approvals WHERE id = $1", [approvalId])).rows[0] as { payload?: { screenshotKey?: string } } | undefined
+    );
+    const key = row?.payload?.screenshotKey;
+    if (!key) throw new HttpError(404, "No preview image for this approval");
+    const bytes = await ctx.deps.storage.get(key);
+    return reply
+      .header("cache-control", "private, max-age=300")
+      .type(key.endsWith(".jpg") || key.endsWith(".jpeg") ? "image/jpeg" : "image/png")
+      .send(bytes);
+  });
+
   // ---- revoke --------------------------------------------------------------
 
   app.delete("/v1/orgs/:orgId/ad-grants/google-session", async (req) => {
