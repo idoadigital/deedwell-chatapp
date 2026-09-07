@@ -103,6 +103,14 @@ async function main(): Promise<void> {
   process.on("SIGTERM", shutdown);
 }
 
+// A rejected promise nobody awaited must never take the whole API instance
+// down (Node's default): it is logged with its origin instead. Every
+// workspace on the instance would otherwise lose its requests over one
+// stray browser-automation or provider callback error.
+process.on("unhandledRejection", (reason) => {
+  console.error(JSON.stringify({ at: "process.unhandled_rejection", err: String((reason as Error)?.stack ?? reason).slice(0, 2000) }));
+});
+
 main().catch((err) => {
   console.error("API failed to start:", err);
   process.exit(1);

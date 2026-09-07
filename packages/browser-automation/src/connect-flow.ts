@@ -63,19 +63,39 @@ export async function startGoogleConnectFlow(handlers: ConnectFlowHandlers): Pro
 
     handlers.onReady();
 
+    // Single-flight: a confirming navigation can outlast the 2s interval,
+    // and two overlapping ticks once raced — one closed the browser after
+    // confirming, the other then read storageState from a closed context
+    // and the unhandled rejection took the whole API process down with it.
+    // Every await in here is caught; a tick that fails simply waits for the
+    // next one.
+    let checking = false;
+    let captured = false;
     pollTimer = setInterval(() => {
+      if (closed || checking || captured) return;
+      checking = true;
       void (async () => {
-        if (closed) return;
-        const hasCookie = await hasGoogleAuthCookie(context).catch(() => false);
-        if (!hasCookie) return;
-        // One confirming navigation, done only after the auth cookie
-        // already appeared — by this point the user's own interaction
-        // with the login page is effectively finished.
-        const confirmed = await isGoogleAuthenticated(page, NONPROFITS_URL).catch(() => false);
-        if (!confirmed) return;
-        const storageState = await context.storageState();
-        handlers.onConnected({ storageState });
-        await close();
+        try {
+          const hasCookie = await hasGoogleAuthCookie(context);
+          if (!hasCookie || closed) return;
+          // One confirming navigation, done only after the auth cookie
+          // already appeared — by this point the user's own interaction
+          // with the login page is effectively finished.
+          const confirmed = await isGoogleAuthenticated(page, NONPROFITS_URL);
+          if (!confirmed || closed) return;
+          const storageState = await context.storageState();
+          if (closed) return;
+          captured = true;
+          if (pollTimer) clearInterval(pollTimer);
+          handlers.onConnected({ storageState });
+          await close();
+        } catch (err) {
+          // Mid-login navigations abort in-flight checks; that is normal —
+          // the stream keeps going and the next tick tries again.
+          void err;
+        } finally {
+          checking = false;
+        }
       })();
     }, POLL_INTERVAL_MS);
 
