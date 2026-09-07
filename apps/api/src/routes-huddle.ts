@@ -5,6 +5,7 @@ import { insertMessage } from "./assistant.js";
 import { TEAMMATES, teammateByKey } from "./teammates.js";
 import { DEFAULT_VOICE, synthesize, voiceEnabled, voiceProvider } from "./tts.js";
 import { HttpError, type AppContext } from "./app.js";
+import { requireTokens } from "./billing-gate.js";
 
 /**
  * Huddles (BRD Phase 6): a live voice layer over a channel. Utterances are
@@ -15,6 +16,7 @@ import { HttpError, type AppContext } from "./app.js";
 export function registerHuddleRoutes(app: FastifyInstance, ctx: AppContext): void {
   app.post("/v1/orgs/:orgId/huddles", async (req, reply) => {
     ctx.requireRole(req, "member");
+    await requireTokens(ctx, req);
     const input = z.object({ channelId: z.string().uuid() }).parse(req.body);
     const result = await ctx.inOrg(req, async (client) => {
       const channel = await client.query(

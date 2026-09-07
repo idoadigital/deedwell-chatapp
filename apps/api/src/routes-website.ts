@@ -5,6 +5,7 @@ import {
 } from "@deedwell/schemas";
 import { WEBSITE_BUILD_WORKFLOW, WEBSITE_UPDATE_WORKFLOW, websiteIntakeField } from "@deedwell/website-domain";
 import { HttpError, type AppContext } from "./app.js";
+import { requireTokens } from "./billing-gate.js";
 
 /** Where the site-router serves a site, so the dashboard can link to it and
  *  frame it. Derived from the same env the router reads, never guessed by the
@@ -52,6 +53,7 @@ export function registerWebsiteRoutes(app: FastifyInstance, ctx: AppContext): vo
 
   app.post("/v1/orgs/:orgId/projects/:projectId/website", async (req, reply) => {
     ctx.requireRole(req, "member");
+    await requireTokens(ctx, req);
     const { projectId } = req.params as { projectId: string };
     const input = CreateWebsiteInput.parse(req.body);
     if (RESERVED_SLUGS.has(input.slug)) {
@@ -105,6 +107,7 @@ export function registerWebsiteRoutes(app: FastifyInstance, ctx: AppContext): vo
 
   app.post("/v1/orgs/:orgId/projects/:projectId/website-request", async (req, reply) => {
     ctx.requireRole(req, "member");
+    await requireTokens(ctx, req);
     const { projectId } = req.params as { projectId: string };
     const input = CreateWebsiteRequestInput.parse(req.body);
     const result = await ctx.inOrg(req, async (client) => {
@@ -275,6 +278,7 @@ export function registerWebsiteRoutes(app: FastifyInstance, ctx: AppContext): vo
 
   app.post("/v1/orgs/:orgId/sites/:siteId/generate", async (req, reply) => {
     ctx.requireRole(req, "member");
+    await requireTokens(ctx, req);
     const { siteId } = req.params as { siteId: string };
     const result = await ctx.inOrg(req, async (client) => {
       const site = await client.query(
@@ -312,6 +316,7 @@ export function registerWebsiteRoutes(app: FastifyInstance, ctx: AppContext): vo
 
   app.post("/v1/orgs/:orgId/sites/:siteId/update", async (req, reply) => {
     ctx.requireRole(req, "member");
+    await requireTokens(ctx, req);
     const { siteId } = req.params as { siteId: string };
     const input = WebsiteUpdateInput.parse(req.body);
     const result = await ctx.inOrg(req, async (client) => {

@@ -56,7 +56,12 @@ declare module "fastify" {
 export const SESSION_COOKIE_NAME = "deedwell_session";
 
 export class HttpError extends Error {
-  constructor(public readonly statusCode: number, message: string) {
+  constructor(
+    public readonly statusCode: number,
+    message: string,
+    /** Extra fields for the response body — e.g. a machine-readable `code`. */
+    public readonly extra: Record<string, unknown> = {}
+  ) {
     super(message);
   }
 }
@@ -97,7 +102,7 @@ export function buildApp(deps: Deps): FastifyInstance {
 
   app.setErrorHandler((err, req, reply) => {
     if (err instanceof HttpError) {
-      return reply.status(err.statusCode).send({ error: err.message });
+      return reply.status(err.statusCode).send({ ...err.extra, error: err.message });
     }
     if (err instanceof ZodError) {
       return reply.status(400).send({ error: "Invalid input", details: err.issues.slice(0, 10) });

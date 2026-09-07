@@ -7,6 +7,7 @@ import {
   saveOAuthConnection, loadActiveOAuthConnection, revokeOAuthConnection,
 } from "@deedwell/adgrants-domain";
 import { HttpError, type AppContext } from "./app.js";
+import { requireTokens } from "./billing-gate.js";
 import { resolveInfoRequest } from "./fact-fields.js";
 import { completionForRun } from "./workspace.js";
 
@@ -56,6 +57,7 @@ export function registerAdGrantsRoutes(app: FastifyInstance, ctx: AppContext): v
 
   app.post("/v1/orgs/:orgId/ad-grants/start", async (req, reply) => {
     ctx.requireRole(req, "member");
+    await requireTokens(ctx, req);
     const result = await ctx.inOrg(req, async (client) => {
       const projectId = await findOrCreateProject(client, req.orgId!, req.userId!);
       const existingRun = await client.query(

@@ -209,6 +209,7 @@ export const WorkflowRunStatus = z.enum([
   "running",
   "waiting_for_info",
   "waiting_approval",
+  "waiting_payment",
   "suspended_budget",
   "failed",
   "completed",

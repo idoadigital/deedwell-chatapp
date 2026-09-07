@@ -1,7 +1,7 @@
 import type { PoolClient } from "pg";
 import { createHash } from "node:crypto";
 import { audit, tenantFileKey, uuidv7, withContext, loadMissionProfile, missionProfileBlock } from "@deedwell/database";
-import { debitTokens, getBalance, loadStripeConfig } from "@deedwell/billing-domain";
+import { billingState } from "./billing-gate.js";
 import { runAgentTask } from "@deedwell/agent-runtime";
 import { AgentDefinition, IntentOutput, RESERVED_SITE_SLUGS, type GrantActionRef, type OrgFact } from "@deedwell/schemas";
 import { GRANT_FULL_WORKFLOW, writeOrgFact } from "@deedwell/grant-domain";
@@ -506,21 +506,21 @@ const EA = executiveAssistant.displayName;
 
 /** Same shape as the *_domain packages' recordModelUsage helpers, tagged
  *  source:'chat' so Settings -> Usage can tell chat and workflow spend
- *  apart without a schema change. Debits the org's prepaid balance in the
- *  same transaction — see the balance check at the top of the model call
- *  below for what happens once that balance runs out. */
+ *  apart without a schema change. The usage_ledger trigger debits the
+ *  org's prepaid balance in the same transaction — see the balance check at
+ *  the top of the model call below for what happens once it runs out. */
 async function recordChatUsage(
   client: PoolClient,
   tenantId: string,
   tokens: number,
   meta: { agentKey: string; channelId: string }
 ): Promise<void> {
+  // The usage_ledger_debit trigger takes the tokens off the prepaid balance.
   await client.query(
     `INSERT INTO usage_ledger (id, tenant_id, run_id, kind, quantity, metadata)
      VALUES ($1,$2,NULL,'model_tokens',$3,$4)`,
     [uuidv7(), tenantId, tokens, JSON.stringify({ source: "chat", ...meta })]
   );
-  await debitTokens(client, tenantId, tokens);
 }
 
 
@@ -683,8 +683,7 @@ export async function handleUserMessage(
     // env/DB without Stripe wired up behaves exactly as it always has,
     // unmetered (same graceful-degradation reasoning as every other
     // "not configured yet" feature this session).
-    const stripeConfig = await loadStripeConfig(client);
-    if (stripeConfig && (await getBalance(client, ids.tenantId)) <= 0) {
+    if ((await billingState(client, ids.tenantId)).blocked) {
       await say("Your token balance is empty — buy more in Settings → Billing to keep chatting.");
       return out;
     }

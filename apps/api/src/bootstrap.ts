@@ -31,6 +31,7 @@ import {
 import { ALL_AD_GRANTS_AGENTS, buildAdGrantsWorkflow } from "@deedwell/adgrants-domain";
 import { createImageGenerator, readProviderKey } from "@deedwell/content-domain";
 import { createGcpGrantPlatform, type GcpGrantPlatform } from "./gcp/platform.js";
+import { canSpendChecker } from "./billing-gate.js";
 
 export interface Deps {
   adminPool: Pool;
@@ -102,7 +103,8 @@ export async function createDeps(overrides: Partial<{
     adminPool,
     appPool,
     services,
-    overrides.backoffMs
+    overrides.backoffMs,
+    canSpendChecker(adminPool)
   );
   engine.register(buildGrantSliceWorkflow());
   engine.register(buildGrantFullWorkflow());

@@ -4,6 +4,7 @@ import { ApprovalDecisionInput, ProvideInfoInput, StartGrantSliceInput } from "@
 import { GRANT_SLICE_WORKFLOW, writeOrgFact } from "@deedwell/grant-domain";
 import type { WorkflowEvent } from "@deedwell/workflows";
 import { HttpError, type AppContext } from "./app.js";
+import { requireTokens } from "./billing-gate.js";
 import { artifactTypeLabel, renderArtifactPdf } from "./artifact-pdf.js";
 import { resolveInfoRequest } from "./fact-fields.js";
 import { PASSPORT_FIELDS } from "@deedwell/grant-domain";
@@ -57,6 +58,7 @@ export function registerGrantRoutes(app: FastifyInstance, ctx: AppContext): void
 
   app.post("/v1/orgs/:orgId/projects/:projectId/grant-slice", async (req, reply) => {
     ctx.requireRole(req, "member");
+    await requireTokens(ctx, req);
     const { projectId } = req.params as { projectId: string };
     const input = StartGrantSliceInput.parse(req.body);
 

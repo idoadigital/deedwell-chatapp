@@ -1,9 +1,10 @@
 import type { FastifyInstance } from "fastify";
 import {
-  createCheckoutSession, getBalance, handleCheckoutCompleted,
+  createCheckoutSession, handleCheckoutCompleted,
   listTransactions, loadStripeConfig, TOKEN_PACKAGES, verifyWebhookEvent,
 } from "@deedwell/billing-domain";
 import { HttpError, type AppContext } from "./app.js";
+import { billingState } from "./billing-gate.js";
 
 // Same trusted-origin allowlist reasoning as routes-ad-grants.ts's OAuth
 // redirect handling — success/cancel URLs are round-tripped through
@@ -17,9 +18,7 @@ function appOrigin(): string {
 export function registerBillingRoutes(app: FastifyInstance, ctx: AppContext): void {
   app.get("/v1/orgs/:orgId/billing/balance", async (req) => {
     ctx.requireRole(req, "member");
-    const config = await loadStripeConfig(ctx.deps.appPool);
-    const tokenBalance = await ctx.inOrg(req, (client) => getBalance(client, req.orgId!));
-    return { tokenBalance, configured: config !== null };
+    return ctx.inOrg(req, (client) => billingState(client, req.orgId!));
   });
 
   app.get("/v1/orgs/:orgId/billing/transactions", async (req) => {

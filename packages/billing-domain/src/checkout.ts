@@ -1,5 +1,6 @@
 import type { Pool } from "pg";
 import Stripe from "stripe";
+import { resumeRunsWaitingPayment } from "./balance.js";
 import { audit, uuidv7, withContext } from "@deedwell/database";
 import type { StripeConfig } from "./stripe-config.js";
 import { findPackage } from "./packages.js";
@@ -95,6 +96,7 @@ export async function handleCheckoutCompleted(
        ON CONFLICT (tenant_id) DO UPDATE SET token_balance = billing_accounts.token_balance + $3`,
       [uuidv7(), row.tenant_id, Number(row.token_amount)]
     );
+    await resumeRunsWaitingPayment(client, row.tenant_id);
     await audit(client, {
       tenantId: row.tenant_id, action: "billing.topped_up",
       entityType: "billing_transaction", entityId: row.id,

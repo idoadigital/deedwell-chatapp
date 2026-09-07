@@ -20,6 +20,7 @@ import {
 } from "@deedwell/schemas";
 import { extractDocumentText, extractFactsFromDocument, writeOrgFact } from "@deedwell/grant-domain";
 import { HttpError, SESSION_COOKIE_NAME, type AppContext } from "./app.js";
+import { requireTokens } from "./billing-gate.js";
 import { proactiveNotificationItems } from "./routes-proactive.js";
 
 const MAX_FILE_BYTES = 8_000_000;
@@ -436,6 +437,7 @@ export function registerCoreRoutes(app: FastifyInstance, ctx: AppContext): void 
 
   app.post("/v1/orgs/:orgId/files/:fileId/extract-facts", async (req, reply) => {
     ctx.requireRole(req, "member");
+    await requireTokens(ctx, req);
     const { fileId } = req.params as { fileId: string };
     const file = await ctx.inOrg(req, (client) =>
       client.query("SELECT filename, storage_key FROM files WHERE id = $1", [fileId])

@@ -11,6 +11,7 @@ import {
 } from "./assistant.js";
 import { TEAMMATES } from "./teammates.js";
 import { HttpError, type AppContext } from "./app.js";
+import { requireTokens } from "./billing-gate.js";
 import { resolveInfoRequest } from "./fact-fields.js";
 
 /** The reaction bar. Deliberately short — a fixed set keeps rendering
@@ -563,6 +564,7 @@ export function registerChatRoutes(app: FastifyInstance, ctx: AppContext): void 
 
   app.post("/v1/orgs/:orgId/channels/:channelId/messages", async (req, reply) => {
     ctx.requireRole(req, "member");
+    await requireTokens(ctx, req);
     const { channelId } = req.params as { channelId: string };
     const input = PostMessageInput.parse(req.body);
     const messages = await ctx.inOrg(req, async (client) => {

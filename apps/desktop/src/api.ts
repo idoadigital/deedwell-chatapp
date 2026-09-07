@@ -74,6 +74,8 @@ async function call<T>(
       /* keep default */
     }
     if (res.status === 401) setToken(null);
+    // Out of tokens: the shell shows the paywall; the caller still gets the error.
+    if (res.status === 402) window.dispatchEvent(new CustomEvent("deedwell:payment-required", { detail: message }));
     throw new ApiError(res.status, message);
   }
   return (raw ? res.text() : res.json()) as Promise<T>;

@@ -1,5 +1,7 @@
 import type { FastifyInstance } from "fastify";
-import type { AppContext } from "./app.js";
+import { audit, withContext } from "@deedwell/database";
+import { resumeRunsWaitingPayment } from "@deedwell/billing-domain";
+import { HttpError, type AppContext } from "./app.js";
 
 /**
  * Platform-wide analytics — revenue, token usage, and signups are all
@@ -140,11 +142,34 @@ export function registerAdminAnalyticsRoutes(app: FastifyInstance, ctx: AppConte
   app.get("/v1/admin/organizations", async (req) => {
     ctx.requirePlatformAdmin(req);
     const { rows } = await ctx.deps.adminPool.query(
-      `SELECT o.id, o.name, o.slug, o.created_at,
+      `SELECT o.id, o.name, o.slug, o.created_at, o.billing_exempt,
               (SELECT count(*)::int FROM organization_memberships m WHERE m.tenant_id = o.id) AS member_count,
               (SELECT token_balance FROM billing_accounts b WHERE b.tenant_id = o.id) AS token_balance
        FROM organizations o ORDER BY o.created_at DESC LIMIT 500`
     );
     return { organizations: rows };
+  });
+
+  /** Staff and testers: bypass payment for a whole organization. Flipping it
+   *  on also wakes any of its runs parked for lack of tokens. */
+  app.patch("/v1/admin/organizations/:orgId/billing", async (req) => {
+    ctx.requirePlatformAdmin(req);
+    const { orgId } = req.params as { orgId: string };
+    const { exempt } = req.body as { exempt?: boolean };
+    if (typeof exempt !== "boolean") throw new HttpError(400, "exempt must be true or false");
+    const { rows } = await ctx.deps.adminPool.query(
+      `UPDATE organizations SET billing_exempt = $2 WHERE id = $1 RETURNING id, name, billing_exempt`,
+      [orgId, exempt]
+    );
+    if (!rows[0]) throw new HttpError(404, "Organization not found");
+    if (exempt) await resumeRunsWaitingPayment(ctx.deps.adminPool, orgId);
+    await withContext(ctx.deps.appPool, { tenantId: orgId, userId: req.userId }, (client) =>
+      audit(client, {
+        tenantId: orgId, actorUser: req.userId, action: exempt ? "billing.exempted" : "billing.exemption_removed",
+        entityType: "organization", entityId: orgId, metadata: { by: req.userId },
+      })
+    );
+    req.log.info({ at: "billing.exempt", orgId, exempt, by: req.userId });
+    return { organization: rows[0] };
   });
 }

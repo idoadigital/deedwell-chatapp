@@ -74,6 +74,13 @@ export default function App() {
   const [settingsTab, setSettingsTab] = useState<"usage" | "billing">(() => (
     new URLSearchParams(window.location.search).get("settings") === "billing" ? "billing" : "usage"
   ));
+  // Any 402 from the API raises this; it clears when Settings → Billing opens.
+  const [paywall, setPaywall] = useState<string | null>(null);
+  useEffect(() => {
+    const onPay = (e: Event) => setPaywall((e as CustomEvent<string>).detail || "You're out of tokens.");
+    window.addEventListener("deedwell:payment-required", onPay);
+    return () => window.removeEventListener("deedwell:payment-required", onPay);
+  }, []);
   const [billingBanner, setBillingBanner] = useState<"success" | "cancel" | null>(() => {
     const b = new URLSearchParams(window.location.search).get("billing");
     return b === "success" || b === "cancel" ? b : null;
@@ -588,6 +595,13 @@ export default function App() {
           <div className="empty" style={{ margin: "auto" }}>Pick a conversation to get started.</div>
         )}
       </div>
+
+      {paywall && (
+        <div className="paywall-bar" role="alert">
+          <strong>Out of tokens.</strong> {paywall}
+          <button className="btn" onClick={() => { setPaywall(null); setSettingsTab("billing"); setOverlay("settings"); }}>Add tokens</button>
+        </div>
+      )}
 
       {/* ---- overlays (spec §10: settings live behind menus) ---- */}
       {overlay && (

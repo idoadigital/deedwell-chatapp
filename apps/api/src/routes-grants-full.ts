@@ -9,6 +9,7 @@ import {
 import { GRANT_FULL_WORKFLOW, passportStatus } from "@deedwell/grant-domain";
 import type { OrgFact } from "@deedwell/schemas";
 import { HttpError, type AppContext } from "./app.js";
+import { requireTokens } from "./billing-gate.js";
 
 export function registerGrantFullRoutes(app: FastifyInstance, ctx: AppContext): void {
   // ---- Funding Passport ---------------------------------------------------
@@ -26,6 +27,7 @@ export function registerGrantFullRoutes(app: FastifyInstance, ctx: AppContext): 
 
   app.post("/v1/orgs/:orgId/grant-search", async (req) => {
     ctx.requireRole(req, "member");
+    await requireTokens(ctx, req);
     const input = GrantSearchInput.parse(req.body);
     let results;
     try {
@@ -42,6 +44,7 @@ export function registerGrantFullRoutes(app: FastifyInstance, ctx: AppContext): 
 
   app.post("/v1/orgs/:orgId/projects/:projectId/opportunities", async (req, reply) => {
     ctx.requireRole(req, "member");
+    await requireTokens(ctx, req);
     const { projectId } = req.params as { projectId: string };
     const input = ImportOpportunityInput.parse(req.body);
     const result = await ctx.inOrg(req, async (client) => {
@@ -127,6 +130,7 @@ export function registerGrantFullRoutes(app: FastifyInstance, ctx: AppContext): 
 
   app.post("/v1/orgs/:orgId/projects/:projectId/grant-application", async (req, reply) => {
     ctx.requireRole(req, "member");
+    await requireTokens(ctx, req);
     const { projectId } = req.params as { projectId: string };
     const input = StartGrantApplicationInput.parse(req.body);
     const result = await ctx.inOrg(req, async (client) => {

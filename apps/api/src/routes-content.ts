@@ -6,6 +6,7 @@ import { readProviderKey, type ContentKind } from "@deedwell/content-domain";
 import { canStartCampaign, startCampaign, startMoreDesigns } from "./content-campaigns.js";
 import { CreateContentInput } from "@deedwell/schemas";
 import { HttpError, type AppContext } from "./app.js";
+import { requireTokens } from "./billing-gate.js";
 
 /** A campaign takes minutes, which is far longer than any sane HTTP request.
  *  The POST returns immediately with a 'generating' row; the client polls the
@@ -16,6 +17,7 @@ export function registerContentRoutes(app: FastifyInstance, ctx: AppContext): vo
 
   app.post("/v1/orgs/:orgId/content", async (req, reply) => {
     ctx.requireRole(req, "member");
+    await requireTokens(ctx, req);
     const input = CreateContentInput.parse(req.body);
     if (!canStartCampaign()) {
       throw new HttpError(429, "Another campaign is still generating — try again in a moment.");
@@ -143,6 +145,7 @@ export function registerContentRoutes(app: FastifyInstance, ctx: AppContext): vo
    *  campaign flips back to 'generating' and the client polls. */
   app.post("/v1/orgs/:orgId/content/:contentId/more", async (req, reply) => {
     ctx.requireRole(req, "member");
+    await requireTokens(ctx, req);
     const { contentId } = req.params as { contentId: string };
     if (!canStartCampaign()) {
       throw new HttpError(429, "Another campaign is still generating — try again in a moment.");

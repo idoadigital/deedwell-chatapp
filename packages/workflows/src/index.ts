@@ -85,7 +85,10 @@ export class PgWorkflowEngine<S> implements WorkflowEngine {
     /** App pool: RLS-bound; all step logic runs on it under the run's tenant. */
     private readonly appPool: Pool,
     private readonly services: S,
-    private readonly backoffMs: (attempt: number) => number = (a) => a * a * 1000
+    private readonly backoffMs: (attempt: number) => number = (a) => a * a * 1000,
+    /** Billing gate: false parks the run as waiting_payment instead of
+     *  running its next step. Unset means unmetered. */
+    private readonly canSpend?: (tenantId: string) => Promise<boolean>
   ) {}
 
   register(def: WorkflowDefinition<S>): void {
@@ -152,6 +155,15 @@ export class PgWorkflowEngine<S> implements WorkflowEngine {
     const stepFn = def.steps[run.current_step];
     if (!stepFn) {
       await this.markFailed(run, `Unknown step "${run.current_step}" in "${run.definition}"`);
+      return true;
+    }
+    if (this.canSpend && !(await this.canSpend(run.tenant_id))) {
+      await this.adminPool.query(
+        `UPDATE workflow_runs SET status = 'waiting_payment', claimed_by = NULL, claimed_at = NULL,
+           last_error = 'Out of tokens — the run resumes once the organization tops up' WHERE id = $1`,
+        [run.id]
+      );
+      this.emit(run.tenant_id, run.id, "waiting_payment", run.current_step);
       return true;
     }
     if (run.steps_used >= run.step_budget) {

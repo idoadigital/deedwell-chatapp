@@ -21,6 +21,17 @@ async function adjustBalance(client: Queryable, tenantId: string, delta: number)
   return Number(rows[0].token_balance);
 }
 
+/** Runs the engine parked for lack of tokens go back in the queue. Works on
+ *  either pool: the app pool sees the tenant's own runs, the admin pool all. */
+export async function resumeRunsWaitingPayment(client: Queryable, tenantId: string): Promise<number> {
+  const { rowCount } = await client.query(
+    `UPDATE workflow_runs SET status = 'pending', attempts = 0, next_attempt_at = NULL, last_error = NULL
+      WHERE tenant_id = $1 AND status = 'waiting_payment'`,
+    [tenantId]
+  );
+  return rowCount ?? 0;
+}
+
 export async function creditTokens(
   client: PoolClient,
   tenantId: string,
@@ -28,6 +39,7 @@ export async function creditTokens(
   meta: { actorUser?: string; reason: string }
 ): Promise<number> {
   const newBalance = await adjustBalance(client, tenantId, tokens);
+  if (newBalance > 0) await resumeRunsWaitingPayment(client, tenantId);
   await audit(client, {
     tenantId, actorUser: meta.actorUser, action: "billing.credited",
     entityType: "billing_account", entityId: tenantId, metadata: { tokens, reason: meta.reason },

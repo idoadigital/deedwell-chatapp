@@ -5,6 +5,7 @@ import { audit, tenantFileKey, uuidv7 } from "@deedwell/database";
 import { createImageGenerator, readProviderKey } from "@deedwell/content-domain";
 import { LogoBrief, LogoConcept } from "@deedwell/schemas";
 import { HttpError, type AppContext } from "./app.js";
+import { requireTokens } from "./billing-gate.js";
 import { LOGO_MAX_BYTES } from "./brand.js";
 import { setLogoFact } from "./routes-brand.js";
 import { buildLogoBrief, planLogoConcepts, renderLogoConcept, type LogoOrgContext } from "./logo-generator.js";
@@ -42,6 +43,7 @@ export function registerBrandLogoGeneratorRoutes(app: FastifyInstance, ctx: AppC
   /** Step 1 → 2: the conversational request becomes an editable brief. */
   app.post("/v1/orgs/:orgId/brand/logo/brief", async (req) => {
     ctx.requireRole(req, "member");
+    await requireTokens(ctx, req);
     const { request } = z.object({ request: z.string().trim().min(8).max(4000) }).parse(req.body);
     const org = await ctx.inOrg(req, (client) => loadLogoContext(client, req.orgId!));
     if (!org.facts.some((f) => f.key === "legal_name" && f.value.trim())) {
@@ -61,6 +63,7 @@ export function registerBrandLogoGeneratorRoutes(app: FastifyInstance, ctx: AppC
    *  slow or failed image never takes the others with it. */
   app.post("/v1/orgs/:orgId/brand/logo/concepts", async (req) => {
     ctx.requireRole(req, "member");
+    await requireTokens(ctx, req);
     const input = z.object({
       brief: LogoBrief,
       count: z.number().int().min(3).max(6).optional(),
@@ -83,6 +86,7 @@ export function registerBrandLogoGeneratorRoutes(app: FastifyInstance, ctx: AppC
   /** One concept → one transparent PNG candidate in storage. */
   app.post("/v1/orgs/:orgId/brand/logo/render", async (req) => {
     ctx.requireRole(req, "member");
+    await requireTokens(ctx, req);
     const input = z.object({
       generationId: z.string().regex(GENERATION_ID),
       conceptId: z.string().regex(CONCEPT_ID),
