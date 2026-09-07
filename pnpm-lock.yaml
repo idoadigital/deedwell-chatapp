@@ -102,6 +102,9 @@ importers:
       '@deedwell/content-domain':
         specifier: workspace:*
         version: link:../../packages/content-domain
+      '@deedwell/email':
+        specifier: workspace:*
+        version: link:../../packages/email
       '@deedwell/tasks-domain':
         specifier: workspace:*
         version: link:../../packages/tasks-domain
@@ -136,6 +139,9 @@ importers:
 
   apps/site-router:
     dependencies:
+      '@deedwell/email':
+        specifier: workspace:*
+        version: link:../../packages/email
       '@deedwell/website-domain':
         specifier: workspace:^
         version: link:../../packages/website-domain
@@ -145,6 +151,9 @@ importers:
       '@deedwell/auth':
         specifier: workspace:*
         version: link:../auth
+      '@deedwell/email':
+        specifier: workspace:*
+        version: link:../email
       '@deedwell/grant-domain':
         specifier: workspace:*
         version: link:../grant-domain
@@ -161,6 +170,9 @@ importers:
       '@deedwell/database':
         specifier: workspace:*
         version: link:../database
+      '@deedwell/email':
+        specifier: workspace:*
+        version: link:../email
       stripe:
         specifier: ^17.0.0
         version: 17.7.0
@@ -191,6 +203,9 @@ importers:
       '@deedwell/database':
         specifier: workspace:*
         version: link:../database
+      '@deedwell/email':
+        specifier: workspace:*
+        version: link:../email
 
   packages/content-domain:
     dependencies:
@@ -209,7 +224,17 @@ importers:
 
   packages/database: {}
 
-  packages/grant-domain: {}
+  packages/email:
+    dependencies:
+      '@deedwell/database':
+        specifier: workspace:*
+        version: link:../database
+
+  packages/grant-domain:
+    dependencies:
+      '@deedwell/email':
+        specifier: workspace:*
+        version: link:../email
 
   packages/observability: {}
 
@@ -237,6 +262,9 @@ importers:
       '@deedwell/content-domain':
         specifier: workspace:^
         version: link:../content-domain
+      '@deedwell/email':
+        specifier: workspace:*
+        version: link:../email
       playwright:
         specifier: ^1.49.0
         version: 1.62.1

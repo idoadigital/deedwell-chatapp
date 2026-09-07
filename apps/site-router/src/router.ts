@@ -4,6 +4,7 @@ import type { Pool } from "pg";
 import { uuidv7, type StorageAdapter } from "@deedwell/database";
 import { summarize } from "@deedwell/observability";
 import { MOTION_SCRIPT_HASH } from "@deedwell/website-domain";
+import { emailOrgAdmins, orgNameOf } from "@deedwell/email";
 
 /**
  * Site Router (BRD §10.3): resolves Host → (tenant, site, release) and serves
@@ -247,6 +248,18 @@ export function buildSiteRouter(deps: SiteRouterDeps): FastifyInstance {
       [uuidv7(), site.tenantId, site.siteId, formKey, JSON.stringify(payload)]
     );
     req.log.info({ siteId: site.siteId, formKey, summary: summarize(payload, 200) }, "form submission");
+    // A donor or volunteer wrote in; the nonprofit is almost never watching
+    // the dashboard, so the submission goes to their inbox too. Never fails
+    // the visitor's request.
+    try {
+      const named = (await deps.adminPool.query("SELECT name FROM sites WHERE id = $1", [site.siteId])).rows[0];
+      await emailOrgAdmins(deps.adminPool, site.tenantId, "form_submission", {
+        orgName: await orgNameOf(deps.adminPool, site.tenantId), siteName: named?.name ?? slug, formKey,
+        fields: Object.entries(payload),
+      });
+    } catch (err) {
+      req.log.info({ siteId: site.siteId, err: String(err) }, "form submission email not queued");
+    }
     return reply.redirect(303, `${prefix}/thanks/`);
   }
 

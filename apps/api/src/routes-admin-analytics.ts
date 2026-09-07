@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { emailOrgAdmins } from "@deedwell/email";
 import { audit, withContext } from "@deedwell/database";
 import { resumeRunsWaitingPayment } from "@deedwell/billing-domain";
 import { HttpError, type AppContext } from "./app.js";
@@ -169,6 +170,9 @@ export function registerAdminAnalyticsRoutes(app: FastifyInstance, ctx: AppConte
         entityType: "organization", entityId: orgId, metadata: { by: req.userId },
       })
     );
+    if (exempt) {
+      await emailOrgAdmins(ctx.deps.adminPool, orgId, "billing_exempt", { orgName: rows[0].name }, { dedupe: `billing_exempt:${orgId}:${Date.now()}` });
+    }
     req.log.info({ at: "billing.exempt", orgId, exempt, by: req.userId });
     return { organization: rows[0] };
   });

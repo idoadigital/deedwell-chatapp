@@ -1,10 +1,11 @@
 {
-  "name": "@deedwell/grant-domain",
+  "name": "@deedwell/email",
   "version": "0.1.0",
   "private": true,
   "main": "src/index.ts",
+  "types": "src/index.ts",
   "type": "module",
   "dependencies": {
-    "@deedwell/email": "workspace:*"
+    "@deedwell/database": "workspace:*"
   }
 }

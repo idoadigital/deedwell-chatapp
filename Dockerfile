@@ -18,6 +18,7 @@ COPY packages/billing-domain/package.json packages/billing-domain/package.json
 COPY packages/browser-automation/package.json packages/browser-automation/package.json
 COPY packages/browser-research/package.json packages/browser-research/package.json
 COPY packages/database/package.json packages/database/package.json
+COPY packages/email/package.json packages/email/package.json
 COPY packages/grant-domain/package.json packages/grant-domain/package.json
 COPY packages/observability/package.json packages/observability/package.json
 COPY packages/schemas/package.json packages/schemas/package.json

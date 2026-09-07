@@ -6,6 +6,7 @@ import { executiveAssistant } from "../assistant.js";
 import { resolveInfoRequest } from "../fact-fields.js";
 import { loadProactivePolicy } from "./policy.js";
 import { derivePresence } from "./presence.js";
+import { emailOrgAdmins, emailUser, orgNameOf } from "@deedwell/email";
 import {
   cancelCandidates, insertCandidate, loadUserActivity, logEvent, markReadInChannel, markResponded, openCandidateFor,
   resolveIntentsForRun, setGoalStatus, upsertGoal, upsertIntent,
@@ -89,6 +90,13 @@ export async function handleRunEvent(deps: Deps, event: { tenantId: string; runI
     const title = (GOAL_TITLES[run.definition] ?? ((p: string) => `${humanKey(run.definition)}: ${p}`))(run.project_name, run.org_name);
     const goalSubject = `run:${run.id}`;
     const policy = await loadProactivePolicy(client);
+    const isWebsite = String(run.definition).startsWith("website");
+
+    if (event.status === "waiting_payment") {
+      await emailOrgAdmins(client, tenantId, "out_of_tokens", { orgName: run.org_name, what: title },
+        { dedupe: `out_of_tokens:${tenantId}:${new Date().toISOString().slice(0, 10)}` }).catch(() => undefined);
+      return;
+    }
     const agentFor = async () => {
       const last = await client.query(
         "SELECT author_agent FROM messages WHERE tenant_id = $1 AND author_kind = 'agent' AND metadata->>'runId' = $2 ORDER BY created_at DESC LIMIT 1",
@@ -127,6 +135,20 @@ export async function handleRunEvent(deps: Deps, event: { tenantId: string; runI
       });
       // One open follow-up per subject; a repeat milestone re-arms the clock.
       await cancelCandidates(client, tenantId, { subjectKey: subject }, "milestone re-raised");
+      // Email the requester when they're not in the app. Website builds are
+      // covered by their own richer mails (preview ready / build failed), and
+      // an Ad Grants Google re-sign-in has its own mail from the workflow.
+      const waiting = (await client.query("SELECT state->'waiting'->'payload' AS payload FROM workflow_runs WHERE id = $1", [run.id])).rows[0]?.payload as { context?: string } | null;
+      const systemWait = waiting?.context === "google_connect" || waiting?.context === "google_review_pending";
+      if (!systemWait && !(isWebsite && event.status === "waiting_approval")) {
+        const activity = await loadUserActivity(client, tenantId, userId);
+        if (derivePresence({ last_active_at: activity.lastActiveAt, presence: activity.presence }) !== "ONLINE_ACTIVE") {
+          const mate = (await import("../teammates.js")).teammateByKey.get(agentKey);
+          await emailUser(client, userId, event.status === "waiting_approval" ? "approval_needed" : "info_needed", {
+            orgName: run.org_name, title, agentName: mate?.name ?? "Your co-worker", nextAction,
+          }, { tenantId, dedupe: `${event.status}:${run.id}:${event.step}` }).catch(() => undefined);
+        }
+      }
       const row = await insertCandidate(client, {
         tenantId, userId, agentKey, channelId: run.channel_id, intentId, goalId, type: "waiting_on_user",
         reason: `${title} is waiting on the user to ${nextAction}`, importance: isAdGrants(run.definition) ? 4 : 3, urgency: 3,
@@ -161,6 +183,14 @@ export async function handleRunEvent(deps: Deps, event: { tenantId: string; runI
       });
       await logEvent(client, tenantId, row.id, "delivered", "milestone message via engine bridge", { agent: agentKey, presence, notified: row.notified, messageId: msg?.id ?? null });
       if (row.notified) deps.engine.events.emit("event", { type: "notification_created", tenantId, userId, candidateId: row.id } as never);
+      if (!done) {
+        // A stopped run is always worth an email; successes have their own
+        // domain-specific mails (site published, package ready, campaign live).
+        const err = (await client.query("SELECT last_error FROM workflow_runs WHERE id = $1", [run.id])).rows[0]?.last_error as string | null;
+        await emailUser(client, userId, "run_failed", {
+          orgName: run.org_name, title, error: err ?? null, status: event.status === "suspended_budget" ? "suspended_budget" : "failed",
+        }, { tenantId, dedupe: `run_failed:${run.id}:${event.status}:${event.step}` }).catch(() => undefined);
+      }
       return;
     }
 

@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import { randomBytes } from "node:crypto";
 import { hashPassword } from "@deedwell/auth";
 import { uuidv7 } from "@deedwell/database";
+import { enqueueEmail, orgNameOf } from "@deedwell/email";
 import { HttpError, type AppContext } from "./app.js";
 
 function generateTempPassword(): string {
@@ -60,6 +61,11 @@ export function registerAdminUsersRoutes(app: FastifyInstance, ctx: AppContext):
         [uuidv7(), orgId, userId, role || "member"]
       );
     }
+    const orgName = orgId ? await orgNameOf(ctx.deps.adminPool, orgId) : null;
+    await enqueueEmail(ctx.deps.adminPool, {
+      kind: "temp_password", to: email.trim().toLowerCase(), userId, tenantId: orgId ?? null,
+      payload: { displayName: displayName.trim(), tempPassword, orgName, reason: "created" },
+    });
     req.log.info({ at: "admin.user_created", userId, email, createdBy: req.userId });
     return reply.status(201).send({ userId, tempPassword });
   });
@@ -114,12 +120,16 @@ export function registerAdminUsersRoutes(app: FastifyInstance, ctx: AppContext):
     ctx.requirePlatformAdmin(req);
     const { userId } = req.params as { userId: string };
     const tempPassword = generateTempPassword();
-    const { rowCount } = await ctx.deps.adminPool.query(
-      `UPDATE users SET password_hash = $2, must_change_password = true WHERE id = $1`,
+    const { rows } = await ctx.deps.adminPool.query(
+      `UPDATE users SET password_hash = $2, must_change_password = true WHERE id = $1 RETURNING email, display_name`,
       [userId, await hashPassword(tempPassword)]
     );
-    if (!rowCount) throw new HttpError(404, "User not found");
+    if (!rows[0]) throw new HttpError(404, "User not found");
     await ctx.deps.adminPool.query(`UPDATE sessions SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL`, [userId]);
+    await enqueueEmail(ctx.deps.adminPool, {
+      kind: "temp_password", to: rows[0].email, userId,
+      payload: { displayName: rows[0].display_name, tempPassword, orgName: null, reason: "reset" },
+    });
     req.log.info({ at: "admin.user_temp_password_set", userId, actorId: req.userId });
     return { tempPassword };
   });

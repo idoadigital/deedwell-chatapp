@@ -8,6 +8,7 @@ import {
 } from "@deedwell/content-domain";
 import type { AppContext } from "./app.js";
 import { onContentCampaignFinished } from "./proactive/candidates.js";
+import { emailUser, orgNameOf } from "@deedwell/email";
 
 /**
  * Content Studio campaigns, shared by the /content routes and the chat: a
@@ -62,22 +63,37 @@ async function runCampaign(args: {
 
     await storeDesigns({ deps, orgId, userId, id, designs: result.designs });
 
-    await withContext(deps.appPool, { tenantId: orgId, userId }, (client) =>
-      client.query(
+    await withContext(deps.appPool, { tenantId: orgId, userId }, async (client) => {
+      await client.query(
         `UPDATE content_projects SET status = 'ready', strategy = $2, updated_at = now() WHERE id = $1`,
         [id, JSON.stringify(result.strategy)]
-      )
-    );
+      );
+      await emailCampaignFinished(client, { orgId, userId, id, status: "ready", error: null });
+    });
     void onContentCampaignFinished(deps, { tenantId: orgId, userId, projectId: id, status: "ready" });
   } catch (err) {
-    await withContext(deps.appPool, { tenantId: orgId, userId }, (client) =>
-      client.query(
+    await withContext(deps.appPool, { tenantId: orgId, userId }, async (client) => {
+      await client.query(
         `UPDATE content_projects SET status = 'failed', error = $2, updated_at = now() WHERE id = $1`,
         [id, String((err as Error).message ?? err).slice(0, 500)]
-      )
-    ).catch(() => {});
+      );
+      await emailCampaignFinished(client, { orgId, userId, id, status: "failed", error: String((err as Error).message ?? err).slice(0, 200) });
+    }).catch(() => {});
     void onContentCampaignFinished(deps, { tenantId: orgId, userId, projectId: id, status: "failed", error: String((err as Error).message ?? err).slice(0, 200) });
     throw err;
+  }
+}
+
+/** Generation runs for minutes after the request returned; whether it was
+ *  started from Content Studio or chat, the requester hears by email. */
+async function emailCampaignFinished(client: PoolClient, a: { orgId: string; userId: string; id: string; status: "ready" | "failed"; error: string | null }): Promise<void> {
+  try {
+    const title = String((await client.query("SELECT title FROM content_projects WHERE id = $1", [a.id])).rows[0]?.title ?? "your designs");
+    await emailUser(client, a.userId, "content_campaign_finished", {
+      orgName: await orgNameOf(client, a.orgId), title, status: a.status, error: a.error,
+    }, { tenantId: a.orgId, dedupe: `content_campaign:${a.id}:${a.status}` });
+  } catch (err) {
+    console.error(JSON.stringify({ at: "email.campaign_hook_error", projectId: a.id, error: String((err as Error).message ?? err).slice(0, 300) }));
   }
 }
 

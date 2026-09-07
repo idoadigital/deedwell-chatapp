@@ -1,5 +1,6 @@
 import type { Pool } from "pg";
-import { ConnectorHealthService, unseal } from "./health.js";
+import { ConnectorHealthService, providerLabel, unseal } from "./health.js";
+import { emailUser, orgNameOf } from "@deedwell/email";
 import { SocialPublishingService } from "./publishing.js";
 
 /**
@@ -127,6 +128,19 @@ async function publishOne(deps: WorkerDeps, post: Record<string, any>): Promise<
     );
     if (permanent && post.connector_id) {
       await health.record(post.tenant_id, post.connector_id, verdict, post.created_by).catch(() => {});
+    }
+    if (giveUp) {
+      // The person who scheduled it closed the tab long ago.
+      const conn = post.connector_id
+        ? (await pool.query("SELECT provider, connector_type, provider_account_name FROM connector_connections WHERE id = $1", [post.connector_id])).rows[0]
+        : null;
+      await emailUser(pool, post.created_by, "post_failed", {
+        orgName: await orgNameOf(pool, post.tenant_id),
+        platform: conn ? providerLabel(conn.provider, conn.connector_type) : String(post.platform ?? "social"),
+        accountName: conn?.provider_account_name ?? null,
+        scheduledAt: post.scheduled_at ? new Date(post.scheduled_at).toISOString() : null,
+        error: message.slice(0, 500), content: String(post.content ?? ""),
+      }, { tenantId: post.tenant_id, dedupe: `post_failed:${post.id}` }).catch(() => undefined);
     }
     deps.log?.error({ postId: post.id, attempts, giveUp, err: message }, "scheduled post failed");
   }

@@ -8,6 +8,7 @@ const ALL_TABLES = [
   "usage_ledger", "audit_events", "org_facts", "grant_requirements", "grant_opportunities",
   "artifact_versions", "artifacts", "tool_invocations", "approvals", "workflow_steps",
   "workflow_runs", "files", "projects", "invitations", "organization_memberships",
+  "email_outbox", "password_reset_tokens",
   "organizations", "sessions", "users",
   // Platform-owned (no tenant), so nothing above cascades into them.
   "site_reference_templates", "platform_settings",

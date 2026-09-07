@@ -293,6 +293,27 @@ describe("Proactive agent messaging", () => {
     expect(fourth).toEqual({ candidateId: third.candidateId, deduplicated: true });
   });
 
+  it("a critical message is not vetoed by the daily cap — only deferred ones are", async () => {
+    const f = await fresh("proactive-cap");
+    for (let i = 0; i < 3; i++) {
+      await env.adminPool.query(
+        `INSERT INTO proactive_candidates (id, tenant_id, user_id, agent_key, channel_id, type, reason, subject_key, importance, urgency, status, delivered_at, suggested_send_at, read_at, responded_at)
+         VALUES (gen_random_uuid(), $1, $2, 'grant.writer', $3, 'work_completed', 'done', $4, 4, 3, 'responded', $5, $5, $5, $5)`,
+        [f.orgId, f.userId, f.channelId, `done:${i}`, hours(-1 - i)]
+      );
+    }
+    await proposeProactiveMessage(env.deps, f.orgId, { userId: f.userId, agentKey: "core.executive_assistant", channelId: f.channelId, type: "work_completed",
+      reason: "Test follow-up", proposedMessage: "This is a test.", subjectKey: "test:cap", importance: 5, urgency: 5, requiresResponse: false, relatedEntity: {}, metadata: {} });
+    await proposeProactiveMessage(env.deps, f.orgId, { userId: f.userId, agentKey: "grant.writer", channelId: f.channelId, type: "goal_progress",
+      reason: "Routine progress", proposedMessage: "We are 3 of 5 through.", subjectKey: "progress:cap", importance: 3, urgency: 2, requiresResponse: false, relatedEntity: {}, metadata: {} });
+    await runProactiveTick(env.deps, T0);
+    const rows = await candidates(f.orgId);
+    expect(rows.find((c) => c.subject_key === "test:cap").status).toBe("delivered");
+    const routine = rows.find((c) => c.subject_key === "progress:cap");
+    expect(["scheduled", "delivered"]).toContain(routine.status); // deferred by the cap, or folded into the critical one — never vetoed
+    expect(routine.decision.reason ?? "").not.toMatch(/cap/);
+  });
+
   it("policy: platform admins can tune the policy, and disabling it suppresses everything", async () => {
     const f = await fresh("proactive-admin");
     await env.adminPool.query("UPDATE users SET is_platform_admin = true WHERE id = $1", [f.userId]);

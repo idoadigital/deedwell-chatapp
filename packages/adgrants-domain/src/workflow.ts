@@ -1,4 +1,5 @@
 import { audit, uuidv7 } from "@deedwell/database";
+import { emailOrgAdmins, orgNameOf } from "@deedwell/email";
 import { runAgentTask } from "@deedwell/agent-runtime";
 import { upsertArtifactVersion, type GrantServices } from "@deedwell/grant-domain";
 import type { StepContext, StepResult, WorkflowDefinition } from "@deedwell/workflows";
@@ -83,7 +84,12 @@ function isSessionExpired(err: unknown): boolean {
   return err instanceof Error && err.name === "SessionExpiredError";
 }
 
-function googleReconnectWait(ctx: Ctx, resumeStep: string): StepResult {
+async function googleReconnectWait(ctx: Ctx, resumeStep: string): Promise<StepResult> {
+  // The application is stuck until a person signs in to Google again — and
+  // this happens mid-automation, hours or days after they last looked.
+  await emailOrgAdmins(ctx.client, ctx.tenantId, "ad_grants_reconnect", {
+    orgName: await orgNameOf(ctx.client, ctx.tenantId), step: resumeStep,
+  }, { dedupe: `ad_grants_reconnect:${ctx.runId}:${resumeStep}:${new Date().toISOString().slice(0, 10)}` });
   return {
     state: ctx.state,
     wait: { kind: "info", payload: { context: "google_connect" }, resumeStep },
@@ -249,6 +255,12 @@ export function buildAdGrantsWorkflow(): WorkflowDefinition<GrantServices> {
             wait: { kind: "info", payload: { context: "google_review_pending" }, resumeStep: "await_google_review" },
           };
         }
+        // Google's review takes days; the outcome is the one email every
+        // applicant is waiting for.
+        await emailOrgAdmins(ctx.client, ctx.tenantId, "ad_grants_review", {
+          orgName: await orgNameOf(ctx.client, ctx.tenantId),
+          status: review.status === "rejected" ? "rejected" : "approved", reason: review.reason ?? null,
+        }, { dedupe: `ad_grants_review:${ctx.runId}:${review.status}` });
         if (review.status === "rejected") {
           return { state: { ...ctx.state, reviewRejectionReason: review.reason ?? null }, next: "handle_review_rejection" };
         }
@@ -391,6 +403,9 @@ export function buildAdGrantsWorkflow(): WorkflowDefinition<GrantServices> {
           tenantId: ctx.tenantId, actorAgent: applicationAgent.agentKey, action: "ad_grants.campaign_published",
           entityType: "workflow_run", entityId: ctx.runId, metadata: { campaignId },
         });
+        await emailOrgAdmins(ctx.client, ctx.tenantId, "ad_grants_live", {
+          orgName: await orgNameOf(ctx.client, ctx.tenantId), campaignId: campaignId ?? null,
+        }, { dedupe: `ad_grants_live:${ctx.runId}` });
         return { state: { ...ctx.state, result: "completed", googleCampaignId: campaignId }, complete: true };
       },
     },

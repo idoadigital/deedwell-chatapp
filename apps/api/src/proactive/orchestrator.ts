@@ -8,6 +8,7 @@ import { inQuietHours, loadProactivePolicy, quietHoursEnd, scoreCandidate, type 
 import { derivePresence, type Presence } from "./presence.js";
 import { cancelCandidates, loadLedger, loadUserActivity, logEvent, setCandidateStatus, type Ledger, type UserActivity } from "./store.js";
 import { handleRunEvent } from "./candidates.js";
+import { emailUser } from "@deedwell/email";
 
 /**
  * The only component that may turn a proposal into a chat message.
@@ -83,13 +84,16 @@ export async function evaluateCandidate(client: PoolClient, c: Candidate, policy
     followUpsForIntent: c.intent_id ? (ledger.followUpsByIntent.get(c.intent_id) ?? 0) : 0,
   };
   const { score, factors, reasons } = scoreCandidate(inputs, policy);
-  // Spacing after another agent's message defers a good candidate rather than
-  // vetoing it, so the threshold is judged without that one penalty.
-  const merit = scoreCandidate({ ...inputs, minutesSinceLastProactive: null }, policy).score;
+  // Value and limits are different questions. Fatigue (the daily cap) and
+  // spacing defer a worthwhile message — or are bypassed by a critical one —
+  // so the threshold judges merit without them; only duplicates, low value
+  // and being repeatedly ignored can veto.
+  const merit = scoreCandidate({ ...inputs, minutesSinceLastProactive: null, deliveredToday: 0 }, policy).score;
+  const vetoReason = reasons.find((r) => !/daily proactive message cap/.test(r));
   const base = { ledger, activity, intent: rel.intent, goal: rel.goal };
   if (duplicateSubject) return { action: "suppress", reason: "duplicate: subject raised within the topic cooldown", score, factors, ...base };
   if (overlap) return { action: "suppress", reason: `duplicate: ${overlap.agent_key} already covers this subject`, score, factors, ...base };
-  if (merit < policy.scoringThreshold) return { action: "suppress", reason: reasons[0] ?? `score ${merit} below threshold ${policy.scoringThreshold}`, score, factors, ...base };
+  if (merit < policy.scoringThreshold) return { action: "suppress", reason: vetoReason ?? `score ${merit} below threshold ${policy.scoringThreshold}`, score, factors, ...base };
 
   const critical = score >= policy.criticalPriorityThreshold || c.urgency >= 5;
   if (!critical) {
@@ -201,7 +205,13 @@ export async function deliverCandidate(deps: Deps, client: PoolClient, c: Candid
   }
   await logEvent(client, c.tenant_id, c.id, "delivered", null, { agent: c.agent_key, type: c.type, score: decision.score, presence, notified: notify, channelId, messageId: message.id, combined: extras.length });
   deps.engine.events.emit("event", { type: "message_created", tenantId: c.tenant_id, channelId, proactive: true, candidateId: c.id } as never);
-  if (notify) deps.engine.events.emit("event", { type: "notification_created", tenantId: c.tenant_id, userId: c.user_id, candidateId: c.id } as never);
+  if (notify) {
+    deps.engine.events.emit("event", { type: "notification_created", tenantId: c.tenant_id, userId: c.user_id, candidateId: c.id } as never);
+    // `notify` already means: away, under the daily cap, not opted out.
+    await emailUser(client, c.user_id, "teammate_message", {
+      orgName: ctx.orgName, agentName: ctx.agentName, agentRole: ctx.agentRole, message: composed.message,
+    }, { tenantId: c.tenant_id, dedupe: `proactive:${c.id}` }).catch(() => undefined);
+  }
   return { delivered: true, messageId: message.id as string };
 }
 

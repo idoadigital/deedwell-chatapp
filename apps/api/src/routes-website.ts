@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { siteUrls } from "@deedwell/website-domain";
 import { audit, enqueueWebhookEvent, uuidv7 } from "@deedwell/database";
 import {
   CreateWebsiteInput, CreateWebsiteRequestInput, RollbackInput, SubmitIntakeInput, WebsiteUpdateInput,
@@ -10,38 +11,8 @@ import { requireTokens } from "./billing-gate.js";
 /** Where the site-router serves a site, so the dashboard can link to it and
  *  frame it. Derived from the same env the router reads, never guessed by the
  *  browser. A partner-built site reports its own URL and that always wins. */
-function siteUrls(row: { slug: string; external_build_url: string | null; live_version: number | null; preview_version: number | null }) {
-  const base = process.env.SITES_BASE_DOMAIN ?? null;
-  const scheme = process.env.SITES_SCHEME ?? "https";
-  // Without a wildcard domain, the router's own origin still serves every
-  // site by path — so a preview is reachable the moment it is built.
-  const routerUrl = (process.env.SITES_ROUTER_URL ?? "").replace(/\/+$/, "") || null;
-  // The dashboard's own origin proxying the router: deedwell.org/preview/<slug>/
-  // for previews and deedwell.org/sites/<slug>/ for published sites.
-  const publicOrigin = (process.env.SITES_PUBLIC_ORIGIN ?? "").replace(/\/+$/, "") || null;
-  if (row.external_build_url) {
-    return { live_url: row.external_build_url, preview_url: null };
-  }
-  if (base) {
-    return {
-      live_url: row.live_version ? `${scheme}://${row.slug}.${base}` : null,
-      preview_url: row.preview_version ? `${scheme}://preview-${row.slug}.${base}` : null,
-    };
-  }
-  if (publicOrigin) {
-    return {
-      live_url: row.live_version ? `${publicOrigin}/sites/${row.slug}/` : null,
-      preview_url: row.preview_version ? `${publicOrigin}/preview/${row.slug}/` : null,
-    };
-  }
-  if (routerUrl) {
-    return {
-      live_url: row.live_version ? `${routerUrl}/${row.slug}/` : null,
-      preview_url: row.preview_version ? `${routerUrl}/preview/${row.slug}/` : null,
-    };
-  }
-  return { live_url: null, preview_url: null };
-}
+// siteUrls lives in @deedwell/website-domain (shared with the workflow, which
+// emails the preview/live address).
 
 /** Subdomain labels that can never be claimed as site slugs. */
 const RESERVED_SLUGS = new Set([

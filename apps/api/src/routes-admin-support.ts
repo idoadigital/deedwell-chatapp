@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import type { Pool } from "pg";
 import { uuidv7 } from "@deedwell/database";
+import { emailOrgAdmins, orgNameOf } from "@deedwell/email";
 import { HttpError, type AppContext } from "./app.js";
 
 async function findOrCreateThread(pool: Pool, tenantId: string): Promise<string> {
@@ -65,6 +66,11 @@ export function registerAdminSupportRoutes(app: FastifyInstance, ctx: AppContext
        VALUES ($1,$2,$3,'platform_admin',$4,$5)`,
       [id, orgId, threadId, req.userId, body.trim()]
     );
+    // Everyone in the workspace who can see the thread hears about the reply.
+    const orgName = await orgNameOf(ctx.deps.adminPool, orgId);
+    await emailOrgAdmins(ctx.deps.adminPool, orgId, "support_reply",
+      (r) => ({ displayName: r.displayName, orgName, body: body.trim() }),
+      { roles: ["owner", "admin", "member"], dedupe: `support_reply:${id}` });
     return reply.status(201).send({ id });
   });
 }

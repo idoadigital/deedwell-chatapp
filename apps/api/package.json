@@ -11,6 +11,7 @@
     "@deedwell/browser-automation": "workspace:*",
     "@deedwell/browser-research": "workspace:*",
     "@deedwell/connectors": "workspace:*",
-    "@deedwell/content-domain": "workspace:*"
+    "@deedwell/content-domain": "workspace:*",
+    "@deedwell/email": "workspace:*"
   }
 }

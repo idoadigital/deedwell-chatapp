@@ -6,6 +6,7 @@
   "type": "module",
   "dependencies": {
     "@deedwell/auth": "workspace:*",
-    "@deedwell/database": "workspace:*"
+    "@deedwell/database": "workspace:*",
+    "@deedwell/email": "workspace:*"
   }
 }

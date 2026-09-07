@@ -1,6 +1,7 @@
 import type { Pool } from "pg";
 import { decryptSecret } from "@deedwell/auth";
 import { withContext } from "@deedwell/database";
+import { emailOrgAdmins, orgNameOf } from "@deedwell/email";
 import { getProvider } from "./registry.js";
 import type { ConnectorStatus, OAuthTokens } from "./types.js";
 
@@ -59,13 +60,33 @@ export class ConnectorHealthService {
   }
 
   async record(tenantId: string, connectionId: string, health: HealthResult, actorId: string): Promise<void> {
-    await withContext(this.pool, { tenantId, userId: actorId }, (client) =>
-      client.query(
-        `UPDATE connector_connections SET status = $2, status_detail = $3 WHERE id = $1`,
+    await withContext(this.pool, { tenantId, userId: actorId }, async (client) => {
+      const { rows } = await client.query(
+        `UPDATE connector_connections SET status = $2, status_detail = $3 WHERE id = $1
+         RETURNING provider, connector_type, provider_account_name`,
         [connectionId, health.status, health.detail?.slice(0, 300) ?? null]
-      )
-    );
+      );
+      // A dead connection silently breaks every scheduled post after it;
+      // the admins hear once a day per connection until it's fixed.
+      if (rows[0] && (health.status === "expired" || health.status === "needs_attention")) {
+        await emailOrgAdmins(client, tenantId, "connector_attention", {
+          orgName: await orgNameOf(client, tenantId),
+          provider: providerLabel(rows[0].provider, rows[0].connector_type),
+          accountName: rows[0].provider_account_name ?? null, detail: health.detail,
+        }, { dedupe: `connector_attention:${connectionId}:${new Date().toISOString().slice(0, 10)}` }).catch(() => undefined);
+      }
+    });
   }
+}
+
+export function providerLabel(provider: string, connectorType?: string | null): string {
+  const t = (connectorType ?? "").toLowerCase();
+  if (t.includes("instagram")) return "Instagram";
+  if (t.includes("facebook") || t.includes("page")) return "Facebook";
+  if (t.includes("drive")) return "Google Drive";
+  if (provider === "meta") return "Meta";
+  if (provider === "google") return "Google";
+  return provider.charAt(0).toUpperCase() + provider.slice(1);
 }
 
 export function unseal(row: Record<string, any>): OAuthTokens {

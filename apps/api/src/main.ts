@@ -81,6 +81,15 @@ async function main(): Promise<void> {
     for (const signal of ["SIGTERM", "SIGINT"] as const) process.once(signal, () => stopProactive());
   }
 
+  // Transactional email: drains the outbox every few seconds and runs the
+  // low-balance / unread-digest sweeps. EMAIL_WORKER=off disables it.
+  if (process.env.EMAIL_WORKER !== "off") {
+    const { startEmailWorker } = await import("./email-worker.js");
+    const stopEmail = startEmailWorker(deps, { log: app.log });
+    abort.signal.addEventListener("abort", () => stopEmail());
+    for (const signal of ["SIGTERM", "SIGINT"] as const) process.once(signal, () => stopEmail());
+  }
+
   await app.listen({ port, host: "0.0.0.0" });
 
   const shutdown = async () => {

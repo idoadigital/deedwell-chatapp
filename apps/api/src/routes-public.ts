@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { enqueueWebhookEvent } from "@deedwell/database";
 import { CompleteWebsiteRequestInput } from "@deedwell/schemas";
+import { emailOrgAdmins, orgNameOf } from "@deedwell/email";
 import { HttpError, type AppContext } from "./app.js";
 
 /** Funding Passport facts that are safe to hand to the platform API — the
@@ -86,7 +87,7 @@ export function registerPublicRoutes(app: FastifyInstance, ctx: AppContext): voi
     ctx.requireApiScope(req, "websites:write");
     const { siteId } = req.params as { siteId: string };
     const input = CompleteWebsiteRequestInput.parse(req.body);
-    const site = await ctx.deps.adminPool.query("SELECT tenant_id, source FROM sites WHERE id = $1", [siteId]);
+    const site = await ctx.deps.adminPool.query("SELECT tenant_id, source, name FROM sites WHERE id = $1", [siteId]);
     if (!site.rows[0]) throw new HttpError(404, "Website not found");
     if (site.rows[0].source !== "external_partner") {
       throw new HttpError(409, "This site isn't part of the external-partner pipeline");
@@ -101,6 +102,11 @@ export function registerPublicRoutes(app: FastifyInstance, ctx: AppContext): voi
     await enqueueWebhookEvent(ctx.deps.adminPool, "website.published", {
       orgId: site.rows[0].tenant_id, siteId, url: input.url,
     });
+    // The nonprofit filled in a form days ago; this is the only way they hear.
+    await emailOrgAdmins(ctx.deps.adminPool, site.rows[0].tenant_id, "site_published", {
+      orgName: await orgNameOf(ctx.deps.adminPool, site.rows[0].tenant_id), siteName: site.rows[0].name ?? "Your website",
+      liveUrl: input.url, partnerBuilt: true,
+    }, { dedupe: `site_published:partner:${siteId}:${input.url}` });
     return { ok: true };
   });
 

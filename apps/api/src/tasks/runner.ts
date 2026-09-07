@@ -8,6 +8,8 @@ import type { Deps } from "../bootstrap.js";
 import { teammateByKey } from "../teammates.js";
 import { emitTaskUpdated, postAgentMessage, taskCard } from "./chat.js";
 import { addTaskEvent, agentName as displayName, deliverableView, taskView } from "./store.js";
+import { emailOrgAdmins, emailUser, orgNameOf } from "@deedwell/email";
+import { presenceOf } from "../proactive/presence.js";
 
 /**
  * The task runner. One tick claims due tasks across every tenant (admin
@@ -68,6 +70,15 @@ async function executeTask(deps: Deps, row: Record<string, any>, now: Date, work
       await postAgentMessage(deps, client, { tenantId, channelId: row.channel_id, agentKey, body, metadata: { taskId: row.id, ...metadata } });
     };
     const card = async () => taskCard(taskView((await client.query("SELECT * FROM agent_tasks WHERE id = $1", [row.id])).rows[0]));
+    // Email the requester when they are not in the app to see the chat
+    // post; a person actively working alongside the teammate gets no mail.
+    const away = async () => (await presenceOf(client, tenantId, userId)) !== "ONLINE_ACTIVE";
+    const mail = async <K extends "task_approval_requested" | "task_completed" | "task_failed" | "task_needs_input">(
+      kind: K, payload: Omit<Parameters<typeof emailUser<K>>[3], "orgName" | "taskTitle" | "agentName">, dedupe: string, always = false
+    ) => {
+      if (!always && !(await away())) return;
+      await emailUser(client, userId, kind, { orgName: await orgNameOf(client, tenantId), taskTitle: row.title, agentName, ...payload } as never, { tenantId, dedupe }).catch(() => undefined);
+    };
 
     // Approval gate: sensitive work waits for a person, every run unless
     // they approved "always".
@@ -75,6 +86,7 @@ async function executeTask(deps: Deps, row: Record<string, any>, now: Date, work
       await client.query(`UPDATE agent_tasks SET status = 'waiting_approval', claimed_by = NULL, claimed_at = NULL WHERE id = $1`, [row.id]);
       await addTaskEvent(client, { tenantId, taskId: row.id, kind: "approval_requested", actorKind: "agent", actorAgent: agentKey, message: `${agentName} is asking for approval before starting` });
       await post(`Before I start on "${row.title}", I need your go-ahead. Approve when you're ready, or reject to skip it.`, { taskApproval: true, taskCard: await card() });
+      await mail("task_approval_requested", {}, `task_approval:${row.id}:${Number(row.run_count ?? 0) + 1}`);
       emitTaskUpdated(deps, tenantId, row.id, "waiting_approval");
       return "waiting";
     }
@@ -83,6 +95,8 @@ async function executeTask(deps: Deps, row: Record<string, any>, now: Date, work
     if ((await billingState(client, tenantId)).blocked) {
       await client.query(`UPDATE agent_tasks SET status = 'blocked', blocked_reason = 'out_of_tokens', claimed_by = NULL, claimed_at = NULL WHERE id = $1`, [row.id]);
       await addTaskEvent(client, { tenantId, taskId: row.id, kind: "blocked", level: "warn", message: "Out of tokens — the task resumes after a top-up" });
+      await emailOrgAdmins(client, tenantId, "out_of_tokens", { orgName: await orgNameOf(client, tenantId), what: row.title },
+        { dedupe: `out_of_tokens:${tenantId}:${new Date().toISOString().slice(0, 10)}` }).catch(() => undefined);
       emitTaskUpdated(deps, tenantId, row.id, "blocked");
       return "blocked";
     }
@@ -139,6 +153,7 @@ async function executeTask(deps: Deps, row: Record<string, any>, now: Date, work
         );
         await addTaskEvent(client, { tenantId, taskId: row.id, runId, kind: "blocked", level: "warn", actorKind: "agent", actorAgent: agentKey, message: `Needs an answer: ${result.needsFromUser}` });
         await post(`Quick question before I can finish "${row.title}": ${result.needsFromUser}`, { taskQuestion: result.needsFromUser, taskCard: await card() });
+        await mail("task_needs_input", { question: result.needsFromUser }, `task_question:${runId}`);
         emitTaskUpdated(deps, tenantId, row.id, "blocked");
         return "blocked";
       }
@@ -196,6 +211,9 @@ async function executeTask(deps: Deps, row: Record<string, any>, now: Date, work
         `${row.is_recurring ? `Run #${runNumber} of "${row.title}" is done.` : `"${row.title}" is done.`} ${result.summary}${list}${next ? `\n\nNext run: ${next.toLocaleString("en-US", { timeZone: row.timezone || "UTC", dateStyle: "medium", timeStyle: "short" })}.` : ""}`,
         { taskUpdate: "completed", taskCard: await card(), taskDeliverables: stored }
       );
+      await mail("task_completed", {
+        summary: result.summary, deliverables: stored.map((d) => d.title), runNumber: row.is_recurring ? runNumber : null, nextRunAt: next?.toISOString() ?? null,
+      }, `task_completed:${runId}`);
       emitTaskUpdated(deps, tenantId, row.id, next ? "queued" : "completed");
       return "completed";
     } catch (err) {
@@ -212,6 +230,7 @@ async function executeTask(deps: Deps, row: Record<string, any>, now: Date, work
         message: giveUp ? `Failed after ${attempts} attempts: ${message}` : `Attempt ${attempts} failed, retrying: ${message}`,
       });
       if (giveUp) await post(`I couldn't finish "${row.title}": ${message}. You can retry it from Tasks once that's sorted.`, { taskUpdate: "failed", taskCard: await card() });
+      if (giveUp) await mail("task_failed", { error: message }, `task_failed:${runId}`, true);
       if (giveUp && row.parent_id) await stepFinished(deps, client, row, "failed");
       emitTaskUpdated(deps, tenantId, row.id, giveUp ? "failed" : "queued");
       console.error(JSON.stringify({ at: "tasks.run_failed", taskId: row.id, runId, attempts, giveUp, worker: workerId, err: message }));

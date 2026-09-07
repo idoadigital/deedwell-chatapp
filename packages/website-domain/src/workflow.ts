@@ -13,6 +13,8 @@ import {
 } from "@deedwell/schemas";
 import { digitalStrategist, websiteCopywriter, websiteDeveloper } from "./agents.js";
 import { pageUrl, renderSite } from "./renderer.js";
+import { siteUrls } from "./site-urls.js";
+import { emailOrgAdmins, orgNameOf } from "@deedwell/email";
 import { blockingFailures, runSiteChecks } from "./checks.js";
 import {
   INTAKE_SKIP_KEY,
@@ -590,6 +592,11 @@ async function buildRelease(ctx: Ctx, siteId: string): Promise<StepResult> {
     // The preview exists even though it failed validation, and the whole point
     // of a preview is to look at what is wrong. Emit the link before returning.
     await recordReleaseEvent(ctx, site.slug, version, failures.length, blocking.length);
+    await emailOrgAdmins(ctx.client, ctx.tenantId, "site_build_failed", {
+      orgName: await orgNameOf(ctx.client, ctx.tenantId), siteName: site.name, version,
+      previewUrl: siteUrls({ slug: site.slug, preview_version: version }).preview_url,
+      blocking: blocking.map(describe),
+    }, { dedupe: `site_build_failed:${releaseId}` });
     return {
       state: {
         ...ctx.state, releaseId, version, published: false,
@@ -618,6 +625,13 @@ async function buildRelease(ctx: Ctx, siteId: string): Promise<StepResult> {
     metadata: { version, failedChecks: failures.length },
   });
   await recordReleaseEvent(ctx, site.slug, version, failures.length, 0);
+  // A build takes minutes and the person who asked is usually gone by now:
+  // the approval request goes out by email as well as in the dashboard.
+  await emailOrgAdmins(ctx.client, ctx.tenantId, "site_preview_ready", {
+    orgName: await orgNameOf(ctx.client, ctx.tenantId), siteName: site.name, version,
+    previewUrl: siteUrls({ slug: site.slug, preview_version: version }).preview_url,
+    warnings: failures.map(describe),
+  }, { dedupe: `site_preview_ready:${releaseId}` });
   return {
     state: { ...ctx.state, releaseId, version, failedChecks: failures.length, testReportArtifactId: reportId },
     wait: { kind: "approval", payload: { approvalId, kind: "publish_site" }, resumeStep: "publish_gate" },
@@ -665,6 +679,15 @@ async function publishGate(ctx: Ctx, siteId: string): Promise<StepResult> {
   // resource — GET /v1/public/websites/:siteId has the current, authoritative
   // shape. Subscriptions are platform-wide, so orgId travels in the payload.
   await enqueueWebhookEvent(ctx.client, "website.published", { orgId: ctx.tenantId, siteId, releaseId });
+  {
+    const live = (await ctx.client.query("SELECT slug, name, live_version FROM sites WHERE id = $1", [siteId])).rows[0];
+    if (live) {
+      await emailOrgAdmins(ctx.client, ctx.tenantId, "site_published", {
+        orgName: await orgNameOf(ctx.client, ctx.tenantId), siteName: live.name,
+        liveUrl: siteUrls({ slug: live.slug, live_version: live.live_version ?? 1 }).live_url, partnerBuilt: false,
+      }, { dedupe: `site_published:${releaseId}` });
+    }
+  }
   return { state: { ...ctx.state, published: true }, complete: true };
 }
 

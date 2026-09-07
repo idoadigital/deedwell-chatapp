@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { audit, uuidv7 } from "@deedwell/database";
+import { emailOrgAdmins, orgNameOf } from "@deedwell/email";
 import { missionBackground } from "./workflow.js";
 import { runAgentTask } from "@deedwell/agent-runtime";
 import type { StepContext, StepResult, WorkflowDefinition } from "@deedwell/workflows";
@@ -926,6 +927,9 @@ export function buildGrantFullWorkflow(): WorkflowDefinition<GrantServices> {
           action: "export.completed", entityType: "grant_application", entityId: applicationId,
           metadata: { storageKey: exportKey },
         });
+        await emailOrgAdmins(ctx.client, ctx.tenantId, "grant_package_ready", {
+          orgName: await orgNameOf(ctx.client, ctx.tenantId), opportunityTitle: opportunity.title, funder: opportunity.funder ?? null,
+        }, { dedupe: `grant_package_ready:${applicationId}` });
         return { state: { ...ctx.state, exported: true }, complete: true };
       },
     },

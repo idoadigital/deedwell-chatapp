@@ -19,6 +19,7 @@ import {
   UploadFileInput,
 } from "@deedwell/schemas";
 import { extractDocumentText, extractFactsFromDocument, writeOrgFact } from "@deedwell/grant-domain";
+import { emailOps, emailUser, enqueueEmail, orgNameOf, userRecipient } from "@deedwell/email";
 import { HttpError, SESSION_COOKIE_NAME, type AppContext } from "./app.js";
 import { requireTokens } from "./billing-gate.js";
 import { proactiveNotificationItems } from "./routes-proactive.js";
@@ -70,6 +71,13 @@ export function registerCoreRoutes(app: FastifyInstance, ctx: AppContext): void 
     }
     const token = await createSession(deps.appPool, userId);
     setSessionCookie(reply, token);
+    // Welcome mail + a heads-up to the team; neither can fail the signup.
+    try {
+      await enqueueEmail(deps.appPool, { kind: "welcome", payload: { displayName: input.displayName }, to: input.email, userId });
+      await emailOps(deps.appPool, { title: "New signup", rows: [["Name", input.displayName], ["Email", input.email], ["User ID", userId]], tone: "ok" }, { dedupe: `ops:signup:${userId}` });
+    } catch (err) {
+      req.log.warn({ at: "email.enqueue_failed", err: String(err) });
+    }
     return reply.status(201).send({ userId, token });
   });
 
@@ -87,6 +95,70 @@ export function registerCoreRoutes(app: FastifyInstance, ctx: AppContext): void 
     const token = await createSession(deps.appPool, rows[0].id);
     setSessionCookie(reply, token);
     return { userId: rows[0].id, token, mustChangePassword: rows[0].must_change_password };
+  });
+
+  // ---- password reset ---------------------------------------------------
+  // Both routes sit under /v1/auth/ (no session). The response never reveals
+  // whether an account exists; the token is a 256-bit secret of which only
+  // the hash is stored, single use, valid for RESET_TTL_MINUTES.
+  const RESET_TTL_MINUTES = 60;
+  app.post("/v1/auth/forgot-password", async (req) => {
+    const { email } = req.body as { email?: string };
+    if (typeof email !== "string" || !email.includes("@")) throw new HttpError(400, "An email address is required");
+    const { rows } = await deps.appPool.query(
+      "SELECT id, email, display_name, suspended_at FROM users WHERE email = $1", [email.trim()]
+    );
+    const user = rows[0];
+    if (user && !user.suspended_at) {
+      // At most three live links per hour per account — enough for a fumbled
+      // inbox, not enough to be a mail cannon.
+      const recent = await deps.appPool.query(
+        "SELECT count(*)::int AS n FROM password_reset_tokens WHERE user_id = $1 AND created_at > now() - interval '1 hour'", [user.id]
+      );
+      if (Number(recent.rows[0]?.n ?? 0) < 3) {
+        const { token, tokenHash } = generateSessionToken();
+        await deps.appPool.query(
+          "INSERT INTO password_reset_tokens (id, user_id, token_hash, expires_at) VALUES ($1,$2,$3,$4)",
+          [uuidv7(), user.id, tokenHash, new Date(Date.now() + RESET_TTL_MINUTES * 60_000)]
+        );
+        const origin = (process.env.APP_ORIGIN ?? "https://deedwell.org").replace(/\/+$/, "");
+        await enqueueEmail(deps.appPool, {
+          kind: "password_reset", to: user.email, userId: user.id,
+          payload: { displayName: user.display_name, resetUrl: `${origin}/reset-password?token=${encodeURIComponent(token)}`, expiresMinutes: RESET_TTL_MINUTES },
+        });
+      }
+      req.log.info({ at: "auth.password_reset_requested", userId: user.id });
+    }
+    return { ok: true };
+  });
+
+  app.post("/v1/auth/reset-password", async (req, reply) => {
+    const { token, password } = req.body as { token?: string; password?: string };
+    if (typeof token !== "string" || !token) throw new HttpError(400, "The reset link is missing its token");
+    if (typeof password !== "string" || password.length < 8) throw new HttpError(400, "A new password of at least 8 characters is required");
+    const { rows } = await deps.appPool.query(
+      `SELECT t.id, t.user_id, t.expires_at, t.used_at, u.email, u.display_name, u.suspended_at
+         FROM password_reset_tokens t JOIN users u ON u.id = t.user_id WHERE t.token_hash = $1`,
+      [hashSessionToken(token)]
+    );
+    const row = rows[0];
+    if (!row || row.used_at || new Date(row.expires_at).getTime() < Date.now() || row.suspended_at) {
+      throw new HttpError(400, "This reset link is invalid or has expired. Request a new one.");
+    }
+    await deps.appPool.query("UPDATE password_reset_tokens SET used_at = now() WHERE id = $1", [row.id]);
+    await deps.appPool.query(
+      "UPDATE users SET password_hash = $2, must_change_password = false WHERE id = $1",
+      [row.user_id, await hashPassword(password)]
+    );
+    await deps.appPool.query("UPDATE sessions SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL", [row.user_id]);
+    await enqueueEmail(deps.appPool, {
+      kind: "password_changed", to: row.email, userId: row.user_id,
+      payload: { displayName: row.display_name, sessionsRevoked: true },
+    });
+    req.log.info({ at: "auth.password_reset_completed", userId: row.user_id });
+    const session = await createSession(deps.appPool, row.user_id);
+    setSessionCookie(reply, session);
+    return { userId: row.user_id, token: session };
   });
 
   // Deliberately NOT under /v1/auth/ — that whole prefix is exempted from
@@ -108,6 +180,11 @@ export function registerCoreRoutes(app: FastifyInstance, ctx: AppContext): void 
       "UPDATE users SET password_hash = $2, must_change_password = false WHERE id = $1",
       [req.userId, await hashPassword(newPassword)]
     );
+    const me = await userRecipient(deps.appPool, req.userId);
+    if (me) {
+      await enqueueEmail(deps.appPool, { kind: "password_changed", to: me.email, userId: me.userId, payload: { displayName: me.displayName, sessionsRevoked: false } })
+        .catch((err) => req.log.warn({ at: "email.enqueue_failed", err: String(err) }));
+    }
     return { ok: true };
   });
 
@@ -190,6 +267,17 @@ export function registerCoreRoutes(app: FastifyInstance, ctx: AppContext): void 
         tenantId: orgId, actorUser: req.userId, action: "org.created",
         entityType: "organization", entityId: orgId, metadata: { slug: input.slug },
       });
+      const owner = req.userId ? await userRecipient(client, req.userId) : null;
+      if (owner) {
+        await enqueueEmail(client, {
+          kind: "workspace_created", to: owner.email, tenantId: orgId, userId: owner.userId,
+          payload: { displayName: owner.displayName, orgName: input.name, orgSlug: input.slug },
+        });
+        await emailOps(client, {
+          title: `New workspace: ${input.name}`, tone: "ok",
+          rows: [["Workspace", input.name], ["Slug", input.slug], ["Owner", `${owner.displayName} <${owner.email}>`], ["Org ID", orgId]],
+        }, { tenantId: orgId, dedupe: `ops:org:${orgId}` });
+      }
     });
     return reply.status(201).send({ orgId });
   });
@@ -210,6 +298,15 @@ export function registerCoreRoutes(app: FastifyInstance, ctx: AppContext): void 
         tenantId: req.orgId!, actorUser: req.userId, action: "member.added",
         entityType: "user", entityId: user.rows[0].id, metadata: { role: input.role },
       });
+      const orgName = await orgNameOf(client, req.orgId!);
+      const adder = req.userId ? await userRecipient(client, req.userId) : null;
+      const added = await userRecipient(client, user.rows[0].id);
+      if (added) {
+        await enqueueEmail(client, {
+          kind: "added_to_workspace", to: added.email, tenantId: req.orgId!, userId: added.userId,
+          payload: { displayName: added.displayName, orgName, role: input.role, addedBy: adder?.displayName ?? null },
+        });
+      }
       return { userId: user.rows[0].id };
     });
     return reply.status(201).send(result);
@@ -624,6 +721,18 @@ export function registerCoreRoutes(app: FastifyInstance, ctx: AppContext): void 
          VALUES ($1,$2,$3,'org_user',$4,$5)`,
         [messageId, req.orgId, threadId, req.userId, body.trim()]
       );
+      const orgName = await orgNameOf(client, req.orgId!);
+      const author = req.userId ? await userRecipient(client, req.userId) : null;
+      if (author) {
+        await enqueueEmail(client, {
+          kind: "support_received", to: author.email, tenantId: req.orgId!, userId: author.userId,
+          payload: { displayName: author.displayName, orgName, body: body.trim() },
+        });
+      }
+      await emailOps(client, {
+        title: `Support request from ${orgName}`, tone: "warn", body: body.trim().slice(0, 2000),
+        rows: [["Workspace", orgName], ["From", author ? `${author.displayName} <${author.email}>` : "unknown"], ["Org ID", req.orgId!]],
+      }, { tenantId: req.orgId! });
       return messageId;
     });
     return reply.status(201).send({ id });

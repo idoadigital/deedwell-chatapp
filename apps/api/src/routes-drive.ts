@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { encryptSecret } from "@deedwell/auth";
 import { getProvider, unseal, type OAuthTokens } from "@deedwell/connectors";
+import { emailOrgAdmins, orgNameOf } from "@deedwell/email";
 import { HttpError, type AppContext } from "./app.js";
 
 /**
@@ -107,7 +108,14 @@ async function persistAccessToken(ctx: AppContext, req: Parameters<AppContext["i
 }
 
 async function markNeedsAttention(ctx: AppContext, req: Parameters<AppContext["inOrg"]>[0], id: string): Promise<void> {
-  await ctx.inOrg(req, (client) =>
-    client.query(`UPDATE connector_connections SET status = 'needs_attention', status_detail = $2 WHERE id = $1`, [id, "Reconnect Google to keep using Google Drive."])
-  ).catch(() => {});
+  const detail = "Reconnect Google to keep using Google Drive.";
+  await ctx.inOrg(req, async (client) => {
+    const { rows } = await client.query(
+      `UPDATE connector_connections SET status = 'needs_attention', status_detail = $2 WHERE id = $1 RETURNING provider_account_name`,
+      [id, detail]
+    );
+    await emailOrgAdmins(client, req.orgId!, "connector_attention", {
+      orgName: await orgNameOf(client, req.orgId!), provider: "Google Drive", accountName: rows[0]?.provider_account_name ?? null, detail,
+    }, { dedupe: `connector_attention:${id}:${new Date().toISOString().slice(0, 10)}` });
+  }).catch(() => {});
 }

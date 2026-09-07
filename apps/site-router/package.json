@@ -5,6 +5,7 @@
   "main": "src/main.ts",
   "type": "module",
   "dependencies": {
-    "@deedwell/website-domain": "workspace:^"
+    "@deedwell/website-domain": "workspace:^",
+    "@deedwell/email": "workspace:*"
   }
 }

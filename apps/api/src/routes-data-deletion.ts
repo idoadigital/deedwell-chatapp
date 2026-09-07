@@ -3,6 +3,7 @@ import { uuidv7 } from "@deedwell/database";
 import {
   newConfirmationCode, parseSignedRequest, readPlatformCredentials, SignedRequestError,
 } from "@deedwell/connectors";
+import { emailOps } from "@deedwell/email";
 import type { AppContext } from "./app.js";
 
 const API_ORIGIN = process.env.API_ORIGIN ?? "https://coworkers.deedwell.org";
@@ -70,6 +71,12 @@ export function registerDataDeletionRoutes(app: FastifyInstance, ctx: AppContext
         [id, String((err as Error).message ?? err).slice(0, 300)]
       ).catch(() => {});
       req.log.error({ at: "data_deletion.failed", confirmationCode, err: String((err as Error).message ?? err) });
+      // The status page tells the requester a person has been alerted — make it true.
+      await emailOps(deps.appPool, {
+        title: "Meta data-deletion request failed", tone: "danger",
+        body: String((err as Error).message ?? err).slice(0, 500),
+        rows: [["Confirmation code", confirmationCode], ["Status page", statusUrlFor(confirmationCode)]],
+      }, { dedupe: `ops:data_deletion:${confirmationCode}` }).catch(() => undefined);
     }
 
     return reply.send({ url: statusUrlFor(confirmationCode), confirmation_code: confirmationCode });

@@ -40,6 +40,7 @@ import { registerGcpRoutes } from "./routes-gcp.js";
 import { registerAdGrantsRoutes } from "./routes-ad-grants.js";
 import { registerAdGrantsConnectWs } from "./ad-grants-connect-ws.js";
 import { registerBillingRoutes } from "./routes-billing.js";
+import { registerEmailRoutes } from "./routes-email.js";
 import { registerAdminTaskRoutes, registerTaskRoutes } from "./routes-tasks.js";
 import { registerRtc } from "./rtc.js";
 
@@ -123,6 +124,8 @@ export function buildApp(deps: Deps): FastifyInstance {
       !url.startsWith("/v1/") || url.startsWith("/v1/auth/") || url.startsWith("/v1/rtc") ||
       url.startsWith("/v1/ad-grants/google-connect") || url.startsWith("/v1/ad-grants/google-oauth/callback") ||
       url.startsWith("/v1/billing/stripe/webhook") ||
+      // Unsubscribe links carry their own HMAC (see routes-email.ts).
+      url.startsWith("/v1/email/unsubscribe") ||
       // Shared designs: the random token in the URL is the whole credential
       // (see registerDesignShareRoutes). Nothing else under /v1/share/ exists.
       url.startsWith("/v1/share/") ||
@@ -232,6 +235,7 @@ export function buildApp(deps: Deps): FastifyInstance {
 
   app.get("/healthz", async () => ({ ok: true }));
   registerCoreRoutes(app, ctx);
+  registerEmailRoutes(app, ctx);
   registerGrantRoutes(app, ctx);
   registerGrantFullRoutes(app, ctx);
   registerWebsiteRoutes(app, ctx);

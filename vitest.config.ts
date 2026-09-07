@@ -21,6 +21,7 @@ export default defineConfig({
       "@deedwell/tasks-domain": pkg("tasks-domain"),
       "@deedwell/billing-domain": pkg("billing-domain"),
       "@deedwell/observability": pkg("observability"),
+      "@deedwell/email": pkg("email"),
     },
   },
   test: {

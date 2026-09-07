@@ -4,6 +4,7 @@ import { resumeRunsWaitingPayment } from "./balance.js";
 import { audit, uuidv7, withContext } from "@deedwell/database";
 import type { StripeConfig } from "./stripe-config.js";
 import { findPackage } from "./packages.js";
+import { emailOrgAdmins, orgNameOf, userRecipient } from "@deedwell/email";
 
 function stripeClient(config: StripeConfig): Stripe {
   return new Stripe(config.secretKey, { apiVersion: "2025-02-24.acacia" });
@@ -84,7 +85,7 @@ export async function handleCheckoutCompleted(
   const { rows } = await pools.adminPool.query(
     `UPDATE billing_transactions SET status = 'completed', completed_at = now()
      WHERE stripe_checkout_session_id = $1 AND status = 'pending'
-     RETURNING id, tenant_id, token_amount`,
+     RETURNING id, tenant_id, token_amount, amount_cents, currency, package_id, created_by`,
     [session.id]
   );
   const row = rows[0];
@@ -96,11 +97,20 @@ export async function handleCheckoutCompleted(
        ON CONFLICT (tenant_id) DO UPDATE SET token_balance = billing_accounts.token_balance + $3`,
       [uuidv7(), row.tenant_id, Number(row.token_amount)]
     );
-    await resumeRunsWaitingPayment(client, row.tenant_id);
+    const resumedRuns = await resumeRunsWaitingPayment(client, row.tenant_id);
     await audit(client, {
       tenantId: row.tenant_id, action: "billing.topped_up",
       entityType: "billing_transaction", entityId: row.id,
       metadata: { tokens: Number(row.token_amount), stripeSessionId: session.id },
     });
+    // Receipt to every owner/admin — the purchaser included.
+    const orgName = await orgNameOf(client, row.tenant_id);
+    const buyer = row.created_by ? await userRecipient(client, row.created_by) : null;
+    const pkg = findPackage(String(row.package_id ?? ""));
+    await emailOrgAdmins(client, row.tenant_id, "topup_receipt", {
+      orgName, packageName: pkg?.label ?? String(row.package_id ?? "Token pack"), tokens: Number(row.token_amount),
+      amountCents: Number(row.amount_cents ?? 0), currency: String(row.currency ?? "usd"), transactionId: row.id,
+      resumedRuns, purchasedBy: buyer?.displayName ?? null,
+    }, { dedupe: `topup_receipt:${row.id}` });
   });
 }
