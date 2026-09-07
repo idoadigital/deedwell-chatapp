@@ -1,4 +1,4 @@
-import { audit, uuidv7 } from "@deedwell/database";
+import { audit, loadMissionProfile, missionProfileBlock, uuidv7 } from "@deedwell/database";
 import { emailOrgAdmins, orgNameOf } from "@deedwell/email";
 import { runAgentTask } from "@deedwell/agent-runtime";
 import { upsertArtifactVersion, type GrantServices } from "@deedwell/grant-domain";
@@ -29,6 +29,23 @@ async function fetchUsableFacts(ctx: Ctx, agentKey: string): Promise<OrgFact[]> 
     {}
   );
   return facts.filter((f) => f.status === "verified" || f.status === "user_certified");
+}
+
+/** Everything the organization has told Deedwell about itself — the
+ *  Mission Profile (facts of every status except rejected, plus knowledge
+ *  base notes and document titles). Certified facts win where both exist;
+ *  the profile fills in what the certified set lacks, so the enrollment and
+ *  the campaign draw on the whole profile, not only the wizard's answers. */
+async function profileFacts(ctx: Ctx, certified: OrgFact[]): Promise<{ map: Record<string, string>; block: string }> {
+  const map: Record<string, string> = {};
+  let block = "";
+  try {
+    const profile = await loadMissionProfile(ctx.client, ctx.services.storage, ctx.tenantId);
+    for (const f of profile.facts) if (f.value) map[f.key] = String(f.value).replace(/^"|"$/g, "");
+    block = missionProfileBlock(profile);
+  } catch { /* profile unavailable: certified facts alone */ }
+  for (const f of certified) map[f.key] = f.value;
+  return { map, block };
 }
 
 /** Re-reads the most recent approval of `kind` for this run from the
@@ -237,7 +254,7 @@ export function buildAdGrantsWorkflow(): WorkflowDefinition<GrantServices> {
         const blocked = needsGoogle(ctx);
         if (blocked) return blocked;
         const facts = await fetchUsableFacts(ctx, applicationAgent.agentKey);
-        const factsMap = Object.fromEntries(facts.map((f) => [f.key, f.value]));
+        const { map: factsMap } = await profileFacts(ctx, facts);
         let screenshotKey: string;
         let report: import("@deedwell/grant-domain").GoogleFillReport | undefined;
         try {
@@ -281,7 +298,7 @@ export function buildAdGrantsWorkflow(): WorkflowDefinition<GrantServices> {
         const blocked = needsGoogle(ctx);
         if (blocked) return blocked;
         const facts = await fetchUsableFacts(ctx, applicationAgent.agentKey);
-        const factsMap = Object.fromEntries(facts.map((f) => [f.key, f.value]));
+        const { map: factsMap } = await profileFacts(ctx, facts);
         try {
           await ctx.services.google!.submitNonprofitsEnrollment(ctx.tenantId, factsMap);
         } catch (err) {
@@ -435,10 +452,11 @@ export function buildAdGrantsWorkflow(): WorkflowDefinition<GrantServices> {
       // -----------------------------------------------------------------
       async draft_campaign_plan(ctx): Promise<StepResult> {
         const facts = await fetchUsableFacts(ctx, campaignStrategist.agentKey);
+        const { block: missionProfile } = await profileFacts(ctx, facts);
         const result = await runAgentTask<AdGrantsCampaignPlanOutput>(
           ctx.services.provider, campaignStrategist,
-          "Draft a Google Ad Grants campaign plan using only the attached organizational facts.",
-          [{ label: "org_facts", content: JSON.stringify(facts) }]
+          "Draft a Google Ad Grants campaign plan using only the attached organizational facts and Mission Profile.",
+          [{ label: "org_facts", content: JSON.stringify(facts) }, ...(missionProfile ? [{ label: "mission_profile", content: missionProfile }] : [])]
         );
         await recordModelUsage(ctx, campaignStrategist.agentKey, result.tokensEstimated);
         const artifact = await upsertArtifactVersion(ctx.client, {

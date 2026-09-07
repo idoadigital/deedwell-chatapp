@@ -151,6 +151,8 @@ export async function createDeps(overrides: Partial<{
   return deps;
 }
 
+export { recordAdGrantsProgress };
+
 /** A line in the Ad Grants timeline for every phase the browser goes
  *  through — "Filling in the enrollment form", with a screenshot — so the
  *  dashboard can show the work as it happens rather than a spinner. */

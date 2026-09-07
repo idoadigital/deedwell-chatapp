@@ -83,6 +83,10 @@ export function registerAdGrantsConnectWs(app: FastifyInstance, ctx: AppContext)
               `UPDATE google_connect_sessions SET status = 'captured' WHERE id = $1`,
               [session.id]
             );
+            const { recordAdGrantsProgress } = await import("./bootstrap.js");
+            await recordAdGrantsProgress(ctx.deps.appPool, { emit: (e) => ctx.deps.engine.events.emit("event", e as never) }, {
+              tenantId: session.tenantId, phase: "session", message: `Google account connected${google?.accountHandle ? ` (${google.accountHandle})` : ""} — resuming the application`,
+            }).catch(() => undefined);
             await ctx.deps.engine.signal(client, session.runId, "info", { connected: true });
           }).then(
             () => {

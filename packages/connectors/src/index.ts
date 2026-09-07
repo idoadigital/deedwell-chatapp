@@ -26,3 +26,4 @@ export {
   GoogleConnectionService, GoogleConnectionError, summarize as summarizeGoogleConnection,
   type GoogleConnectionSummary, type GoogleAccess, type GoogleConnectionErrorCode,
 } from "./google-connection.js";
+export { searchGmail, getGmailMessage, GmailError, type GmailMessage } from "./gmail.js";

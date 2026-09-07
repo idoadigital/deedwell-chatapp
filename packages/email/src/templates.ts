@@ -39,6 +39,7 @@ export interface EmailPayloads {
   ad_grants_review: { orgName: string; status: "approved" | "rejected"; reason: string | null };
   ad_grants_reconnect: { orgName: string; step: string };
   ad_grants_live: { orgName: string; campaignId: string | null };
+  ad_grants_email: { orgName: string; from: string; subject: string; verdict: string; excerpt: string };
   task_approval_requested: { orgName: string; taskTitle: string; agentName: string };
   task_completed: { orgName: string; taskTitle: string; agentName: string; summary: string; deliverables: string[]; runNumber: number | null; nextRunAt: string | null };
   task_failed: { orgName: string; taskTitle: string; agentName: string; error: string };
@@ -58,7 +59,7 @@ export const EMAIL_CATEGORY: Record<EmailKind, EmailCategory> = {
   site_preview_ready: "activity", site_build_failed: "activity", site_published: "activity", run_failed: "activity",
   approval_needed: "activity", info_needed: "activity", grant_package_ready: "activity", content_campaign_finished: "activity",
   post_failed: "activity", connector_attention: "activity", form_submission: "activity", ad_grants_review: "activity",
-  ad_grants_reconnect: "activity", ad_grants_live: "activity", task_approval_requested: "activity", task_completed: "activity",
+  ad_grants_reconnect: "activity", ad_grants_live: "activity", ad_grants_email: "activity", task_approval_requested: "activity", task_completed: "activity",
   task_failed: "activity", task_needs_input: "activity", teammate_message: "activity", unread_digest: "activity",
   ops_alert: "ops",
 };
@@ -448,6 +449,20 @@ const templates: { [K in EmailKind]: Renderer<K> } = {
     blocks: [
       p(`Your co-workers published the first Google Ads campaign for **${x.orgName}**, funded by your Ad Grant.${x.campaignId ? ` Campaign ID: ${x.campaignId}.` : ""}`),
       p("They'll keep it compliant with Google's grant policies and report back as results come in."),
+    ],
+    cta: { label: "Open Ad Grants", url: L.adGrants },
+  }),
+
+  ad_grants_email: (x, L) => ({
+    subject: `Google wrote about your Ad Grants application: ${x.verdict}`,
+    preheader: x.subject,
+    eyebrow: "Google Ad Grants",
+    heading: x.verdict === "Not approved" ? "Google did not approve, and explains why." : "Google needs something from you.",
+    blocks: [
+      p(`An email about **${x.orgName}**'s application arrived in the connected Google inbox. Deedwell read it so you don't have to check.`),
+      kv([["From", x.from], ["Subject", x.subject], ["Deedwell's read", x.verdict]]),
+      quote(clip(x.excerpt, 700), "From the email"),
+      p("Your co-workers have recorded this in the application timeline and will act on anything they can. If Google asks for something only you can provide, do it from the Ad Grants page."),
     ],
     cta: { label: "Open Ad Grants", url: L.adGrants },
   }),

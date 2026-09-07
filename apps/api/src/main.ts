@@ -81,6 +81,15 @@ async function main(): Promise<void> {
     for (const signal of ["SIGTERM", "SIGINT"] as const) process.once(signal, () => stopProactive());
   }
 
+  // Ad Grants: reads the connected Gmail inbox for Google's and Goodstack's
+  // emails about the application. AD_GRANTS_INBOX=off disables it.
+  if (process.env.AD_GRANTS_INBOX !== "off") {
+    const { startAdGrantsInboxWorker } = await import("./ad-grants-inbox.js");
+    const stopInbox = startAdGrantsInboxWorker(deps, { log: app.log });
+    abort.signal.addEventListener("abort", () => stopInbox());
+    for (const signal of ["SIGTERM", "SIGINT"] as const) process.once(signal, () => stopInbox());
+  }
+
   // Transactional email: drains the outbox every few seconds and runs the
   // low-balance / unread-digest sweeps. EMAIL_WORKER=off disables it.
   if (process.env.EMAIL_WORKER !== "off") {

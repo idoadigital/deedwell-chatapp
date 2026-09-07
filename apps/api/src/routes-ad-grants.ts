@@ -157,7 +157,8 @@ export function registerAdGrantsRoutes(app: FastifyInstance, ctx: AppContext): v
 
       const events = await client.query(
         `SELECT id, event_type, title, summary, status, agent_key, created_at, completed_at,
-                metadata->>'phase' AS phase, (metadata->>'screenshotKey') IS NOT NULL AS has_screenshot
+                metadata->>'phase' AS phase, (metadata->>'screenshotKey') IS NOT NULL AS has_screenshot,
+                metadata->>'verdict' AS verdict
          FROM workspace_events WHERE project_id = $1 ORDER BY created_at DESC LIMIT 80`,
         [projectId]
       );
