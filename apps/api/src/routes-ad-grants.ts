@@ -107,8 +107,9 @@ export function registerAdGrantsRoutes(app: FastifyInstance, ctx: AppContext): v
       const runRow = run.rows[0] ?? null;
 
       const events = await client.query(
-        `SELECT id, event_type, title, summary, status, agent_key, created_at, completed_at
-         FROM workspace_events WHERE project_id = $1 ORDER BY created_at DESC LIMIT 50`,
+        `SELECT id, event_type, title, summary, status, agent_key, created_at, completed_at,
+                metadata->>'phase' AS phase, (metadata->>'screenshotKey') IS NOT NULL AS has_screenshot
+         FROM workspace_events WHERE project_id = $1 ORDER BY created_at DESC LIMIT 80`,
         [projectId]
       );
       const artifacts = await client.query(
@@ -180,6 +181,19 @@ export function registerAdGrantsRoutes(app: FastifyInstance, ctx: AppContext): v
       return { token };
     });
     return reply.status(201).send({ ...result, wsPath: `/v1/ad-grants/google-connect?token=${result.token}` });
+  });
+
+  // ---- live view: the screenshot attached to a progress event ------------
+  app.get("/v1/orgs/:orgId/ad-grants/events/:eventId/screenshot", async (req, reply) => {
+    ctx.requireRole(req, "viewer");
+    const { eventId } = req.params as { eventId: string };
+    const row = await ctx.inOrg(req, async (client) =>
+      (await client.query("SELECT metadata->>'screenshotKey' AS key FROM workspace_events WHERE id = $1 AND tenant_id = $2", [eventId, req.orgId])).rows[0] as { key?: string | null } | undefined
+    );
+    const key = row?.key;
+    if (!key || !key.startsWith(`tenants/${req.orgId}/`)) throw new HttpError(404, "No screenshot for this event");
+    const bytes = await ctx.deps.storage.get(key);
+    return reply.header("cache-control", "private, max-age=3600").type(key.endsWith(".png") ? "image/png" : "image/jpeg").send(bytes);
   });
 
   // ---- approval preview: the filled Google form, before Approve ----------

@@ -93,10 +93,16 @@ export async function createDeps(overrides: Partial<{
   // credentials configured) makes every browser-touching step park with an
   // honest "automation isn't connected" wait — it never simulates progress.
   const adGrantsAutomationOn = (process.env.AD_GRANTS_AUTOMATION ?? "off") === "on";
+  // The engine does not exist yet when the automation is built; progress
+  // events reach the dashboard's stream through this late-bound emitter.
+  const progressBus: { emit: (event: Record<string, unknown>) => void } = { emit: () => undefined };
   const google = "google" in overrides
     ? overrides.google
     : adGrantsAutomationOn
-      ? (await import("@deedwell/browser-automation")).createGoogleAutomation({ appPool, storage })
+      ? (await import("@deedwell/browser-automation")).createGoogleAutomation({
+        appPool, storage,
+        onProgress: (p) => recordAdGrantsProgress(appPool, progressBus, p),
+      })
       : undefined;
 
   const services: GrantServices = {
@@ -118,6 +124,7 @@ export async function createDeps(overrides: Partial<{
   engine.register(buildWebsiteBuildWorkflow());
   engine.register(buildWebsiteUpdateWorkflow());
   engine.register(buildAdGrantsWorkflow());
+  progressBus.emit = (event) => engine.events.emit("event", event as never);
 
   const deps: Deps = {
     adminPool,
@@ -142,4 +149,33 @@ export async function createDeps(overrides: Partial<{
   const { attachProactiveBridge } = await import("./proactive/candidates.js");
   attachProactiveBridge(deps);
   return deps;
+}
+
+/** A line in the Ad Grants timeline for every phase the browser goes
+ *  through — "Filling in the enrollment form", with a screenshot — so the
+ *  dashboard can show the work as it happens rather than a spinner. */
+async function recordAdGrantsProgress(
+  appPool: Pool,
+  bus: { emit: (event: Record<string, unknown>) => void },
+  p: { tenantId: string; phase: string; message: string; screenshotKey?: string }
+): Promise<void> {
+  const { withContext, uuidv7 } = await import("@deedwell/database");
+  await withContext(appPool, { tenantId: p.tenantId, userId: null }, async (client) => {
+    const project = await client.query(
+      "SELECT id FROM projects WHERE tenant_id = $1 AND name = 'Google Ad Grant' ORDER BY created_at DESC LIMIT 1", [p.tenantId]
+    );
+    if (!project.rows[0]) return;
+    const run = await client.query(
+      `SELECT id FROM workflow_runs WHERE project_id = $1 AND definition = 'ad-grants-application' AND status NOT IN ('completed','cancelled')
+        ORDER BY created_at DESC LIMIT 1`, [project.rows[0].id]
+    );
+    const id = uuidv7();
+    await client.query(
+      `INSERT INTO workspace_events (id, tenant_id, project_id, run_id, event_type, title, summary, status, agent_key, metadata, completed_at)
+       VALUES ($1,$2,$3,$4,'ad_grants:progress',$5,'','completed','ad_grants.application',$6::jsonb, now())`,
+      [id, p.tenantId, project.rows[0].id, run.rows[0]?.id ?? null, p.message.slice(0, 200),
+       JSON.stringify({ phase: p.phase, screenshotKey: p.screenshotKey ?? null })]
+    );
+    bus.emit({ type: "ad_grants_progress", tenantId: p.tenantId, runId: run.rows[0]?.id ?? null, eventId: id });
+  });
 }
