@@ -34,6 +34,14 @@ RUN pnpm install --frozen-lockfile --prod=false
 # playwright is a dependency of the browser-automation workspace package,
 # not the root, so `pnpm exec` must be scoped to it via --filter.
 RUN pnpm --filter @deedwell/browser-automation exec playwright install --with-deps chromium
+# Google's sign-in refuses headless browsers, so the Ad Grants connect flow
+# runs a real, windowed Google Chrome on a virtual display (see
+# packages/browser-automation/src/launch.ts). Chrome via Playwright's
+# "chrome" channel (Google's own .deb), Xvfb from apt; each is optional at
+# runtime — launch.ts falls back to headless Chromium without them.
+RUN apt-get update && apt-get install -y --no-install-recommends xvfb fonts-liberation \
+  && rm -rf /var/lib/apt/lists/* \
+  && (pnpm --filter @deedwell/browser-automation exec playwright install --with-deps chrome || echo "Google Chrome not installed; Chromium will be used")
 
 COPY . .
 
