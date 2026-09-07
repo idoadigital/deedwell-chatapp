@@ -67,6 +67,14 @@ describe("Artifacts: PDF export and Google Drive", () => {
     expect(nope.status).toBe(404);
   });
 
+  it("asks for a Google Drive connection before copying a document there, and 404s an unknown one", async () => {
+    const r = await api(env.app, "POST", `/v1/orgs/${orgId}/artifacts/${artifactId}/drive`, { token, body: { version: 1 } });
+    expect(r.status).toBe(409);
+    expect(r.body.error).toMatch(/Connect Google Drive/);
+    const nope = await api(env.app, "POST", `/v1/orgs/${orgId}/artifacts/${uuidv7()}/drive`, { token });
+    expect(nope.status).toBe(404);
+  });
+
   it("lets the connect flow ask for the Drive scope as a feature", async () => {
     // Without platform Google credentials the provider is unconfigured (503);
     // the point is that the feature list is accepted, not rejected as input.

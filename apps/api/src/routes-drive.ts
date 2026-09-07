@@ -3,6 +3,7 @@ import { encryptSecret } from "@deedwell/auth";
 import { getProvider, unseal, type OAuthTokens } from "@deedwell/connectors";
 import { emailOrgAdmins, orgNameOf } from "@deedwell/email";
 import { HttpError, type AppContext } from "./app.js";
+import { artifactTypeLabel, renderArtifactPdf } from "./artifact-pdf.js";
 
 /**
  * "Open in Google Drive" for a stored file. The file is copied into the
@@ -18,58 +19,112 @@ const DRIVE_UPLOAD = "https://www.googleapis.com/upload/drive/v3/files";
 export function registerDriveRoutes(app: FastifyInstance, ctx: AppContext): void {
   const { deps } = ctx;
 
+  /** A stored file (an image from Content Studio, an upload) → Drive. */
   app.post("/v1/orgs/:orgId/files/:fileId/drive", async (req) => {
     ctx.requireRole(req, "member");
     const { fileId } = req.params as { fileId: string };
-    const { file, connection } = await ctx.inOrg(req, async (client) => {
-      const f = await client.query("SELECT id, filename, mime, storage_key FROM files WHERE id = $1", [fileId]);
-      const c = await client.query(
-        `SELECT * FROM connector_connections
-          WHERE provider = 'google' AND connector_type = 'google_account' AND status = 'connected' AND $1 = ANY(scopes)
-          ORDER BY created_at DESC LIMIT 1`,
-        [DRIVE_SCOPE]
-      );
-      return { file: f.rows[0] as Record<string, any> | undefined, connection: c.rows[0] as Record<string, any> | undefined };
-    });
+    const file = await ctx.inOrg(req, async (client) =>
+      (await client.query("SELECT id, filename, mime, storage_key FROM files WHERE id = $1", [fileId])).rows[0] as Record<string, any> | undefined
+    );
     if (!file) throw new HttpError(404, "File not found");
-    if (!connection) throw new HttpError(409, "Connect Google Drive to open files there.");
-
-    const provider = await getProvider(deps.appPool, "google");
-    if (!provider?.refresh) throw new HttpError(503, "Google connections are temporarily unavailable.");
-    let tokens = unseal(connection);
-    const expiresAt = tokens.expiresAt ? new Date(tokens.expiresAt).getTime() : 0;
-    if (expiresAt && expiresAt < Date.now() + 60_000) {
-      try { tokens = await provider.refresh(tokens); }
-      catch (err) {
-        req.log.warn({ err }, "drive: google refresh failed");
-        await markNeedsAttention(ctx, req, connection.id);
-        throw new HttpError(409, "The Google connection expired — reconnect Google Drive and try again.");
-      }
-      await persistAccessToken(ctx, req, connection.id, tokens);
-    }
-
-    const existing = await findExisting(tokens.accessToken, fileId);
-    if (existing) return { url: existing.webViewLink, driveFileId: existing.id, created: false };
-
-    const bytes = await deps.storage.get(String(file.storage_key));
-    const uploaded = await upload(tokens.accessToken, {
-      name: String(file.filename), mime: String(file.mime), bytes,
-      appProperties: { deedwellFileId: fileId, deedwellOrgId: req.orgId! },
-    }).catch(async (err) => {
-      const message = String((err as Error).message ?? err);
-      req.log.warn({ err }, "drive: upload failed");
-      if (/\(401\)|\(403\)/.test(message)) {
-        await markNeedsAttention(ctx, req, connection.id);
-        throw new HttpError(409, "Google Drive no longer accepts this connection — reconnect Google Drive and try again.");
-      }
-      throw new HttpError(502, "Could not copy that file to Google Drive just now.");
+    return copyToDrive(ctx, req, {
+      key: { deedwellFileId: fileId },
+      name: String(file.filename), mime: String(file.mime),
+      bytes: () => deps.storage.get(String(file.storage_key)),
     });
-    return { url: uploaded.webViewLink, driveFileId: uploaded.id, created: true };
+  });
+
+  /** A written document (any artifact) → Drive, as the same PDF the export
+   *  route renders. One Drive file per artifact version: opening v3 twice
+   *  finds the first copy, opening v4 makes a new one. */
+  app.post("/v1/orgs/:orgId/artifacts/:artifactId/drive", async (req) => {
+    ctx.requireRole(req, "member");
+    const { artifactId } = req.params as { artifactId: string };
+    const { version } = (req.body ?? {}) as { version?: unknown };
+    const wanted = typeof version === "number" && Number.isInteger(version) ? version : null;
+    const found = await ctx.inOrg(req, async (client) =>
+      (await client.query(
+        `SELECT a.type, a.title, av.version, av.content, av.created_at, o.name AS org_name,
+                av.content->>'pdfStorageKey' AS pdf_key
+           FROM artifacts a
+           JOIN artifact_versions av ON av.artifact_id = a.id AND av.version = COALESCE($2::int, a.current_version)
+           JOIN organizations o ON o.id = a.tenant_id
+          WHERE a.id = $1`,
+        [artifactId, wanted]
+      )).rows[0] as Record<string, any> | undefined
+    );
+    if (!found) throw new HttpError(404, "Artifact not found");
+    const title = String(found.title || artifactTypeLabel(found.type));
+    const name = `${title.replace(/[\\/:*?"<>|]+/g, " ").trim().slice(0, 100) || "Document"}.pdf`;
+    return copyToDrive(ctx, req, {
+      key: { deedwellArtifactId: artifactId, deedwellVersion: String(found.version) },
+      name, mime: "application/pdf",
+      bytes: () => found.pdf_key
+        ? deps.storage.get(String(found.pdf_key))
+        : renderArtifactPdf({
+          title, type: String(found.type), orgName: String(found.org_name ?? ""),
+          createdAt: found.created_at, version: found.version, content: found.content,
+        }),
+    });
   });
 }
 
-async function findExisting(accessToken: string, fileId: string): Promise<{ id: string; webViewLink: string } | null> {
-  const q = `appProperties has { key='deedwellFileId' and value='${fileId.replace(/[^0-9a-f-]/g, "")}' } and trashed = false`;
+/** The org's Google connection with Drive access, tokens refreshed if due.
+ *  409 (with a message the dashboard turns into a Connect button) when there
+ *  is none or it has expired. */
+async function driveAccess(ctx: AppContext, req: Parameters<AppContext["inOrg"]>[0]): Promise<{ accessToken: string; connectionId: string }> {
+  const connection = await ctx.inOrg(req, async (client) =>
+    (await client.query(
+      `SELECT * FROM connector_connections
+        WHERE provider = 'google' AND connector_type = 'google_account' AND status = 'connected' AND $1 = ANY(scopes)
+        ORDER BY created_at DESC LIMIT 1`,
+      [DRIVE_SCOPE]
+    )).rows[0] as Record<string, any> | undefined
+  );
+  if (!connection) throw new HttpError(409, "Connect Google Drive to open files there.");
+  const provider = await getProvider(ctx.deps.appPool, "google");
+  if (!provider?.refresh) throw new HttpError(503, "Google connections are temporarily unavailable.");
+  let tokens = unseal(connection);
+  const expiresAt = tokens.expiresAt ? new Date(tokens.expiresAt).getTime() : 0;
+  if (expiresAt && expiresAt < Date.now() + 60_000) {
+    try { tokens = await provider.refresh(tokens); }
+    catch (err) {
+      req.log.warn({ err }, "drive: google refresh failed");
+      await markNeedsAttention(ctx, req, connection.id);
+      throw new HttpError(409, "The Google connection expired — reconnect Google Drive and try again.");
+    }
+    await persistAccessToken(ctx, req, connection.id, tokens);
+  }
+  return { accessToken: tokens.accessToken, connectionId: connection.id };
+}
+
+/** Finds the Drive copy stamped with `key`, or uploads one. */
+async function copyToDrive(
+  ctx: AppContext, req: Parameters<AppContext["inOrg"]>[0],
+  input: { key: Record<string, string>; name: string; mime: string; bytes: () => Promise<Buffer> }
+): Promise<{ url: string; driveFileId: string; created: boolean }> {
+  const { accessToken, connectionId } = await driveAccess(ctx, req);
+  const existing = await findExisting(accessToken, input.key);
+  if (existing) return { url: existing.webViewLink, driveFileId: existing.id, created: false };
+  const bytes = await input.bytes();
+  const uploaded = await upload(accessToken, {
+    name: input.name, mime: input.mime, bytes,
+    appProperties: { ...input.key, deedwellOrgId: req.orgId! },
+  }).catch(async (err) => {
+    const message = String((err as Error).message ?? err);
+    req.log.warn({ err }, "drive: upload failed");
+    if (/\(401\)|\(403\)/.test(message)) {
+      await markNeedsAttention(ctx, req, connectionId);
+      throw new HttpError(409, "Google Drive no longer accepts this connection — reconnect Google Drive and try again.");
+    }
+    throw new HttpError(502, "Could not copy that file to Google Drive just now.");
+  });
+  return { url: uploaded.webViewLink, driveFileId: uploaded.id, created: true };
+}
+
+async function findExisting(accessToken: string, key: Record<string, string>): Promise<{ id: string; webViewLink: string } | null> {
+  const clauses = Object.entries(key).map(([k, v]) => `appProperties has { key='${k.replace(/[^A-Za-z]/g, "")}' and value='${v.replace(/[^0-9A-Za-z-]/g, "")}' }`);
+  const q = `${clauses.join(" and ")} and trashed = false`;
   const res = await fetch(`${DRIVE_API}?${new URLSearchParams({ q, fields: "files(id,webViewLink)", pageSize: "1", spaces: "drive" })}`, {
     headers: { authorization: `Bearer ${accessToken}` }, signal: AbortSignal.timeout(20_000),
   });
