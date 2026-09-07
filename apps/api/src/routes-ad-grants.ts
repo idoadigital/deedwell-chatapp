@@ -76,6 +76,55 @@ export function registerAdGrantsRoutes(app: FastifyInstance, ctx: AppContext): v
     return reply.status(201).send(result);
   });
 
+  // ---- restart: cancel the active run and begin again from step 1 --------
+  // Facts, files and the Google connection/session stay; the run, its
+  // pending approval and its open timeline entries are closed out. Clearing
+  // claimed_by makes a worker mid-step lose its lease (the engine's commit
+  // is guarded on it), so a cancelled run can never write a later status.
+  app.post("/v1/orgs/:orgId/ad-grants/restart", async (req, reply) => {
+    ctx.requireRole(req, "admin");
+    await requireTokens(ctx, req);
+    const result = await ctx.inOrg(req, async (client) => {
+      const projectId = await findOrCreateProject(client, req.orgId!, req.userId!);
+      const active = await client.query(
+        `SELECT id FROM workflow_runs WHERE project_id = $1 AND definition = $2 AND status NOT IN ('completed','cancelled')
+         ORDER BY created_at DESC LIMIT 1`,
+        [projectId, AD_GRANTS_WORKFLOW]
+      );
+      const previousRunId: string | null = active.rows[0]?.id ?? null;
+      if (previousRunId) {
+        await client.query(
+          `UPDATE workflow_runs SET status = 'cancelled', claimed_by = NULL, claimed_at = NULL, last_error = NULL WHERE id = $1`,
+          [previousRunId]
+        );
+        await client.query(
+          `UPDATE approvals SET status = 'rejected', decided_by = $2, decided_at = now(), note = 'Application restarted from the beginning'
+           WHERE run_id = $1 AND status = 'pending'`,
+          [previousRunId, req.userId]
+        );
+        await client.query(
+          `UPDATE workspace_events SET status = 'completed', completed_at = now()
+           WHERE run_id = $1 AND status IN ('in_progress','blocked')`,
+          [previousRunId]
+        );
+        await audit(client, {
+          tenantId: req.orgId!, actorUser: req.userId, action: "workflow.cancelled",
+          entityType: "workflow_run", entityId: previousRunId, metadata: { definition: AD_GRANTS_WORKFLOW, reason: "restart" },
+        });
+      }
+      const runId = await ctx.deps.engine.start(client, {
+        tenantId: req.orgId!, projectId, definition: AD_GRANTS_WORKFLOW, createdBy: req.userId!, input: {},
+      });
+      await audit(client, {
+        tenantId: req.orgId!, actorUser: req.userId, action: "workflow.started",
+        entityType: "workflow_run", entityId: runId, metadata: { definition: AD_GRANTS_WORKFLOW, restartOf: previousRunId },
+      });
+      return { runId, projectId, previousRunId };
+    });
+    ctx.deps.engine.events.emit("event", { type: "run_updated", tenantId: req.orgId!, runId: result.runId, status: "pending", step: "start" } as never);
+    return reply.status(201).send(result);
+  });
+
   // ---- status: everything the dashboard and the Ad Grants page need ------
 
   app.get("/v1/orgs/:orgId/ad-grants/status", async (req) => {
