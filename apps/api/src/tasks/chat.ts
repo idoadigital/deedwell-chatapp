@@ -249,6 +249,7 @@ async function createFromDraft(deps: Deps, client: PoolClient, args: {
     title: d.title, description: "", instructions: d.instructions, agentKey: d.agentKey, taskType: "general",
     priority: d.priority, dueAt: null, tags: [], isRecurring: Boolean(d.recurring), cronExpression: d.cron,
     timezone: d.timezone, runAt: d.runAt, requiresApproval: d.requiresApproval, channelId: args.channelId,
+    steps: [], stepsInParallel: false,
   };
   const task = await createTask(client, { tenantId: args.tenantId, userId: args.userId, input, createdFrom: "chat" });
   const when = task.isRecurring

@@ -21,6 +21,8 @@ export interface TaskHandlerTask {
   isRecurring: boolean;
   runNumber: number;
   metadata: Record<string, unknown>;
+  /** For a coordinating task: what each finished step produced. */
+  steps?: Array<{ title: string; agentName: string; status: string; summary: string | null; deliverables: Array<{ title: string; body: string }> }>;
 }
 
 export interface TaskHandlerAgent { agentKey: string; name: string; role: string; team: string; bio?: string }
@@ -42,6 +44,8 @@ export interface TaskHandlerResult {
   deliverables: Array<{ title: string; body: string }>;
   imageRequests: Array<{ title: string; prompt: string }>;
   needsFromUser: string | null;
+  /** Delegations the runner turns into steps of this task. */
+  handoffs: Array<{ agentKey: string; title: string; instructions: string }>;
   tokensUsed: number;
 }
 

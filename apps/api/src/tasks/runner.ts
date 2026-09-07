@@ -32,8 +32,9 @@ export async function runTaskTick(deps: Deps, now = new Date(), limit = 3, worke
     `UPDATE agent_tasks SET claimed_by = $3, claimed_at = $1
       WHERE id IN (
         SELECT id FROM agent_tasks
-         WHERE status = 'queued' AND next_run_at IS NOT NULL AND next_run_at <= $1
+         WHERE status = 'queued' AND next_run_at IS NOT NULL AND next_run_at <= $1 AND paused = false
            AND (claimed_at IS NULL OR claimed_at < $1 - make_interval(mins => $4))
+           AND NOT EXISTS (SELECT 1 FROM agent_tasks d WHERE d.id = ANY(agent_tasks.depends_on) AND d.status <> 'completed')
          ORDER BY CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END, next_run_at
          LIMIT $2 FOR UPDATE SKIP LOCKED)
       RETURNING *`,
@@ -90,16 +91,21 @@ async function executeTask(deps: Deps, row: Record<string, any>, now: Date, work
     const runNumber = Number(row.run_count ?? 0) + 1;
     await client.query(`INSERT INTO agent_task_runs (id, tenant_id, task_id, status) VALUES ($1,$2,$3,'in_progress')`, [runId, tenantId, row.id]);
     await client.query(`UPDATE agent_tasks SET status = 'in_progress', attempts = attempts + 1, blocked_reason = NULL, last_run_at = $2 WHERE id = $1`, [row.id, now]);
-    await addTaskEvent(client, { tenantId, taskId: row.id, runId, kind: "started", actorKind: "agent", actorAgent: agentKey, message: row.is_recurring ? `Run #${runNumber} started` : "Started working" });
+    const synthesis = Boolean(row.metadata?.synthesis);
+    await addTaskEvent(client, { tenantId, taskId: row.id, runId, kind: "started", actorKind: "agent", actorAgent: agentKey, message: synthesis ? "Every step is in — bringing the results together" : row.is_recurring ? `Run #${runNumber} started` : "Started working" });
     emitTaskUpdated(deps, tenantId, row.id, "in_progress");
-    if (!row.is_recurring || runNumber === 1) await post(`I've started on "${row.title}". I'll post here when it's done.`, { taskUpdate: "started", taskCard: await card() });
+    if (row.parent_id) await stepStarted(deps, client, row);
+    if (!row.is_recurring || runNumber === 1) {
+      await post(synthesis ? `All the steps of "${row.title}" are done — I'm pulling them together now.` : `I've started on "${row.title}". I'll post here when it's done.`, { taskUpdate: "started", taskCard: await card() });
+    }
 
     const profile = await loadMissionProfile(client, deps.storage, tenantId).catch(() => null);
+    const steps = synthesis ? await finishedSteps(client, row.id) : undefined;
     const ctx: TaskHandlerContext = {
       task: {
         id: row.id, tenantId, title: row.title, description: row.description ?? "", instructions: row.instructions ?? "",
         agentKey, taskType: row.task_type, priority: row.priority, tags: row.tags ?? [], isRecurring: row.is_recurring, runNumber,
-        metadata: row.metadata ?? {},
+        metadata: row.metadata ?? {}, steps,
       },
       agent: { agentKey, name: agentName, role: mate?.role ?? "Teammate", team: mate?.team ?? "core", bio: mate?.bio },
       missionProfile: profile ? missionProfileBlock(profile) : "",
@@ -109,7 +115,7 @@ async function executeTask(deps: Deps, row: Record<string, any>, now: Date, work
     };
 
     try {
-      const handler = getTaskHandler(row.task_type);
+      const handler = getTaskHandler(synthesis ? "workflow" : row.task_type);
       const result = await handler.run(ctx);
       for (const note of result.progressNotes) await ctx.progress(note);
 
@@ -143,16 +149,44 @@ async function executeTask(deps: Deps, row: Record<string, any>, now: Date, work
         `UPDATE agent_task_runs SET status = 'completed', finished_at = now(), tokens_used = $2, summary = $3 WHERE id = $1`,
         [runId, result.tokensUsed, result.summary]
       );
+
+      // Delegation: the teammate handed parts to others. Those become steps
+      // of this task; it stays in progress and synthesises once they finish.
+      const handoffs = row.is_recurring ? [] : result.handoffs.filter((h) => teammateByKey.has(h.agentKey) && h.agentKey !== agentKey);
+      if (handoffs.length) {
+        const { rows: existing } = await client.query("SELECT count(*)::int AS n FROM agent_tasks WHERE parent_id = $1", [row.id]);
+        const names: string[] = [];
+        for (const [i, h] of handoffs.entries()) {
+          const stepId = uuidv7();
+          await client.query(
+            `INSERT INTO agent_tasks (id, tenant_id, parent_id, position, title, instructions, agent_key, task_type, priority, status, tags, timezone, next_run_at, channel_id, created_from, created_by, metadata)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,'general',$8,'queued',$9,$10,now(),$11,$12,$13,'{"handoff":true}')`,
+            [stepId, tenantId, row.id, Number(existing[0]?.n ?? 0) + i, h.title, h.instructions, h.agentKey, row.priority, row.tags ?? [], row.timezone || "UTC", row.channel_id, row.created_from, userId]
+          );
+          await addTaskEvent(client, { tenantId, taskId: stepId, kind: "created", actorKind: "agent", actorAgent: agentKey, message: `Handed off by ${agentName}: ${h.title}`, metadata: { parentId: row.id } });
+          names.push(`${displayName(h.agentKey)} — ${h.title}`);
+        }
+        await client.query(
+          `UPDATE agent_tasks SET status = 'in_progress', next_run_at = NULL, tokens_used = tokens_used + $2, attempts = 0, claimed_by = NULL, claimed_at = NULL,
+                  metadata = (metadata - 'synthesis') || '{"awaitingSteps": true}'::jsonb WHERE id = $1`,
+          [row.id, result.tokensUsed]
+        );
+        await addTaskEvent(client, { tenantId, taskId: row.id, runId, kind: "delegated", actorKind: "agent", actorAgent: agentKey, message: `${result.summary} Handed off: ${names.join("; ")}`, metadata: { steps: handoffs.length } });
+        await post(`${result.summary} I've handed part of this to ${handoffs.map((h) => displayName(h.agentKey)).join(" and ")}; I'll wrap it up once they're done.`, { taskUpdate: "delegated", taskCard: await card() });
+        emitTaskUpdated(deps, tenantId, row.id, "in_progress");
+        return "completed";
+      }
       const next = row.is_recurring && row.cron_expression ? nextCronRun(row.cron_expression, new Date(), row.timezone || "UTC") : null;
       await client.query(
         `UPDATE agent_tasks SET
            status = $2, next_run_at = $3, last_run_status = 'completed', run_count = run_count + 1, attempts = 0,
            tokens_used = tokens_used + $4, claimed_by = NULL, claimed_at = NULL,
            completed_at = CASE WHEN $2 = 'completed' THEN now() ELSE completed_at END,
-           metadata = CASE WHEN requires_approval THEN metadata - 'approvedForRun' ELSE metadata END
+           metadata = (CASE WHEN requires_approval THEN metadata - 'approvedForRun' ELSE metadata END) - 'synthesis' - 'awaitingSteps'
          WHERE id = $1`,
         [row.id, next ? "queued" : "completed", next, result.tokensUsed]
       );
+      if (row.parent_id) await stepFinished(deps, client, row, "completed");
       await addTaskEvent(client, {
         tenantId, taskId: row.id, runId, kind: "completed", actorKind: "agent", actorAgent: agentKey,
         message: result.summary, metadata: { deliverables: stored.length, tokens: result.tokensUsed, nextRunAt: next?.toISOString() ?? null },
@@ -178,11 +212,75 @@ async function executeTask(deps: Deps, row: Record<string, any>, now: Date, work
         message: giveUp ? `Failed after ${attempts} attempts: ${message}` : `Attempt ${attempts} failed, retrying: ${message}`,
       });
       if (giveUp) await post(`I couldn't finish "${row.title}": ${message}. You can retry it from Tasks once that's sorted.`, { taskUpdate: "failed", taskCard: await card() });
+      if (giveUp && row.parent_id) await stepFinished(deps, client, row, "failed");
       emitTaskUpdated(deps, tenantId, row.id, giveUp ? "failed" : "queued");
       console.error(JSON.stringify({ at: "tasks.run_failed", taskId: row.id, runId, attempts, giveUp, worker: workerId, err: message }));
       return "failed";
     }
   });
+}
+
+/** A coordinating task moves to in_progress the moment its first step starts. */
+async function stepStarted(deps: Deps, client: PoolClient, step: Record<string, any>): Promise<void> {
+  const { rows } = await client.query(
+    `UPDATE agent_tasks SET status = 'in_progress', last_run_at = coalesce(last_run_at, now()) WHERE id = $1 AND status = 'queued' RETURNING id`,
+    [step.parent_id]
+  );
+  if (rows[0]) emitTaskUpdated(deps, step.tenant_id, step.parent_id, "in_progress");
+}
+
+/** When the last step finishes, the parent is scheduled to synthesise; a
+ *  failed step blocks the parent and every step that depended on it. */
+async function stepFinished(deps: Deps, client: PoolClient, step: Record<string, any>, outcome: "completed" | "failed"): Promise<void> {
+  const tenantId: string = step.tenant_id;
+  const parentId: string = step.parent_id;
+  if (outcome === "failed") {
+    await client.query(
+      `UPDATE agent_tasks SET status = 'blocked', blocked_reason = 'dependency_failed', next_run_at = NULL
+        WHERE parent_id = $1 AND status = 'queued' AND $2 = ANY(depends_on)`,
+      [parentId, step.id]
+    );
+    await client.query(`UPDATE agent_tasks SET status = 'blocked', blocked_reason = 'step_failed', claimed_by = NULL, claimed_at = NULL WHERE id = $1 AND status IN ('queued','in_progress')`, [parentId]);
+    await addTaskEvent(client, { tenantId, taskId: parentId, kind: "blocked", level: "warn", message: `Step "${step.title}" failed — fix or retry it, then run the workflow again` });
+    emitTaskUpdated(deps, tenantId, parentId, "blocked");
+    return;
+  }
+  const { rows } = await client.query(
+    `SELECT count(*) FILTER (WHERE status <> 'completed')::int AS open, count(*)::int AS total FROM agent_tasks WHERE parent_id = $1`,
+    [parentId]
+  );
+  await addTaskEvent(client, { tenantId, taskId: parentId, kind: "progress", level: "progress", actorKind: "agent", actorAgent: step.agent_key, message: `Step done: ${step.title} (${rows[0].total - rows[0].open}/${rows[0].total})` });
+  if (rows[0]?.open === 0) {
+    await client.query(
+      `UPDATE agent_tasks SET status = 'queued', next_run_at = now(), blocked_reason = NULL, claimed_by = NULL, claimed_at = NULL,
+              metadata = (metadata - 'awaitingSteps') || '{"synthesis": true}'::jsonb
+        WHERE id = $1 AND status IN ('queued','in_progress','blocked')`,
+      [parentId]
+    );
+  }
+  emitTaskUpdated(deps, tenantId, parentId, rows[0]?.open === 0 ? "queued" : "in_progress");
+}
+
+/** Everything the steps produced, for the synthesis prompt. */
+async function finishedSteps(client: PoolClient, parentId: string) {
+  const { rows } = await client.query(
+    `SELECT t.id, t.title, t.agent_key, t.status,
+            (SELECT r.summary FROM agent_task_runs r WHERE r.task_id = t.id ORDER BY r.started_at DESC LIMIT 1) AS summary
+       FROM agent_tasks t WHERE t.parent_id = $1 ORDER BY t.position, t.created_at`,
+    [parentId]
+  );
+  const out = [];
+  for (const s of rows) {
+    const docs = await client.query(
+      `SELECT d.title, v.content->>'body' AS body FROM agent_task_deliverables d
+         JOIN artifact_versions v ON v.artifact_id = d.artifact_id
+        WHERE d.task_id = $1 AND d.kind = 'markdown' ORDER BY d.created_at`,
+      [s.id]
+    );
+    out.push({ title: s.title, agentName: displayName(s.agent_key), status: s.status, summary: s.summary ?? null,
+      deliverables: docs.rows.map((d) => ({ title: d.title, body: String(d.body ?? "").slice(0, 20000) })) });
+  }
+  return out;
 }
 
 async function ensureTasksProject(client: PoolClient, tenantId: string, userId: string): Promise<string> {

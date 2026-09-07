@@ -506,6 +506,9 @@ function agentTaskResult(request: ModelRequest): unknown {
     deliverables: needs ? [] : [{ title, body: `# ${title}\n\n${instructions || "Summary of the work."}\n\n## Findings\n\n- Point one\n- Point two\n\n## Next steps\n\n1. Review\n2. Share` }],
     imageRequests: wantsImage && !needs ? [{ title: `${title} image`, prompt: `A clean, warm illustration for: ${title}` }] : [],
     needsFromUser: needs,
+    handoffs: /\[hand off to ([a-z_.]+)\]/i.test(instructions)
+      ? [{ agentKey: /\[hand off to ([a-z_.]+)\]/i.exec(instructions)![1]!, title: `Follow-up for ${title}`, instructions: "Take the part that fits your specialty." }]
+      : [],
   };
 }
 

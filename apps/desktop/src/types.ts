@@ -344,6 +344,13 @@ export interface ChatMessage {
       id: string; type: string; format: string; status: string;
       sizeBytes: number | null; version: number | null;
     }>;
+    /** Agent tasks: a task was created, started, finished, needs approval or an answer. */
+    taskId?: string;
+    taskCard?: { taskId: string; title: string; status: string; agentKey: string; agentName: string; isRecurring: boolean; scheduleLabel: string | null; priority: string };
+    taskUpdate?: "started" | "completed" | "failed" | "delegated";
+    taskApproval?: boolean;
+    taskQuestion?: string;
+    taskDeliverables?: Array<{ id: string; kind: string; title: string }>;
   };
   created_at: string;
 }

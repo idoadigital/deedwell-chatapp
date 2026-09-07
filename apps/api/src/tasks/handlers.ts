@@ -39,6 +39,11 @@ const GUIDANCE: Record<string, { label: string; description: string; guidance: s
     description: "Check something against requirements and report gaps.",
     guidance: "Deliver a review: what was checked, what passes, what fails with the reason, and the fixes in priority order.",
   },
+  workflow: {
+    label: "Workflow",
+    description: "Several steps across teammates, brought together at the end.",
+    guidance: "You are coordinating. Every step below has finished; their deliverables are provided in full. Deliver ONE final document that brings the steps together for the person who asked: what was done, the combined result, and what they should do next. Do not repeat the steps verbatim — synthesise. No handoffs.",
+  },
 };
 
 function agentDefinition(ctx: TaskHandlerContext): AgentDefinition {
@@ -65,16 +70,28 @@ async function runModelTask(ctx: TaskHandlerContext, type: string): Promise<Task
     `Instructions: ${ctx.task.instructions || ctx.task.title}`,
     `Today: ${ctx.now.toISOString().slice(0, 10)}`,
   ].filter(Boolean).join("\n");
-  const result = await runAgentTask<AgentTaskResultOutput>(ctx.model, agentDefinition(ctx), `Carry out the task below. ${shape.guidance}`, [
+  const blocks = [
     { label: "task", content: task },
     { label: "mission_profile", content: ctx.missionProfile || "(no mission profile yet)" },
-  ]);
+  ];
+  if (ctx.task.steps?.length) {
+    blocks.push({
+      label: "finished_steps",
+      content: ctx.task.steps.map((s, i) => [
+        `## Step ${i + 1}: ${s.title} — ${s.agentName} (${s.status})`,
+        s.summary ? `Summary: ${s.summary}` : "",
+        ...s.deliverables.map((d) => `### ${d.title}\n${d.body}`),
+      ].filter(Boolean).join("\n")).join("\n\n"),
+    });
+  }
+  const result = await runAgentTask<AgentTaskResultOutput>(ctx.model, agentDefinition(ctx), `Carry out the task below. ${shape.guidance}`, blocks);
   return {
     summary: result.output.summary,
     progressNotes: result.output.progressNotes,
     deliverables: result.output.deliverables,
     imageRequests: result.output.imageRequests,
     needsFromUser: result.output.needsFromUser,
+    handoffs: type === "workflow" ? [] : result.output.handoffs,
     tokensUsed: result.tokensEstimated,
   };
 }

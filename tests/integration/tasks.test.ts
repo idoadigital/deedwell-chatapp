@@ -21,6 +21,8 @@ describe("Agent tasks", () => {
   const detail = async (id: string) => (await get(`/tasks/${id}`)).body;
   const messagesIn = async (channelId: string) => (await get(`/channels/${channelId}/messages`)).body.messages as Array<Record<string, any>>;
   const tick = () => runTaskTick(env.deps, new Date(), 5, "test");
+  // Earlier scenarios may leave queued work behind; start each new one clean.
+  const drain = async () => { for (let i = 0; i < 6; i += 1) if ((await tick()).claimed === 0) return; };
 
   beforeAll(async () => {
     process.env.SESSION_ENCRYPTION_KEY ??= Buffer.alloc(32, 7).toString("base64");
@@ -192,5 +194,72 @@ describe("Agent tasks", () => {
     } else {
       expect(created.status).toBe(201);
     }
+  });
+
+  it("runs a multi-step workflow across teammates in sequence, then synthesises", async () => {
+    await drain();
+    await withContext(env.deps.appPool, { tenantId: orgId, userId }, (c) => creditTokens(c, orgId, 50_000_000, { reason: "test" }));
+    const created = await post("/tasks", {
+      title: "Spring funder outreach", instructions: "Research, then write.", agentKey: "grant.program_planner",
+      steps: [
+        { title: "Shortlist five funders", agentKey: AGENT, taskType: "research" },
+        { title: "Draft the outreach email", agentKey: "grant.writer", taskType: "outreach" },
+      ],
+    });
+    expect(created.status, created.raw).toBe(201);
+    const wf = created.body.task;
+    expect(wf.taskType).toBe("workflow");
+    expect(wf.stepCount).toBe(2);
+    // Only the first step is claimable; the second depends on it; the parent waits.
+    expect(await tick()).toMatchObject({ claimed: 1, completed: 1 });
+    let d = await detail(wf.id);
+    expect(d.task.status).toBe("in_progress");
+    expect(d.steps.map((s: any) => s.status)).toEqual(["completed", "queued"]);
+    expect(await tick()).toMatchObject({ claimed: 1, completed: 1 });
+    // Last step done → the coordinator is queued for synthesis and runs it.
+    d = await detail(wf.id);
+    expect(d.task.status).toBe("queued");
+    expect(d.task.metadata.synthesis).toBe(true);
+    expect(await tick()).toMatchObject({ claimed: 1, completed: 1 });
+    d = await detail(wf.id);
+    expect(d.task.status).toBe("completed");
+    // Deliverables roll up: two steps' documents plus the synthesis.
+    expect(d.deliverables).toHaveLength(3);
+    expect(d.deliverables.filter((x: any) => x.taskId === wf.id)).toHaveLength(1);
+    expect(d.events.some((e: any) => /Every step is in/.test(e.message))).toBe(true);
+    const list = await get("/tasks");
+    expect(list.body.tasks.find((t: any) => t.id === wf.id).stepsDone).toBe(2);
+    expect(list.body.tasks.some((t: any) => t.parentId)).toBe(false);
+  });
+
+  it("lets a teammate hand part of a task to another teammate, and waits for them", async () => {
+    await drain();
+    const created = await post("/tasks", { title: "Board packet", instructions: "Assemble the packet. [hand off to grant.writer]", agentKey: "grant.program_planner" });
+    const task = created.body.task;
+    expect(await tick()).toMatchObject({ claimed: 1, completed: 1 });
+    let d = await detail(task.id);
+    expect(d.task.status).toBe("in_progress");
+    expect(d.steps).toHaveLength(1);
+    expect(d.steps[0].agentKey).toBe("grant.writer");
+    expect(d.events.some((e: any) => e.kind === "delegated")).toBe(true);
+    expect(await tick()).toMatchObject({ claimed: 1, completed: 1 });   // the hand-off runs
+    expect(await tick()).toMatchObject({ claimed: 1, completed: 1 });   // then the synthesis
+    d = await detail(task.id);
+    expect(d.task.status).toBe("completed");
+    expect(d.deliverables.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("pauses and resumes a routine without losing its schedule", async () => {
+    await drain();
+    const created = await post("/tasks", { title: "Daily digest", agentKey: AGENT, isRecurring: true, cronExpression: "0 9 * * *", timezone: "UTC" });
+    const task = created.body.task;
+    expect((await post(`/tasks/${task.id}/pause`)).body.task.paused).toBe(true);
+    await post(`/tasks/${task.id}/run`);
+    expect((await tick()).claimed).toBe(0);
+    const resumed = await post(`/tasks/${task.id}/resume`);
+    expect(resumed.body.task.paused).toBe(false);
+    expect(new Date(resumed.body.task.nextRunAt).getTime()).toBeGreaterThan(Date.now());
+    const oneOff = await post("/tasks", { title: "Not a routine", agentKey: AGENT });
+    expect((await post(`/tasks/${oneOff.body.task.id}/pause`)).status).toBe(409);
   });
 });

@@ -38,6 +38,12 @@ export function taskView(row: Record<string, any>) {
     createdBy: row.created_by,
     tokensUsed: Number(row.tokens_used ?? 0),
     blockedReason: row.blocked_reason,
+    parentId: row.parent_id ?? null,
+    dependsOn: row.depends_on ?? [],
+    position: row.position ?? 0,
+    paused: Boolean(row.paused),
+    stepCount: row.step_count != null ? Number(row.step_count) : 0,
+    stepsDone: row.steps_done != null ? Number(row.steps_done) : 0,
     metadata: row.metadata ?? {},
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -97,20 +103,45 @@ export async function createTask(client: PoolClient, args: {
   try { schedule = scheduleFor(input, now); } catch (err) { if (err instanceof CronError) throw new HttpError(400, err.message); throw err; }
   const id = uuidv7();
   const channelId = input.channelId ?? (await defaultChannel(client, args.tenantId, input.agentKey));
+  const steps = input.steps ?? [];
+  if (steps.length && input.isRecurring) throw new HttpError(400, "A multi-step workflow runs once; make the steps a routine individually if they repeat.");
+  for (const s of steps) if (!teammateByKey.has(s.agentKey)) throw new HttpError(400, `Unknown teammate for step "${s.title}"`);
+  // A coordinator with steps waits for them: it has no run time of its own
+  // until the last step finishes, when the runner schedules its synthesis.
   const { rows } = await client.query(
     `INSERT INTO agent_tasks
        (id, tenant_id, title, description, instructions, agent_key, task_type, priority, status, tags, due_at,
         is_recurring, cron_expression, timezone, next_run_at, requires_approval, channel_id, created_from, created_by, metadata)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'queued',$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,'{}')
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'queued',$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
      RETURNING *`,
-    [id, args.tenantId, input.title, input.description ?? "", input.instructions ?? "", input.agentKey, input.taskType ?? "general",
+    [id, args.tenantId, input.title, input.description ?? "", input.instructions ?? "", input.agentKey,
+     steps.length ? "workflow" : (input.taskType ?? "general"),
      input.priority ?? "normal", input.tags ?? [], input.dueAt ? new Date(input.dueAt) : null,
-     Boolean(input.isRecurring), schedule.cron, schedule.timezone, schedule.nextRunAt, Boolean(input.requiresApproval),
-     channelId, args.createdFrom, args.userId]
+     Boolean(input.isRecurring), schedule.cron, schedule.timezone, steps.length ? null : schedule.nextRunAt, Boolean(input.requiresApproval),
+     channelId, args.createdFrom, args.userId, JSON.stringify(steps.length ? { awaitingSteps: true } : {})]
   );
+  let previous: string | null = null;
+  for (const [i, step] of steps.entries()) {
+    const stepId = uuidv7();
+    await client.query(
+      `INSERT INTO agent_tasks
+         (id, tenant_id, parent_id, position, depends_on, title, description, instructions, agent_key, task_type, priority, status, tags,
+          timezone, next_run_at, requires_approval, channel_id, created_from, created_by, metadata)
+       VALUES ($1,$2,$3,$4,$5,$6,'',$7,$8,$9,$10,'queued',$11,$12,$13,false,$14,$15,$16,'{}')`,
+      [stepId, args.tenantId, id, i, input.stepsInParallel || !previous ? [] : [previous], step.title, step.instructions ?? "",
+       step.agentKey, step.taskType ?? "general", input.priority ?? "normal", input.tags ?? [], schedule.timezone, schedule.nextRunAt,
+       channelId, args.createdFrom, args.userId]
+    );
+    await addTaskEvent(client, { tenantId: args.tenantId, taskId: stepId, kind: "created", actorKind: "user", actorUser: args.userId, message: `Step ${i + 1} of "${input.title}"`, metadata: { parentId: id } });
+    previous = stepId;
+  }
+  rows[0].step_count = steps.length;
+  rows[0].steps_done = 0;
   await addTaskEvent(client, {
     tenantId: args.tenantId, taskId: id, kind: "created", actorKind: "user", actorUser: args.userId,
-    message: input.isRecurring
+    message: steps.length
+      ? `Workflow created — ${steps.length} step${steps.length === 1 ? "" : "s"} across ${new Set(steps.map((s) => agentName(s.agentKey))).size} teammate(s), ${input.stepsInParallel ? "in parallel" : "in sequence"}`
+      : input.isRecurring
       ? `Task created — ${describeCron(schedule.cron!)}, first run ${schedule.nextRunAt.toISOString()}`
       : schedule.nextRunAt > now ? `Task created — scheduled for ${schedule.nextRunAt.toISOString()}` : "Task created and queued",
     metadata: { from: args.createdFrom },
@@ -147,8 +178,12 @@ export async function listTasks(client: PoolClient, tenantId: string, f: TaskFil
   if (f.due === "today") where.push("due_at IS NOT NULL AND due_at::date = now()::date");
   if (f.due === "week") where.push("due_at IS NOT NULL AND due_at >= now() AND due_at < now() + interval '7 days'");
   if (f.due === "none") where.push("due_at IS NULL");
+  where.push("parent_id IS NULL");
   const { rows } = await client.query(
-    `SELECT * FROM agent_tasks WHERE ${where.join(" AND ")}
+    `SELECT t.*,
+            (SELECT count(*)::int FROM agent_tasks s WHERE s.parent_id = t.id) AS step_count,
+            (SELECT count(*)::int FROM agent_tasks s WHERE s.parent_id = t.id AND s.status = 'completed') AS steps_done
+       FROM agent_tasks t WHERE ${where.join(" AND ")}
       ORDER BY CASE status WHEN 'in_progress' THEN 0 WHEN 'waiting_approval' THEN 1 WHEN 'blocked' THEN 2 WHEN 'queued' THEN 3 ELSE 4 END,
                CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END,
                coalesce(due_at, next_run_at, created_at) ASC, created_at DESC
@@ -166,14 +201,21 @@ export async function getTaskRow(client: PoolClient, taskId: string): Promise<Re
 
 export async function getTaskDetail(client: PoolClient, taskId: string) {
   const row = await getTaskRow(client, taskId);
-  const [runs, events, deliverables] = await Promise.all([
+  const [runs, events, deliverables, steps, parent] = await Promise.all([
     client.query(`SELECT * FROM agent_task_runs WHERE task_id = $1 ORDER BY started_at DESC LIMIT 50`, [taskId]),
     client.query(`SELECT * FROM agent_task_events WHERE task_id = $1 ORDER BY created_at ASC LIMIT 500`, [taskId]),
-    client.query(`SELECT d.*, a.current_version FROM agent_task_deliverables d LEFT JOIN artifacts a ON a.id = d.artifact_id
-                   WHERE d.task_id = $1 ORDER BY d.created_at DESC LIMIT 200`, [taskId]),
+    client.query(`SELECT d.*, a.current_version, t.title AS task_title FROM agent_task_deliverables d
+                   LEFT JOIN artifacts a ON a.id = d.artifact_id JOIN agent_tasks t ON t.id = d.task_id
+                   WHERE d.task_id = $1 OR t.parent_id = $1 ORDER BY d.created_at DESC LIMIT 200`, [taskId]),
+    client.query(`SELECT * FROM agent_tasks WHERE parent_id = $1 ORDER BY position, created_at`, [taskId]),
+    row.parent_id ? client.query(`SELECT id, title, status FROM agent_tasks WHERE id = $1`, [row.parent_id]) : Promise.resolve({ rows: [] }),
   ]);
+  row.step_count = steps.rows.length;
+  row.steps_done = steps.rows.filter((s) => s.status === "completed").length;
   return {
     task: taskView(row),
+    steps: steps.rows.map(taskView),
+    parent: parent.rows[0] ? { id: parent.rows[0].id, title: parent.rows[0].title, status: parent.rows[0].status } : null,
     runs: runs.rows.map((r) => ({
       id: r.id, status: r.status, summary: r.summary, error: r.error, tokensUsed: Number(r.tokens_used ?? 0),
       startedAt: r.started_at, finishedAt: r.finished_at,
@@ -189,7 +231,7 @@ export async function getTaskDetail(client: PoolClient, taskId: string) {
 
 export function deliverableView(d: Record<string, any>) {
   return {
-    id: d.id, runId: d.run_id, kind: d.kind, title: d.title, artifactId: d.artifact_id, fileId: d.file_id,
+    id: d.id, runId: d.run_id, taskId: d.task_id, taskTitle: d.task_title ?? null, kind: d.kind, title: d.title, artifactId: d.artifact_id, fileId: d.file_id,
     mime: d.mime, sizeBytes: d.size_bytes != null ? Number(d.size_bytes) : null, metadata: d.metadata ?? {}, createdAt: d.created_at,
   };
 }
@@ -245,14 +287,49 @@ export async function cancelTask(client: PoolClient, args: { tenantId: string; u
   );
   if (!rows[0]) throw new HttpError(409, "That task is already cancelled.");
   await client.query(`UPDATE agent_task_runs SET status = 'cancelled', finished_at = now() WHERE task_id = $1 AND status = 'in_progress'`, [args.taskId]);
+  await client.query(
+    `UPDATE agent_tasks SET status = 'cancelled', cancelled_at = now(), next_run_at = NULL, claimed_by = NULL, claimed_at = NULL
+      WHERE parent_id = $1 AND status NOT IN ('completed','cancelled')`,
+    [args.taskId]
+  );
   await addTaskEvent(client, { tenantId: args.tenantId, taskId: args.taskId, kind: "cancelled", actorKind: "user", actorUser: args.userId, message: "Task cancelled" });
   await audit(client, { tenantId: args.tenantId, actorUser: args.userId, action: "task.cancelled", entityType: "agent_tasks", entityId: args.taskId, metadata: {} });
+  return taskView(rows[0]);
+}
+
+/** Routines can be put on hold without losing their schedule. */
+export async function setTaskPaused(client: PoolClient, args: { tenantId: string; userId: string; taskId: string; paused: boolean }): Promise<TaskView> {
+  const row = await getTaskRow(client, args.taskId);
+  if (!row.is_recurring) throw new HttpError(409, "Only routines can be paused; cancel a one-off task instead.");
+  const next = !args.paused && row.cron_expression ? nextCronRun(row.cron_expression, new Date(), row.timezone || "UTC") : row.next_run_at;
+  const { rows } = await client.query(
+    `UPDATE agent_tasks SET paused = $2, next_run_at = $3, claimed_by = NULL, claimed_at = NULL WHERE id = $1 RETURNING *`,
+    [args.taskId, args.paused, next]
+  );
+  await addTaskEvent(client, { tenantId: args.tenantId, taskId: args.taskId, kind: args.paused ? "paused" : "resumed", actorKind: "user", actorUser: args.userId, message: args.paused ? "Routine paused" : `Routine resumed — next run ${next ? new Date(next).toISOString() : "unscheduled"}` });
   return taskView(rows[0]);
 }
 
 /** Queue the task to run at once — a first run, a retry, or an extra run of
  *  a recurring task ahead of its schedule. */
 export async function runTaskNow(client: PoolClient, args: { tenantId: string; userId: string; taskId: string }): Promise<TaskView> {
+  const steps = await client.query("SELECT id, status FROM agent_tasks WHERE parent_id = $1", [args.taskId]);
+  if (steps.rows.length && steps.rows.some((s) => s.status !== "completed")) {
+    // A workflow: put its unfinished steps back in the queue and wait for them.
+    await client.query(
+      `UPDATE agent_tasks SET status = 'queued', next_run_at = now(), blocked_reason = NULL, claimed_by = NULL, claimed_at = NULL, attempts = 0
+        WHERE parent_id = $1 AND status IN ('blocked','failed','cancelled','queued')`,
+      [args.taskId]
+    );
+    const { rows } = await client.query(
+      `UPDATE agent_tasks SET status = 'in_progress', next_run_at = NULL, blocked_reason = NULL, claimed_by = NULL, claimed_at = NULL, completed_at = NULL,
+              metadata = (metadata - 'synthesis') || '{"awaitingSteps": true}'::jsonb
+        WHERE id = $1 RETURNING *`,
+      [args.taskId]
+    );
+    await addTaskEvent(client, { tenantId: args.tenantId, taskId: args.taskId, kind: "queued", actorKind: "user", actorUser: args.userId, message: "Unfinished steps queued again" });
+    return taskView(rows[0]);
+  }
   const { rows } = await client.query(
     `UPDATE agent_tasks SET status = 'queued', next_run_at = now(), blocked_reason = NULL, claimed_by = NULL, claimed_at = NULL,
             completed_at = NULL, metadata = metadata - 'question'

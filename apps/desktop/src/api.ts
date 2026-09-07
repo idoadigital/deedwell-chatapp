@@ -189,6 +189,13 @@ export const provideInfo = (
     { facts }
   );
 
+export const approveTask = (orgId: string, taskId: string) =>
+  call<{ task: { id: string; status: string } }>("POST", `/v1/orgs/${orgId}/tasks/${taskId}/approve`, {});
+export const rejectTask = (orgId: string, taskId: string) =>
+  call<{ task: { id: string; status: string } }>("POST", `/v1/orgs/${orgId}/tasks/${taskId}/reject`, {});
+export const taskDeliverableUrl = (orgId: string, taskId: string, deliverableId: string, pdf: boolean) =>
+  `${API_URL}/v1/orgs/${orgId}/tasks/${taskId}/deliverables/${deliverableId}?${pdf ? "format=pdf&" : ""}download=1`;
+
 export const listApprovals = (orgId: string) =>
   call<{ approvals: Approval[] }>("GET", `/v1/orgs/${orgId}/approvals`);
 

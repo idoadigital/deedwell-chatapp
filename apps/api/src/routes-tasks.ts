@@ -6,7 +6,7 @@ import { renderArtifactPdf } from "./artifact-pdf.js";
 import { requireTokens } from "./billing-gate.js";
 import { emitTaskUpdated } from "./tasks/chat.js";
 import {
-  answerTaskQuestion, cancelTask, createTask, decideTaskApproval, getTaskDetail, listTasks, runTaskNow, updateTask,
+  answerTaskQuestion, cancelTask, createTask, decideTaskApproval, getTaskDetail, listTasks, runTaskNow, setTaskPaused, updateTask,
   type TaskFilters,
 } from "./tasks/store.js";
 import { TEAMMATES } from "./teammates.js";
@@ -92,7 +92,7 @@ export function registerTaskRoutes(app: FastifyInstance, ctx: AppContext): void 
     app.post(`/v1/orgs/:orgId/tasks/:taskId/${name}`, async (req) => {
       ctx.requireRole(req, "member");
       const { taskId } = req.params as { taskId: string };
-      if (name === "run" || name === "approve" || name === "answer") await requireTokens(ctx, req);
+      if (name === "run" || name === "approve" || name === "answer" || name === "resume") await requireTokens(ctx, req);
       const task = await ctx.inOrg(req, (client) => fn(client, { tenantId: req.orgId!, userId: req.userId!, taskId, body: (req.body ?? {}) as Record<string, any> }));
       emitTaskUpdated(ctx.deps, req.orgId!, task.id, task.status);
       return { task };
@@ -102,6 +102,8 @@ export function registerTaskRoutes(app: FastifyInstance, ctx: AppContext): void 
   transition("run", (client, a) => runTaskNow(client, a));
   transition("approve", (client, a) => decideTaskApproval(client, { ...a, decision: "approved", always: Boolean(a.body.always), note: a.body.note ?? null }));
   transition("reject", (client, a) => decideTaskApproval(client, { ...a, decision: "rejected", note: a.body.note ?? null }));
+  transition("pause", (client, a) => setTaskPaused(client, { ...a, paused: true }));
+  transition("resume", (client, a) => setTaskPaused(client, { ...a, paused: false }));
   transition("answer", (client, a) => {
     const answer = String(a.body.answer ?? "").trim();
     if (!answer) throw new HttpError(400, "An answer is required");
@@ -140,6 +142,31 @@ export function registerTaskRoutes(app: FastifyInstance, ctx: AppContext): void 
     reply.header("content-type", "application/zip");
     reply.header("content-disposition", `attachment; filename="${slug(title)}-deliverables.zip"`);
     return reply.send(zip);
+  });
+}
+
+/** Platform Admin: every task across organizations, for oversight. */
+export function registerAdminTaskRoutes(app: FastifyInstance, ctx: AppContext): void {
+  app.get("/v1/admin/tasks", async (req) => {
+    ctx.requirePlatformAdmin(req);
+    const { rows } = await ctx.deps.adminPool.query(
+      `SELECT t.id, t.title, t.status, t.agent_key, t.task_type, t.priority, t.is_recurring, t.cron_expression, t.paused,
+              t.parent_id, t.run_count, t.tokens_used, t.last_run_at, t.last_run_status, t.next_run_at, t.created_from, t.created_at, t.updated_at,
+              t.blocked_reason, o.id AS org_id, o.name AS org_name,
+              (SELECT count(*)::int FROM agent_tasks s WHERE s.parent_id = t.id) AS step_count
+         FROM agent_tasks t JOIN organizations o ON o.id = t.tenant_id
+        WHERE t.parent_id IS NULL
+        ORDER BY t.updated_at DESC LIMIT 500`
+    );
+    const totals = await ctx.deps.adminPool.query(
+      `SELECT count(*)::int AS tasks, count(*) FILTER (WHERE status = 'in_progress')::int AS running,
+              count(*) FILTER (WHERE status IN ('failed','blocked'))::int AS attention,
+              count(*) FILTER (WHERE is_recurring)::int AS routines,
+              coalesce(sum(tokens_used), 0)::bigint AS tokens,
+              (SELECT count(*)::int FROM agent_task_runs WHERE started_at > now() - interval '7 days') AS runs_week
+         FROM agent_tasks WHERE parent_id IS NULL`
+    );
+    return { tasks: rows, totals: totals.rows[0] };
   });
 }
 

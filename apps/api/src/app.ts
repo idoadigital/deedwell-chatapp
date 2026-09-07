@@ -40,7 +40,7 @@ import { registerGcpRoutes } from "./routes-gcp.js";
 import { registerAdGrantsRoutes } from "./routes-ad-grants.js";
 import { registerAdGrantsConnectWs } from "./ad-grants-connect-ws.js";
 import { registerBillingRoutes } from "./routes-billing.js";
-import { registerTaskRoutes } from "./routes-tasks.js";
+import { registerAdminTaskRoutes, registerTaskRoutes } from "./routes-tasks.js";
 import { registerRtc } from "./rtc.js";
 
 declare module "fastify" {
@@ -262,6 +262,7 @@ export function buildApp(deps: Deps): FastifyInstance {
   registerAdGrantsRoutes(app, ctx);
   registerBillingRoutes(app, ctx);
   registerTaskRoutes(app, ctx);
+  registerAdminTaskRoutes(app, ctx);
   registerRtc(app, ctx);
   registerAdGrantsConnectWs(app, ctx);
 

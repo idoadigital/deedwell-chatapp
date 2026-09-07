@@ -15,6 +15,55 @@ export function agentColor(key: string): string {
 }
 
 /** Packaging-completion card: the real generated files, with view + download. */
+const DASHBOARD_URL = (import.meta as unknown as { env?: Record<string, string> }).env?.VITE_DASHBOARD_URL ?? "https://deedwell.org";
+
+/** A task card: what happened, where it stands, and a link to the task in
+ *  the dashboard. Approval requests carry their own buttons. */
+function TaskCard({ org, meta, refresh }: { org: Organization; meta: ChatMessage["metadata"]; refresh: () => void }) {
+  const card = meta.taskCard!;
+  const [busy, setBusy] = useState<"approved" | "rejected" | "">("");
+  const [status, setStatus] = useState(card.status);
+  const [error, setError] = useState("");
+  const headline = meta.taskUpdate === "completed" ? "Task completed" : meta.taskUpdate === "started" ? "Task started"
+    : meta.taskUpdate === "failed" ? "Task failed" : meta.taskUpdate === "delegated" ? "Task handed off"
+    : meta.taskApproval ? "Approval needed" : meta.taskQuestion ? "Question from the team" : "Task";
+  const decide = async (decision: "approved" | "rejected") => {
+    setBusy(decision); setError("");
+    try {
+      const r = decision === "approved" ? await api.approveTask(org.id, card.taskId) : await api.rejectTask(org.id, card.taskId);
+      setStatus(r.task.status); refresh();
+    } catch (err) { setError((err as Error).message || "Could not record that decision."); } finally { setBusy(""); }
+  };
+  return (
+    <div className="chat-card">
+      <div className="row" style={{ justifyContent: "space-between", gap: 10 }}>
+        <div>
+          <strong>{card.title}</strong>
+          <div className="muted" style={{ fontSize: 12 }}>{headline} · {card.agentName}{card.isRecurring && card.scheduleLabel ? ` · ${card.scheduleLabel}` : ""}</div>
+        </div>
+        <span className={`pill ${status === "completed" ? "green" : ["failed", "cancelled"].includes(status) ? "red" : ["waiting_approval", "blocked"].includes(status) ? "amber" : ""}`}>{status.replace(/_/g, " ")}</span>
+      </div>
+      {Array.isArray(meta.taskDeliverables) && meta.taskDeliverables.length > 0 && (
+        <ul style={{ margin: "8px 0 0", paddingLeft: 18 }}>
+          {meta.taskDeliverables.map((d) => (
+            <li key={d.id}><a href={api.taskDeliverableUrl(org.id, card.taskId, d.id, d.kind === "markdown")}>{d.title}{d.kind === "markdown" ? " (PDF)" : ""}</a></li>
+          ))}
+        </ul>
+      )}
+      <div className="row" style={{ marginTop: 8, gap: 8, flexWrap: "wrap" }}>
+        {meta.taskApproval && status === "waiting_approval" && (
+          <>
+            <button className="primary" disabled={!!busy} onClick={() => decide("approved")}>{busy === "approved" ? "Approving…" : "Approve"}</button>
+            <button className="ghost" disabled={!!busy} onClick={() => decide("rejected")}>{busy === "rejected" ? "Rejecting…" : "Reject"}</button>
+          </>
+        )}
+        <a className="ghost" href={`${DASHBOARD_URL}/dashboard/tasks?task=${card.taskId}`} target="_blank" rel="noreferrer">Open in Tasks →</a>
+        {error && <span className="muted" style={{ color: "var(--danger, #b3412f)" }}>{error}</span>}
+      </div>
+    </div>
+  );
+}
+
 function DeliverablesCard({ org, deliverables, onView }: {
   org: Organization;
   deliverables: NonNullable<ChatMessage["metadata"]>["deliverables"];
@@ -476,6 +525,10 @@ function Message({
         )}
         {meta.approvalId && meta.approvalKind !== "bid_decision" && (
           <ApprovalActions org={org} approvalId={meta.approvalId} refresh={refresh} />
+        )}
+
+        {meta.taskCard && (
+          <TaskCard org={org} meta={meta} refresh={refresh} />
         )}
 
         {meta.goToChannelId && (

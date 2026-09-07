@@ -15,7 +15,7 @@ export type TaskPriority = z.infer<typeof TaskPriority>;
 
 /** Handler keys. "general" is the model-driven default that writes a
  *  document; the others bias the same runner toward a deliverable shape. */
-export const TaskType = z.enum(["general", "research", "report", "content", "outreach", "review"]);
+export const TaskType = z.enum(["general", "research", "report", "content", "outreach", "review", "workflow"]);
 export type TaskType = z.infer<typeof TaskType>;
 
 export const CreateTaskInput = z.object({
@@ -36,6 +36,17 @@ export const CreateTaskInput = z.object({
   requiresApproval: z.boolean().optional().default(false),
   /** Chat channel that gets progress updates; defaults to the agent's DM. */
   channelId: z.string().uuid().nullable().optional(),
+  /** Multi-agent: steps handed to (possibly different) teammates. The task
+   *  itself becomes the coordinator: it waits for every step, then its own
+   *  teammate synthesises the final deliverable. */
+  steps: z.array(z.object({
+    title: z.string().trim().min(2).max(200),
+    instructions: z.string().max(8000).optional().default(""),
+    agentKey: z.string().min(1).max(80),
+    taskType: TaskType.optional().default("general"),
+  })).max(12).optional().default([]),
+  /** Steps run one after another (default) or all at once. */
+  stepsInParallel: z.boolean().optional().default(false),
 });
 export type CreateTaskInput = z.infer<typeof CreateTaskInput>;
 
@@ -72,6 +83,14 @@ export const AgentTaskResultOutput = z.object({
     prompt: z.string().min(8).max(2000),
   })).max(4).default([]),
   needsFromUser: z.string().max(600).nullable().default(null),
+  /** Delegation: work best done by another teammate. Each becomes a step of
+   *  this task, assigned to that teammate; the task completes only after
+   *  they do, with a final synthesis. Empty for most tasks. */
+  handoffs: z.array(z.object({
+    agentKey: z.string().min(1).max(80),
+    title: z.string().min(2).max(200),
+    instructions: z.string().min(1).max(4000),
+  })).max(4).default([]),
 });
 export type AgentTaskResultOutput = z.infer<typeof AgentTaskResultOutput>;
 
