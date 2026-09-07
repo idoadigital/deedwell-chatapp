@@ -68,8 +68,13 @@ export async function launchBrowser(): Promise<Browser> {
   attempts.push(() => chromium.launch({ headless: true, channel: "chromium", args: LAUNCH_ARGS, ignoreDefaultArgs: ["--enable-automation"] }));
   attempts.push(() => chromium.launch({ headless: true, args: LAUNCH_ARGS }));
   let lastError: unknown;
-  for (const attempt of attempts) {
-    try { return await attempt(); } catch (err) { lastError = err; }
+  for (const [i, attempt] of attempts.entries()) {
+    try {
+      const browser = await attempt();
+      // One line per launch so production logs say which path Google saw.
+      console.log(JSON.stringify({ at: "google.browser_launched", path: i, headful: Boolean(process.env.DISPLAY) && i < attempts.length - 2, version: browser.version(), ...browserDisplayInfo() }));
+      return browser;
+    } catch (err) { lastError = err; }
   }
   throw lastError instanceof Error ? lastError : new Error("Could not launch a browser");
 }
