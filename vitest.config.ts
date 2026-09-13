@@ -18,6 +18,7 @@ export default defineConfig({
       "@deedwell/adgrants-domain": pkg("adgrants-domain"),
       "@deedwell/browser-automation": pkg("browser-automation"),
       "@deedwell/connectors": pkg("connectors"),
+      "@deedwell/google-ads-domain": pkg("google-ads-domain"),
       "@deedwell/tasks-domain": pkg("tasks-domain"),
       "@deedwell/billing-domain": pkg("billing-domain"),
       "@deedwell/observability": pkg("observability"),

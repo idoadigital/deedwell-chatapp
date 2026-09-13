@@ -90,6 +90,17 @@ async function main(): Promise<void> {
     for (const signal of ["SIGTERM", "SIGINT"] as const) process.once(signal, () => stopInbox());
   }
 
+  // Google Ads: publish jobs, snapshot sync, manager-link retries.
+  // GOOGLE_ADS_WORKER=off disables it.
+  if (process.env.GOOGLE_ADS_WORKER !== "off") {
+    const { startGoogleAdsWorker } = await import("./google-ads/worker.js");
+    const { setGoogleAdsLogger } = await import("./google-ads/access.js");
+    setGoogleAdsLogger({ warn: (o, m) => app.log.warn(o as object, m), info: (o, m) => app.log.info(o as object, m) });
+    const stopAds = startGoogleAdsWorker(deps, { log: app.log });
+    abort.signal.addEventListener("abort", () => stopAds());
+    for (const signal of ["SIGTERM", "SIGINT"] as const) process.once(signal, () => stopAds());
+  }
+
   // Transactional email: drains the outbox every few seconds and runs the
   // low-balance / unread-digest sweeps. EMAIL_WORKER=off disables it.
   if (process.env.EMAIL_WORKER !== "off") {

@@ -11,7 +11,7 @@ const ALL_TABLES = [
   "email_outbox", "password_reset_tokens",
   "organizations", "sessions", "users",
   // Platform-owned (no tenant), so nothing above cascades into them.
-  "site_reference_templates", "platform_settings",
+  "site_reference_templates", "platform_settings", "google_ads_platform_settings", "google_ads_manager_oauth_states",
 ];
 
 export interface TestEnv {

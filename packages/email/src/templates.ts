@@ -39,6 +39,8 @@ export interface EmailPayloads {
   ad_grants_review: { orgName: string; status: "approved" | "rejected"; reason: string | null };
   ad_grants_reconnect: { orgName: string; step: string };
   ad_grants_live: { orgName: string; campaignId: string | null };
+  google_ads_connected: { orgName: string; accountName: string; customerId: string };
+  google_ads_published: { orgName: string; campaignName: string; adCount: number; paused: boolean };
   ad_grants_email: { orgName: string; from: string; subject: string; verdict: string; excerpt: string };
   task_approval_requested: { orgName: string; taskTitle: string; agentName: string };
   task_completed: { orgName: string; taskTitle: string; agentName: string; summary: string; deliverables: string[]; runNumber: number | null; nextRunAt: string | null };
@@ -59,7 +61,7 @@ export const EMAIL_CATEGORY: Record<EmailKind, EmailCategory> = {
   site_preview_ready: "activity", site_build_failed: "activity", site_published: "activity", run_failed: "activity",
   approval_needed: "activity", info_needed: "activity", grant_package_ready: "activity", content_campaign_finished: "activity",
   post_failed: "activity", connector_attention: "activity", form_submission: "activity", ad_grants_review: "activity",
-  ad_grants_reconnect: "activity", ad_grants_live: "activity", ad_grants_email: "activity", task_approval_requested: "activity", task_completed: "activity",
+  ad_grants_reconnect: "activity", ad_grants_live: "activity", google_ads_connected: "activity", google_ads_published: "activity", ad_grants_email: "activity", task_approval_requested: "activity", task_completed: "activity",
   task_failed: "activity", task_needs_input: "activity", teammate_message: "activity", unread_digest: "activity",
   ops_alert: "ops",
 };
@@ -81,6 +83,7 @@ export function linksFor(cfg: Pick<EmailConfig, "appOrigin" | "coworkersOrigin">
     tasks: `${d}/tasks`,
     connectors: `${d}/connectors`,
     adGrants: `${d}/ad-grants`,
+    googleAds: `${d}/google-ads`,
     chat: `${d}/chat`,
     coworkers: cfg.coworkersOrigin,
     support: `${d}/settings?tab=account`,
@@ -441,6 +444,28 @@ const templates: { [K in EmailKind]: Renderer<K> } = {
     cta: { label: "Reconnect Google", url: L.adGrants },
   }),
 
+  google_ads_connected: (x, L) => ({
+    subject: `Google Ads is connected to Deedwell`,
+    preheader: "Deedwell can now manage your campaigns and report performance.",
+    eyebrow: "Google Ads",
+    heading: `${x.accountName} is connected.`,
+    blocks: [
+      p(`Google Ads account **${x.accountName}** (${x.customerId}) is now connected to **${x.orgName}** on Deedwell.`),
+      p("From here Deedwell manages campaigns on your behalf and shows performance, campaigns and the ads it creates on your Google Ads page. Nothing is published without a Deedwell administrator's approval."),
+    ],
+    cta: { label: "Open Google Ads", url: L.googleAds },
+  }),
+  google_ads_published: (x, L) => ({
+    subject: `A new Google Ads campaign is ${x.paused ? "ready" : "live"}: ${x.campaignName}`,
+    preheader: x.paused ? "Created paused for a final look before it runs." : "Now serving in your Google Ads account.",
+    eyebrow: "Google Ads",
+    heading: `${x.campaignName} was published.`,
+    blocks: [
+      p(`Deedwell published the campaign **${x.campaignName}** with ${x.adCount} ${x.adCount === 1 ? "ad" : "ads"} to ${x.orgName}'s Google Ads account.`),
+      p(x.paused ? "It was created paused, so nothing spends until Deedwell enables it after a final check." : "It is enabled and serving."),
+    ],
+    cta: { label: "See the campaign", url: L.googleAds },
+  }),
   ad_grants_live: (x, L) => ({
     subject: `Your first Google Ads campaign is live`,
     preheader: "Grant-funded ads are now running.",

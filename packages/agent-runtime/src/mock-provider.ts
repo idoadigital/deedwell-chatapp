@@ -43,6 +43,8 @@ export class MockModelProvider implements ModelProvider {
       site_patch: sitePatch,
       intent: mockIntent,
       ad_grants_campaign_plan: draftAdGrantsCampaign,
+      google_ads_strategy: googleAdsStrategy,
+      google_ads_campaign_draft: googleAdsCampaignDraft,
       site_html: siteHtml,
       design_language: designLanguage,
       design_tokens: designTokens,
@@ -532,4 +534,66 @@ function taskScheduleReply(request: ModelRequest): unknown {
     : /\b(cancel|never ?mind|stop|forget it|no thanks)\b/.test(reply) ? false : null;
   const priority = /\burgent\b/.test(reply) ? "urgent" : /\bhigh priority\b/.test(reply) ? "high" : /\blow priority\b/.test(reply) ? "low" : null;
   return { recurring, cron, runAt: null, confirm, changes: { title: null, instructions: null, agentKey: null, priority, requiresApproval: /\b(approval|approve first|check with me)\b/.test(reply) ? true : null } };
+}
+
+
+// ---- Google Ads ------------------------------------------------------------
+// Deterministic stand-ins that read the organization block the real prompt
+// gets, so tests exercise the same plumbing (validation, review, publish).
+
+function googleAdsOrgName(request: ModelRequest): string {
+  const ctx = jsonBlock<{ name?: string; websiteUrl?: string | null; pages?: Array<{ url: string; title: string }> }>(request, "organization", {});
+  return ctx.name || "The organization";
+}
+
+function googleAdsLanding(request: ModelRequest): string {
+  const ctx = jsonBlock<{ websiteUrl?: string | null; pages?: Array<{ url: string; title: string }> }>(request, "organization", {});
+  return ctx.pages?.[0]?.url || ctx.websiteUrl || "https://example.org/";
+}
+
+function googleAdsStrategy(request: ModelRequest): unknown {
+  const name = googleAdsOrgName(request);
+  const landing = googleAdsLanding(request);
+  return {
+    title: `${name} — search strategy`,
+    objective: `Reach people looking for the services ${name} provides and turn that interest into contact, sign-ups and donations.`,
+    audiences: [{ name: "People seeking help", description: "Individuals and families searching for the programs the organization runs." },
+      { name: "Supporters", description: "Local donors and volunteers who search for ways to help." }],
+    themes: [{ name: "Programs and services", description: "Searches that match the organization's core programs." },
+      { name: "Get involved", description: "Volunteering and donation intent." }],
+    campaigns: [{ name: `${name} — Programs`, objective: "Drive program enquiries", landingPage: landing, keywordThemes: ["programs", "services near me"], adGroupIdeas: ["Core program", "Who we serve"] }],
+    landingPages: [{ url: landing, purpose: "Program overview", recommendations: ["Add a clear call to action above the fold", "State who is eligible"] }],
+    keywordThemes: [{ theme: "programs", examples: ["community support program", "free help for families"] }],
+    negativeKeywords: ["jobs", "salary", "free download"],
+    conversionGoals: [{ name: "Contact form submission", howToTrack: "Google Ads conversion action on the thank-you page." }],
+    budget: { monthlyUsd: 3000, rationale: "Conservative start; scale with performance." },
+    opportunities: ["No conversion tracking is recorded yet — set it up before scaling."],
+    adGrantsNotes: ["Keep keywords mission-related and avoid single-word keywords."],
+  };
+}
+
+function googleAdsCampaignDraft(request: ModelRequest): unknown {
+  const name = googleAdsOrgName(request);
+  const landing = googleAdsLanding(request);
+  const short = name.slice(0, 18).trim();
+  const ad = (title: string) => ({
+    title,
+    headlines: [`${short} Programs`, "Support In Your Community", "Free Help For Families", "Talk To Our Team Today", "Local Nonprofit Services", "Get Support Near You", "Compassionate Local Help", "Programs That Work"],
+    descriptions: ["Programs designed with the community, for the community. Learn how we can help today.", "Find the support you need from a trusted local nonprofit. Reach out to get started.", "Our team is here to help. See programs, eligibility and how to get in touch."],
+    finalUrl: landing, path1: "programs", path2: null,
+    rationale: "Leads with the program name and a clear next step.",
+  });
+  return {
+    name: `${name} — Programs`,
+    objective: "Drive program enquiries from people searching for help.",
+    landingPage: landing,
+    dailyBudgetMicros: 50_000_000,
+    geoTargets: ["United States"],
+    negativeKeywords: ["jobs", "salary"],
+    adGroups: [
+      { name: "Core program", keywords: [{ text: "community support program", matchType: "PHRASE" }, { text: "help for families near me", matchType: "PHRASE" }, { text: `${short.toLowerCase()} programs`, matchType: "EXACT" }, { text: "nonprofit family services", matchType: "BROAD" }, { text: "free community services", matchType: "PHRASE" }], negativeKeywords: ["volunteer"], ads: [ad("Core program — A"), ad("Core program — B")] },
+      { name: "Get involved", keywords: [{ text: "volunteer opportunities near me", matchType: "PHRASE" }, { text: "donate to local nonprofit", matchType: "PHRASE" }, { text: "how to volunteer locally", matchType: "BROAD" }, { text: "support a community nonprofit", matchType: "PHRASE" }, { text: "nonprofit volunteer program", matchType: "PHRASE" }], negativeKeywords: ["paid"], ads: [ad("Get involved — A"), ad("Get involved — B")] },
+    ],
+    rationale: "Two ad groups split by intent: people seeking help and people wanting to help.",
+  };
 }

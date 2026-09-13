@@ -105,6 +105,9 @@ importers:
       '@deedwell/email':
         specifier: workspace:*
         version: link:../../packages/email
+      '@deedwell/google-ads-domain':
+        specifier: workspace:*
+        version: link:../../packages/google-ads-domain
       '@deedwell/tasks-domain':
         specifier: workspace:*
         version: link:../../packages/tasks-domain
@@ -229,6 +232,12 @@ importers:
       '@deedwell/database':
         specifier: workspace:*
         version: link:../database
+
+  packages/google-ads-domain:
+    dependencies:
+      '@deedwell/schemas':
+        specifier: workspace:*
+        version: link:../schemas
 
   packages/grant-domain:
     dependencies:

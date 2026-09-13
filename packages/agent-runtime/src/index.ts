@@ -17,6 +17,7 @@ import {
   type AgentDefinition,
   DesignLanguage, DesignTokens, PageComposition, CriticReport,
   LogoBriefOutput, LogoConceptsOutput, ProactiveMessageOutput, AgentTaskResultOutput, TaskScheduleReplyOutput,
+  GoogleAdsStrategyOutput, GoogleAdsCampaignDraftOutput,
 } from "@deedwell/schemas";
 import { MockModelProvider } from "./mock-provider.js";
 import { OpenAiProvider } from "./openai-provider.js";
@@ -64,6 +65,8 @@ export interface ModelRequest {
     | "site_patch"
     | "intent"
     | "ad_grants_campaign_plan"
+    | "google_ads_strategy"
+    | "google_ads_campaign_draft"
     | "content_strategy"
     | "site_html"
     | "design_language"
@@ -152,6 +155,8 @@ const OUTPUT_SCHEMAS: Record<ModelRequest["outputSchemaRef"], z.ZodTypeAny> = {
   site_patch: SitePatchOutput,
   intent: IntentOutput,
   ad_grants_campaign_plan: AdGrantsCampaignPlanOutput,
+  google_ads_strategy: GoogleAdsStrategyOutput,
+  google_ads_campaign_draft: GoogleAdsCampaignDraftOutput,
   content_strategy: ContentStrategyOutput,
   logo_brief: LogoBriefOutput,
   logo_concepts: LogoConceptsOutput,

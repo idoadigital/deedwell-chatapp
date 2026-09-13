@@ -56,7 +56,7 @@ describe("Google connection service", () => {
     const r = await api(env.app, "GET", `/v1/orgs/${orgId}/connectors/google/services`, { token });
     expect(r.status).toBe(200);
     expect(r.body.connection).toBeNull();
-    expect(r.body.services.map((s: any) => s.key)).toEqual(["identity", "gmail", "drive", "calendar", "sheets", "adgrants"]);
+    expect(r.body.services.map((s: any) => s.key)).toEqual(["identity", "gmail", "drive", "calendar", "sheets", "googleads", "adgrants"]);
     expect(r.body.services.every((s: any) => s.granted === false)).toBe(true);
     expect(r.body.browserSession.connected).toBe(false);
     const ag = await api(env.app, "GET", `/v1/orgs/${orgId}/ad-grants/status`, { token });

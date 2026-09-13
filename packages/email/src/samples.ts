@@ -29,6 +29,8 @@ export const SAMPLES: { [K in EmailKind]: EmailPayloads[K] } = {
   ad_grants_review: { orgName: "Riverbend Youth Center", status: "approved", reason: null },
   ad_grants_reconnect: { orgName: "Riverbend Youth Center", step: "submit_activation" },
   ad_grants_live: { orgName: "Riverbend Youth Center", campaignId: "1234567890" },
+  google_ads_connected: { orgName: "Riverbend Youth Center", accountName: "Riverbend Youth Center Ads", customerId: "123-456-7890" },
+  google_ads_published: { orgName: "Riverbend Youth Center", campaignName: "Riverbend — After-school programs", adCount: 4, paused: true },
   ad_grants_email: { orgName: "Riverbend Youth Center", from: "Google for Nonprofits <nonprofits-noreply@google.com>", subject: "Action required: verify your organization", verdict: "Action needed", excerpt: "To complete your request, please upload a copy of your IRS determination letter within 14 days." },
   task_approval_requested: { orgName: "Riverbend Youth Center", taskTitle: "Weekly donor thank-you notes", agentName: "Maya" },
   task_completed: { orgName: "Riverbend Youth Center", taskTitle: "Weekly donor thank-you notes", agentName: "Maya", summary: "Drafted 12 thank-you notes and a summary sheet.", deliverables: ["Thank-you notes (12)", "Donor summary.csv"], runNumber: 4, nextRunAt: "2026-09-14T13:00:00Z" },

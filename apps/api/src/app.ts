@@ -42,6 +42,8 @@ import { registerAdGrantsConnectWs } from "./ad-grants-connect-ws.js";
 import { registerBillingRoutes } from "./routes-billing.js";
 import { registerEmailRoutes } from "./routes-email.js";
 import { registerAdminTaskRoutes, registerTaskRoutes } from "./routes-tasks.js";
+import { registerGoogleAdsRoutes } from "./routes-google-ads.js";
+import { registerAdminGoogleAdsRoutes } from "./routes-admin-google-ads.js";
 import { registerRtc } from "./rtc.js";
 
 declare module "fastify" {
@@ -133,7 +135,8 @@ export function buildApp(deps: Deps): FastifyInstance {
       // callback arrive without a session. Both are authenticated by their own
       // means (single-use state / HMAC signature) rather than by a cookie.
       // Tenant connector routes live under /v1/orgs/ and are unaffected.
-      url.startsWith("/v1/connectors/")
+      url.startsWith("/v1/connectors/") ||
+      url.startsWith("/v1/google-ads/manager/callback")
     ) return;
 
     const header = req.headers.authorization;
@@ -267,6 +270,8 @@ export function buildApp(deps: Deps): FastifyInstance {
   registerBillingRoutes(app, ctx);
   registerTaskRoutes(app, ctx);
   registerAdminTaskRoutes(app, ctx);
+  registerGoogleAdsRoutes(app, ctx);
+  registerAdminGoogleAdsRoutes(app, ctx);
   registerRtc(app, ctx);
   registerAdGrantsConnectWs(app, ctx);
 

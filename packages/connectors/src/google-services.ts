@@ -28,6 +28,7 @@ export const GOOGLE_SCOPE = {
   driveFile: "https://www.googleapis.com/auth/drive.file",
   calendarEvents: "https://www.googleapis.com/auth/calendar.events",
   spreadsheets: "https://www.googleapis.com/auth/spreadsheets",
+  adwords: "https://www.googleapis.com/auth/adwords",
 } as const;
 
 export const GOOGLE_SERVICES: GoogleService[] = [
@@ -36,6 +37,7 @@ export const GOOGLE_SERVICES: GoogleService[] = [
   { key: "drive", label: "Google Drive", description: "Save documents and images Deedwell creates to your Drive.", scopes: [GOOGLE_SCOPE.driveFile] },
   { key: "calendar", label: "Google Calendar", description: "Create and update events.", scopes: [GOOGLE_SCOPE.calendarEvents] },
   { key: "sheets", label: "Google Sheets", description: "Read and write spreadsheets.", scopes: [GOOGLE_SCOPE.spreadsheets] },
+  { key: "googleads", label: "Google Ads", description: "Let Deedwell manage your Google Ads campaigns and show advertising performance.", scopes: [GOOGLE_SCOPE.adwords] },
   { key: "adgrants", label: "Google Ad Grants", description: "Identifies the Google account that manages your Ad Grants application. Steps on Google for Nonprofits use a secure browser session.", scopes: [GOOGLE_SCOPE.openid, GOOGLE_SCOPE.email, GOOGLE_SCOPE.profile] },
 ];
 

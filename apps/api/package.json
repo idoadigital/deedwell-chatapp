@@ -12,6 +12,7 @@
     "@deedwell/browser-research": "workspace:*",
     "@deedwell/connectors": "workspace:*",
     "@deedwell/content-domain": "workspace:*",
-    "@deedwell/email": "workspace:*"
+    "@deedwell/email": "workspace:*",
+    "@deedwell/google-ads-domain": "workspace:*"
   }
 }

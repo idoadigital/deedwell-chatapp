@@ -262,6 +262,8 @@ export const AgentDefinition = z.object({
     "site_patch",
     "intent",
     "ad_grants_campaign_plan",
+    "google_ads_strategy",
+    "google_ads_campaign_draft",
     "site_html",
     "design_language",
     "design_tokens",
@@ -949,3 +951,4 @@ export * from "./website-builder.js";
 export * from "./logo.js";
 export * from "./tasks.js";
 export * from "./proactive.js";
+export * from "./google-ads.js";
