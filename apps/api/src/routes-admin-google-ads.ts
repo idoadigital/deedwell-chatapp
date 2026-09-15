@@ -100,10 +100,16 @@ export function registerAdminGoogleAdsRoutes(app: FastifyInstance, ctx: AppConte
 
   // Public: Google redirects here. The state row is the only credential.
   app.get("/v1/google-ads/manager/callback", async (req, reply) => {
-    const { code, state, error } = (req.query ?? {}) as Record<string, string | undefined>;
+    const { code, state, error, scope } = (req.query ?? {}) as Record<string, string | undefined>;
     const back = (status: string, detail?: string) => reply.redirect(`${MANAGER_RETURN}?manager=${encodeURIComponent(status)}${detail ? `&detail=${encodeURIComponent(detail)}` : ""}`);
     if (error) return back("denied", error);
     if (!code || !state) return back("invalid");
+    // Google lists the scopes the user actually granted (consent is per
+    // scope). A manager token without the Ads scope is useless, so refuse it
+    // here instead of storing a connection that fails on first use.
+    if (scope && !scope.split(/\s+/).includes(GOOGLE_SCOPE.adwords)) {
+      return back("missing_scope", "Google did not grant the Google Ads permission. Tick the Google Ads checkbox on the consent screen and sign in again.");
+    }
     const claimed = await deps.adminPool.query(
       `UPDATE google_ads_manager_oauth_states SET consumed_at = now() WHERE state_hash = $1 AND consumed_at IS NULL AND expires_at > now() RETURNING created_by`, [hash(state)]);
     const row = claimed.rows[0];

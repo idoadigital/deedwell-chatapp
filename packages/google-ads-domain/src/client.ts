@@ -288,7 +288,12 @@ export interface ClientLink { resourceName: string; clientCustomerId: string; li
 async function toApiError(res: Response): Promise<GoogleAdsApiError> {
   let payload: RawGoogleError | null = null;
   let text = "";
-  try { text = await res.text(); payload = JSON.parse(text) as RawGoogleError; } catch { /* not JSON */ }
+  try {
+    text = await res.text();
+    const parsed = JSON.parse(text) as RawGoogleError | RawGoogleError[];
+    // Streaming endpoints (searchStream) wrap the failure in a one-element array.
+    payload = Array.isArray(parsed) ? (parsed.find((p) => p?.error) ?? parsed[0] ?? null) : parsed;
+  } catch { /* not JSON */ }
   const err = payload?.error;
   const inner = err?.details?.flatMap((d) => d.errors ?? []) ?? [];
   const first = inner[0];
