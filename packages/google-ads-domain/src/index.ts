@@ -4,7 +4,7 @@ export {
   type CustomerInfo, type ManagerLink, type ClientLink,
 } from "./client.js";
 export * from "./types.js";
-export { RSA_LIMITS, validateAd, validateDraft, validateKeywordText, validateUrl, type ValidationIssue, type ValidationResult } from "./validate.js";
+export { RSA_LIMITS, ASSET_LIMITS, validateAd, validateAsset, validateDraft, validateKeywordText, validateUrl, type ValidationIssue, type ValidationResult } from "./validate.js";
 export {
   CAMPAIGNS_QUERY, AD_GROUPS_QUERY, ADS_QUERY, KEYWORDS_QUERY, NEGATIVE_CAMPAIGN_KEYWORDS_QUERY, metricsQuery,
   mapCampaign, mapAdGroup, mapAd, mapKeyword, mapCampaignNegative, mapMetric, customerResource,

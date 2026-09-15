@@ -11,16 +11,17 @@ import { GoogleProvider, GOOGLE_SCOPE } from "@deedwell/connectors";
 import { uuidv7, withContext } from "@deedwell/database";
 import { RSA_LIMITS } from "@deedwell/google-ads-domain";
 import {
-  GoogleAdsBudgetInput, GoogleAdsCampaignStatusInput, GoogleAdsComplianceRulePatchInput, GoogleAdsDraftAdPatchInput,
+  GoogleAdsBudgetInput, GoogleAdsCampaignStatusInput, GoogleAdsComplianceRulePatchInput, GoogleAdsDraftAdPatchInput, GoogleAdsDraftAssetPatchInput,
   GoogleAdsDraftPatchInput, GoogleAdsPlatformSettingsInput, GoogleAdsPublishInput, GoogleAdsStrategyPatchInput,
 } from "@deedwell/schemas";
 import type { PoolClient } from "pg";
 import { HttpError, type AppContext } from "./app.js";
 import { billingState } from "./billing-gate.js";
-import { generateCampaignDraft, generateStrategy, loadStrategy, regenerateDraftAd, strategyView } from "./google-ads/ai.js";
+import { generateStrategy, loadStrategy, regenerateDraftAd, strategyView } from "./google-ads/ai.js";
+import { enqueueBuilds, listBuilds, regenerateImageAsset } from "./google-ads/build.js";
 import { complianceReport, loadComplianceRules } from "./google-ads/compliance.js";
 import { ensureManagerLink } from "./google-ads/connection.js";
-import { decideDraft, decideDraftAd, jobView, listDrafts, loadDraft, patchDraft, patchDraftAd } from "./google-ads/drafts.js";
+import { decideDraft, decideDraftAd, decideDraftAsset, jobView, listDrafts, loadDraft, patchDraft, patchDraftAd, patchDraftAsset } from "./google-ads/drafts.js";
 import { publishPreview, requestPublish, setCampaignBudget, setCampaignStatus } from "./google-ads/publish.js";
 import { accountsAcrossTenants, campaignDetail, campaignsWithMetrics, deedwellAds, overview, resolveRange } from "./google-ads/reports.js";
 import { clearManagerConnection, managerOAuthClient, readGoogleAdsSettings, saveGoogleAdsSettings, saveManagerConnection, settingsView } from "./google-ads/settings.js";
@@ -215,7 +216,21 @@ export function registerAdminGoogleAdsRoutes(app: FastifyInstance, ctx: AppConte
       `SELECT s.*, c.display_name AS created_by_name, a.display_name AS approved_by_name
          FROM google_ads_strategies s LEFT JOIN users c ON c.id = s.created_by LEFT JOIN users a ON a.id = s.approved_by
         WHERE s.account_id = $1 ORDER BY s.created_at DESC`, [account.id]);
-    return { strategies: rows.map(strategyView) };
+    const builds = await listBuilds(client, account.id);
+    const { rows: drafts } = await client.query(
+      `SELECT id, strategy_id, status, name, (model_meta->>'campaignIndex')::int AS campaign_index FROM google_ads_drafts WHERE account_id = $1 AND strategy_id IS NOT NULL ORDER BY created_at DESC`, [account.id]);
+    return {
+      strategies: rows.map((r) => ({
+        ...strategyView(r),
+        builds: builds.filter((b) => b.strategyId === r.id),
+        drafts: drafts.filter((d) => d.strategy_id === r.id).map((d) => ({ id: d.id, status: d.status, name: d.name, campaignIndex: d.campaign_index })),
+      })),
+    };
+  }));
+
+  app.get(`${base}/orgs/:orgId/builds`, async (req) => withAccount(req, async (client, account) => {
+    const q = (req.query ?? {}) as { strategyId?: string };
+    return { builds: await listBuilds(client, account.id, { strategyId: q.strategyId }) };
   }));
 
   app.post(`${base}/orgs/:orgId/strategies/generate`, async (req, reply) => {
@@ -242,31 +257,41 @@ export function registerAdminGoogleAdsRoutes(app: FastifyInstance, ctx: AppConte
   }));
 
   for (const decision of ["approve", "archive"] as const) {
-    app.post(`${base}/orgs/:orgId/strategies/:strategyId/${decision}`, async (req) => withAccount(req, async (client, account) => {
+    app.post(`${base}/orgs/:orgId/strategies/:strategyId/${decision}`, async (req) => withAccount(req, async (client, account, orgId) => {
       const { strategyId } = req.params as { strategyId: string };
       const { rows } = await client.query(`SELECT * FROM google_ads_strategies WHERE id = $1 AND account_id = $2`, [strategyId, account.id]);
       const current = rows[0];
       if (!current) throw new HttpError(404, "Strategy not found");
+      let builds: Awaited<ReturnType<typeof enqueueBuilds>> = [];
       if (decision === "approve") {
         if (current.status !== "draft") throw new HttpError(409, "Only a draft strategy can be approved");
         await client.query(`UPDATE google_ads_strategies SET status = 'approved', approved_by = $2, approved_at = now() WHERE id = $1`, [strategyId, req.userId]);
+        // An approved strategy becomes campaigns without another click: one
+        // build per recommendation, run by the worker, reviewed in the workspace.
+        await requireTokensFor(ctx, client, orgId);
+        builds = await enqueueBuilds(client, account as never, { ...current, status: "approved" }, req.userId!);
       } else {
         await client.query(`UPDATE google_ads_strategies SET status = 'archived', archived_at = now() WHERE id = $1`, [strategyId]);
       }
       await logActivity(client, { tenantId: account.tenant_id, accountId: account.id, customerId: account.customer_id, actorUserId: req.userId, actorKind: "admin", action: decision === "approve" ? "strategy_approved" : "strategy_archived", entityType: "strategy", entityId: strategyId, previousState: current.status, newState: decision === "approve" ? "approved" : "archived", summary: current.title });
-      return { strategy: await loadStrategy(client, strategyId) };
+      return { strategy: await loadStrategy(client, strategyId), builds };
     }));
   }
 
+  /** Queues a (re)build of one recommendation; the worker drafts it and
+   *  renders its creatives. 202 with the build to poll. */
   app.post(`${base}/orgs/:orgId/strategies/:strategyId/generate-campaign`, async (req, reply) => {
     const { strategyId } = req.params as { strategyId: string };
     const body = (req.body ?? {}) as { campaignIndex?: number; instructions?: string };
-    const draft = await withAccount(req, async (client, account, orgId) => {
+    const build = await withAccount(req, async (client, account, orgId) => {
       await requireTokensFor(ctx, client, orgId);
-      const draftId = await generateCampaignDraft(deps, client, orgId, account, strategyId, req.userId!, { campaignIndex: body.campaignIndex, instructions: body.instructions?.slice(0, 2000) });
-      return loadDraft(client, account.id, draftId);
+      const { rows } = await client.query(`SELECT * FROM google_ads_strategies WHERE id = $1 AND account_id = $2`, [strategyId, account.id]);
+      if (!rows[0]) throw new HttpError(404, "Strategy not found");
+      if (rows[0].status !== "approved") throw new HttpError(400, "Only an approved strategy can generate campaigns");
+      const [job] = await enqueueBuilds(client, account as never, rows[0], req.userId!, { indexes: [body.campaignIndex ?? 0], instructions: body.instructions?.slice(0, 2000) });
+      return job;
     });
-    return reply.status(201).send({ draft });
+    return reply.status(202).send({ build });
   });
 
   // ---- drafts (the review workspace) --------------------------------------
@@ -316,6 +341,51 @@ export function registerAdminGoogleAdsRoutes(app: FastifyInstance, ctx: AppConte
     await regenerateDraftAd(deps, client, orgId, account, draftId, adId, req.userId!, body.instructions?.slice(0, 1000));
     return { draft: await loadDraft(client, account.id, draftId) };
   }));
+
+  // ---- creatives (images, sitelinks, callouts) ----------------------------
+
+  for (const decision of ["approve", "reject"] as const) {
+    app.post(`${base}/orgs/:orgId/drafts/:draftId/creatives/:assetId/${decision}`, async (req) => withAccount(req, async (client, account) => {
+      const { draftId, assetId } = req.params as { draftId: string; assetId: string };
+      const body = (req.body ?? {}) as { reason?: string };
+      await decideDraftAsset(client, account as never, draftId, assetId, decision, req.userId!, body.reason);
+      return { draft: await loadDraft(client, account.id, draftId) };
+    }));
+  }
+
+  app.patch(`${base}/orgs/:orgId/drafts/:draftId/creatives/:assetId`, async (req) => withAccount(req, async (client, account) => {
+    const { draftId, assetId } = req.params as { draftId: string; assetId: string };
+    const input = GoogleAdsDraftAssetPatchInput.parse(req.body);
+    const validation = await patchDraftAsset(client, account as never, draftId, assetId, input, req.userId!);
+    return { validation, draft: await loadDraft(client, account.id, draftId) };
+  }));
+
+  /** Re-renders one image (with optional guidance). Runs inline — one
+   *  picture — so the reviewer sees the new one when the call returns. */
+  app.post(`${base}/orgs/:orgId/drafts/:draftId/creatives/:assetId/regenerate`, async (req) => {
+    const { draftId, assetId } = req.params as { draftId: string; assetId: string };
+    const body = (req.body ?? {}) as { instructions?: string };
+    const { account, orgId } = await withAccount(req, async (client, account, orgId) => {
+      await requireTokensFor(ctx, client, orgId);
+      const { rows } = await client.query(`SELECT id FROM google_ads_drafts WHERE id = $1 AND account_id = $2`, [draftId, account.id]);
+      if (!rows[0]) throw new HttpError(404, "Draft not found");
+      return { account, orgId };
+    });
+    const stats = await regenerateImageAsset(deps, orgId, account as never, draftId, assetId, req.userId!, body.instructions?.slice(0, 1000)).catch(translateAdsError);
+    return withAccount(req, async (client, acc) => ({ stats, draft: await loadDraft(client, acc.id, draftId) }));
+  });
+
+  /** The rendered image itself, for the review workspace. */
+  app.get(`${base}/orgs/:orgId/drafts/:draftId/creatives/:assetId/content`, async (req, reply) => {
+    const { draftId, assetId } = req.params as { draftId: string; assetId: string };
+    const row = await withAccount(req, async (client, account) => {
+      const { rows } = await client.query(`SELECT storage_key, mime FROM google_ads_draft_assets WHERE id = $1 AND draft_id = $2 AND account_id = $3`, [assetId, draftId, account.id]);
+      return rows[0] ?? null;
+    });
+    if (!row?.storage_key) throw new HttpError(404, "No image rendered for this creative");
+    const bytes = await deps.storage.get(row.storage_key);
+    return reply.header("content-type", row.mime ?? "image/png").header("cache-control", "private, max-age=300").send(bytes);
+  });
 
   // ---- publishing --------------------------------------------------------
 

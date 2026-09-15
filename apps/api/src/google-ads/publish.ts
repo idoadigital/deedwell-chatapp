@@ -15,7 +15,7 @@ import { GoogleAdsApiError, formatCustomerId, normalizeCustomerId, type DraftCon
 import type { PoolClient } from "pg";
 import type { Deps } from "../bootstrap.js";
 import { accessFor } from "./access.js";
-import { jobView, loadDraft } from "./drafts.js";
+import { assetContent, jobView, loadDraft } from "./drafts.js";
 import { emitOrgEvent, loadAccountById, logActivity, type AccountRow } from "./store.js";
 
 export async function publishPreview(client: PoolClient, account: AccountRow, draftId: string, orgName: string) {
@@ -26,8 +26,10 @@ export async function publishPreview(client: PoolClient, account: AccountRow, dr
     key: g.key, name: g.name, keywords: g.keywords.length, negativeKeywords: g.negativeKeywords.length,
     ads: ads.filter((a) => a.adGroupKey === g.key).map((a) => ({ id: a.id, title: a.title, headlines: a.headlines, descriptions: a.descriptions, finalUrl: a.finalUrl })),
   }));
+  const creatives = draft.creatives.filter((x) => x.status === "approved");
   const blockers: string[] = [];
   if (draft.status !== "approved") blockers.push("The campaign has not been approved.");
+  if (draft.creativesPending) blockers.push("Image creatives are still rendering.");
   if (draft.validation?.ok === false) blockers.push("The campaign still has validation errors.");
   for (const g of groups) if (!g.ads.length) blockers.push(`Ad group "${g.name}" has no approved ads.`);
   if (account.status !== "connected") blockers.push("The Google Ads account is not connected.");
@@ -40,7 +42,13 @@ export async function publishPreview(client: PoolClient, account: AccountRow, dr
       negativeKeywords: draft.content.negativeKeywords.length, initialStatus: "PAUSED",
     },
     adGroups: groups,
-    landingUrls: [...new Set(ads.map((a) => a.finalUrl))],
+    creatives: {
+      images: creatives.filter((x) => x.kind === "image").map((x) => ({ id: x.id, title: x.title, aspect: x.aspect, width: x.image?.width ?? null, height: x.image?.height ?? null })),
+      sitelinks: creatives.filter((x) => x.kind === "sitelink").map((x) => ({ id: x.id, linkText: x.linkText, finalUrl: x.finalUrl })),
+      callouts: creatives.filter((x) => x.kind === "callout").map((x) => ({ id: x.id, text: x.text })),
+      skipped: draft.creatives.filter((x) => x.status !== "approved").length,
+    },
+    landingUrls: [...new Set([...ads.map((a) => a.finalUrl), ...creatives.filter((x) => x.kind === "sitelink" && x.finalUrl).map((x) => x.finalUrl as string)])],
     blockers,
     validation: draft.validation,
   };
@@ -63,6 +71,7 @@ export async function requestPublish(
     [id, account.tenant_id, account.id, draftId, JSON.stringify(summary), actorUserId]);
   await client.query(`UPDATE google_ads_drafts SET status = 'publishing', publish_job_id = $2 WHERE id = $1`, [draftId, id]);
   await client.query(`UPDATE google_ads_draft_ads SET status = 'publishing' WHERE draft_id = $1 AND status = 'approved'`, [draftId]);
+  await client.query(`UPDATE google_ads_draft_assets SET status = 'publishing' WHERE draft_id = $1 AND status = 'approved'`, [draftId]);
   await logActivity(client, { tenantId: account.tenant_id, accountId: account.id, customerId: account.customer_id, actorUserId, actorKind: "admin", action: "publish_requested", entityType: "publish_job", entityId: id, previousState: "approved", newState: "publishing", summary: preview.campaign.name, metadata: { enableOnPublish: input.enableOnPublish } });
   const { rows } = await client.query(`SELECT * FROM google_ads_publish_jobs WHERE id = $1`, [id]);
   return jobView(rows[0]);
@@ -78,6 +87,7 @@ export async function runPublishJob(deps: Deps, job: Record<string, any>, opts: 
       await client.query(`UPDATE google_ads_publish_jobs SET status = 'failed', error = $2, result = $3, finished_at = now() WHERE id = $1`, [job.id, message, JSON.stringify({ detail })]);
       await client.query(`UPDATE google_ads_drafts SET status = 'failed' WHERE id = $1`, [job.draft_id]);
       await client.query(`UPDATE google_ads_draft_ads SET status = 'failed' WHERE draft_id = $1 AND status = 'publishing'`, [job.draft_id]);
+      await client.query(`UPDATE google_ads_draft_assets SET status = 'failed' WHERE draft_id = $1 AND status = 'publishing'`, [job.draft_id]);
       await logActivity(client, { tenantId, accountId: job.account_id, customerId: job.summary?.customerIdRaw ?? null, actorUserId: job.requested_by, actorKind: "system", action: "publish_failed", entityType: "publish_job", entityId: job.id, previousState: "publishing", newState: "failed", summary: message });
       emitOrgEvent(deps, tenantId, "google_ads:publish_failed", { jobId: job.id, draftId: job.draft_id });
       opts.log?.error({ at: "google_ads.publish_failed", jobId: job.id, message, detail });
@@ -170,7 +180,10 @@ export async function runPublishJob(deps: Deps, job: Record<string, any>, opts: 
            ON CONFLICT (account_id, campaign_id) DO UPDATE SET draft_id = EXCLUDED.draft_id, status = EXCLUDED.status, name = EXCLUDED.name`,
           [uuidv7(), tenantId, account.id, campaignId, draft.name, enable ? "ENABLED" : "PAUSED", account.account_kind === "ad_grants" ? "MAXIMIZE_CONVERSIONS" : "MANUAL_CPC", content.dailyBudgetMicros, job.draft_id]);
       }
-      const result = { campaignId, adGroups: Object.fromEntries(groupIds), ads: adIndex.length, geoUnresolved: geo.unresolved, via: access.via };
+      // Creatives go in a second, best-effort batch once the campaign exists:
+      // a rejected image (policy, account age) must not undo the campaign.
+      const creatives = campaignId ? await publishCreatives(deps, client, access.client, cid, campaignId, job.draft_id) : { published: 0, failed: 0, error: null as string | null };
+      const result = { campaignId, adGroups: Object.fromEntries(groupIds), ads: adIndex.length, geoUnresolved: geo.unresolved, via: access.via, creatives };
       await client.query(`UPDATE google_ads_publish_jobs SET status = 'completed', result = $2, finished_at = now(), error = NULL WHERE id = $1`, [job.id, JSON.stringify(result)]);
       await logActivity(client, { tenantId, accountId: account.id, customerId: account.customer_id, actorUserId: job.requested_by, actorKind: "admin", action: "campaign_published", entityType: "campaign", entityId: campaignId, previousState: "publishing", newState: enable ? "ENABLED" : "PAUSED", summary: draft.name, metadata: result });
       await emailOrgAdmins(client, tenantId, "google_ads_published", { orgName: await orgNameOf(client, tenantId), campaignName: draft.name, adCount: adIndex.length, paused: !enable }, { dedupe: `google_ads_published:${job.id}` }).catch(() => 0);
@@ -181,6 +194,52 @@ export async function runPublishJob(deps: Deps, job: Record<string, any>, opts: 
       await fail(message, err instanceof GoogleAdsApiError ? err.details : null);
     }
   });
+}
+
+const ASSET_FIELD: Record<string, string> = { image: "AD_IMAGE", sitelink: "SITELINK", callout: "CALLOUT" };
+
+/** Uploads the draft's approved creatives as customer assets and links them
+ *  to the campaign. One atomic batch, validated first; on rejection every
+ *  creative is marked failed with Google's reason and the campaign stands. */
+async function publishCreatives(deps: Deps, client: PoolClient, api: { mutateAll(cid: string, ops: Array<Record<string, unknown>>, opts?: { validateOnly?: boolean }): Promise<Array<Record<string, any>>> }, cid: string, campaignId: string, draftId: string) {
+  const { rows } = await client.query(`SELECT * FROM google_ads_draft_assets WHERE draft_id = $1 AND status = 'publishing' ORDER BY kind, position`, [draftId]);
+  if (!rows.length) return { published: 0, failed: 0, error: null as string | null };
+  const cust = `customers/${cid}`;
+  const stamp = Date.now();
+  const ops: Array<Record<string, unknown>> = [];
+  const assetOps: Array<{ id: string; opIndex: number }> = [];
+  let temp = -100;
+  try {
+    for (const row of rows) {
+      const a = assetContent(row);
+      const id = temp--;
+      const create: Record<string, unknown> = { resourceName: `${cust}/assets/${id}`, name: `${row.title} ${stamp}`.slice(0, 120) };
+      if (a.kind === "image") {
+        if (!row.storage_key) throw new Error(`Image "${row.title}" has no rendered file`);
+        const bytes = await deps.storage.get(row.storage_key);
+        Object.assign(create, { type: "IMAGE", imageAsset: { data: bytes.toString("base64") } });
+      } else if (a.kind === "sitelink") {
+        Object.assign(create, { type: "SITELINK", finalUrls: [a.finalUrl], sitelinkAsset: { linkText: a.linkText, ...(a.description1 && a.description2 ? { description1: a.description1, description2: a.description2 } : {}) } });
+      } else {
+        Object.assign(create, { type: "CALLOUT", calloutAsset: { calloutText: a.text } });
+      }
+      assetOps.push({ id: row.id, opIndex: ops.length });
+      ops.push({ assetOperation: { create } });
+      ops.push({ campaignAssetOperation: { create: { campaign: `${cust}/campaigns/${campaignId}`, asset: `${cust}/assets/${id}`, fieldType: ASSET_FIELD[a.kind] } } });
+    }
+    await api.mutateAll(cid, ops, { validateOnly: true });
+    const responses = await api.mutateAll(cid, ops);
+    for (const entry of assetOps) {
+      const resource = responses[entry.opIndex]?.assetResult?.resourceName;
+      const assetId = resource ? String(resource).split("/").pop() ?? null : null;
+      await client.query(`UPDATE google_ads_draft_assets SET status = 'published', google_asset_id = $2 WHERE id = $1`, [entry.id, assetId]);
+    }
+    return { published: rows.length, failed: 0, error: null as string | null };
+  } catch (err) {
+    const message = err instanceof GoogleAdsApiError ? `Google Ads rejected the creatives: ${err.message}` : (err as Error).message;
+    await client.query(`UPDATE google_ads_draft_assets SET status = 'failed', error = $2 WHERE draft_id = $1 AND status = 'publishing'`, [draftId, message.slice(0, 400)]);
+    return { published: 0, failed: rows.length, error: message };
+  }
 }
 
 async function resolveGeoTargets(api: { searchStream<T>(cid: string, q: string): Promise<T[]> }, cid: string, names: string[]): Promise<{ resolved: string[]; unresolved: string[] }> {

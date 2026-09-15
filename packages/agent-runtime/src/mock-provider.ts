@@ -594,6 +594,15 @@ function googleAdsCampaignDraft(request: ModelRequest): unknown {
       { name: "Core program", keywords: [{ text: "community support program", matchType: "PHRASE" }, { text: "help for families near me", matchType: "PHRASE" }, { text: `${short.toLowerCase()} programs`, matchType: "EXACT" }, { text: "nonprofit family services", matchType: "BROAD" }, { text: "free community services", matchType: "PHRASE" }], negativeKeywords: ["volunteer"], ads: [ad("Core program — A"), ad("Core program — B")] },
       { name: "Get involved", keywords: [{ text: "volunteer opportunities near me", matchType: "PHRASE" }, { text: "donate to local nonprofit", matchType: "PHRASE" }, { text: "how to volunteer locally", matchType: "BROAD" }, { text: "support a community nonprofit", matchType: "PHRASE" }, { text: "nonprofit volunteer program", matchType: "PHRASE" }], negativeKeywords: ["paid"], ads: [ad("Get involved — A"), ad("Get involved — B")] },
     ],
+    sitelinks: [
+      { linkText: "Our Programs", description1: "See every program we run", description2: "Eligibility and how to apply", finalUrl: landing },
+      { linkText: "Get Involved", description1: "Volunteer or donate", description2: "Every hour and dollar counts", finalUrl: landing },
+      { linkText: "Contact Us", description1: "Talk to our team", description2: "We reply within a day", finalUrl: landing },
+    ],
+    callouts: ["Free for families", "Local nonprofit", "Trusted since 1998", "No referral needed"],
+    imageCreatives: [
+      { title: "Families at a community program", prompt: `A warm documentary photograph of families and volunteers together at a ${short} community program, natural daylight, candid smiles, no text, no logos.`, altText: `Families taking part in a ${short} program` },
+    ],
     rationale: "Two ad groups split by intent: people seeking help and people wanting to help.",
   };
 }

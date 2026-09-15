@@ -7,7 +7,7 @@
 import { runAgentTask } from "@deedwell/agent-runtime";
 import { loadMissionProfile, uuidv7 } from "@deedwell/database";
 import {
-  adsCampaignBuilder, adsStrategist, validateAd, validateDraft, type DraftAdContent, type DraftContent,
+  adsCampaignBuilder, adsStrategist, validateAd, validateAsset, validateDraft, type DraftAdContent, type DraftAssetContent, type DraftContent,
 } from "@deedwell/google-ads-domain";
 import type { GoogleAdsCampaignDraftOutput, GoogleAdsStrategyOutput } from "@deedwell/schemas";
 import type { PoolClient } from "pg";
@@ -193,8 +193,31 @@ export async function generateCampaignDraft(
       [uuidv7(), tenantId, account.id, draftId, ad.adGroupKey, position++, ad.title, JSON.stringify(ad.headlines), JSON.stringify(ad.descriptions), ad.finalUrl,
         ad.path1, ad.path2, ad.rationale, JSON.stringify({ ok: adValidation.every((i) => i.level !== "error"), issues: adValidation }), actorUserId]);
   }
-  await logActivity(client, { tenantId, accountId: account.id, customerId: account.customer_id, actorUserId, actorKind: "ai", action: "campaign_generated", entityType: "draft", entityId: draftId, newState: "awaiting_approval", summary: out.name, metadata: { strategyId, ads: ads.length } });
+  // Campaign-level creatives: text assets are reviewable at once; image
+  // rows start as 'draft' and the build job renders them afterwards.
+  const assets: Array<DraftAssetContent & { position: number }> = [
+    ...out.sitelinks.map((l, i) => ({ kind: "sitelink" as const, position: i, title: l.linkText, linkText: l.linkText, description1: l.description1 ?? null, description2: l.description2 ?? null, finalUrl: l.finalUrl })),
+    ...out.callouts.map((text, i) => ({ kind: "callout" as const, position: i, title: text, text })),
+    ...out.imageCreatives.flatMap((img, i) => (["landscape", "square"] as const).map((aspect, j) => ({
+      kind: "image" as const, aspect, position: i * 2 + j, title: img.title, prompt: img.prompt, altText: img.altText ?? null,
+    }))),
+  ];
+  for (const asset of assets) await insertDraftAsset(client, { tenantId, accountId: account.id, draftId, actorUserId, asset });
+  await logActivity(client, { tenantId, accountId: account.id, customerId: account.customer_id, actorUserId, actorKind: "ai", action: "campaign_generated", entityType: "draft", entityId: draftId, newState: "awaiting_approval", summary: out.name, metadata: { strategyId, ads: ads.length, sitelinks: out.sitelinks.length, callouts: out.callouts.length, images: out.imageCreatives.length * 2 } });
   return draftId;
+}
+
+export async function insertDraftAsset(client: PoolClient, args: { tenantId: string; accountId: string; draftId: string; actorUserId: string | null; asset: DraftAssetContent & { position: number } }): Promise<string> {
+  const { asset } = args;
+  const id = uuidv7();
+  const { kind, aspect, title, position, ...content } = asset;
+  const issues = kind === "image" ? [] : validateAsset(asset);
+  await client.query(
+    `INSERT INTO google_ads_draft_assets (id, tenant_id, account_id, draft_id, kind, aspect, position, title, content, status, validation, created_by)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+    [id, args.tenantId, args.accountId, args.draftId, kind, kind === "image" ? aspect ?? "landscape" : null, position, title, JSON.stringify(content),
+      kind === "image" ? "draft" : "awaiting_approval", JSON.stringify({ ok: issues.every((i) => i.level !== "error"), issues }), args.actorUserId]);
+  return id;
 }
 
 /** Rewrites one ad in place using the same builder, keeping everything else. */

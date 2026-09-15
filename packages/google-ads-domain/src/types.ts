@@ -36,6 +36,26 @@ export interface DraftAdContent {
   rationale?: string | null;
 }
 
+export type DraftAssetKind = "image" | "sitelink" | "callout";
+export type ImageAspect = "landscape" | "square";
+
+/** A campaign-level creative under review. `content` depends on `kind`. */
+export interface DraftAssetContent {
+  kind: DraftAssetKind;
+  aspect?: ImageAspect | null;
+  title: string;
+  /** sitelink */
+  linkText?: string;
+  description1?: string | null;
+  description2?: string | null;
+  finalUrl?: string;
+  /** callout */
+  text?: string;
+  /** image */
+  prompt?: string;
+  altText?: string | null;
+}
+
 export interface StrategyContent {
   objective: string;
   audiences: Array<{ name: string; description: string }>;

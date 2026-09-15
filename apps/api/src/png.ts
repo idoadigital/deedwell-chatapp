@@ -158,3 +158,18 @@ export function downscale(img: RgbaImage, maxSide: number): RgbaImage {
   }
   return { width, height, data: out };
 }
+
+/** Centre-crops to `aspect` (width ÷ height), keeping as much as fits. */
+export function cropToAspect(img: RgbaImage, aspect: number): RgbaImage {
+  const current = img.width / img.height;
+  if (Math.abs(current - aspect) < 0.005) return img;
+  const width = current > aspect ? Math.round(img.height * aspect) : img.width;
+  const height = current > aspect ? img.height : Math.round(img.width / aspect);
+  const x0 = Math.floor((img.width - width) / 2), y0 = Math.floor((img.height - height) / 2);
+  const out = new Uint8Array(width * height * 4);
+  for (let y = 0; y < height; y++) {
+    const src = ((y0 + y) * img.width + x0) * 4;
+    out.set(img.data.subarray(src, src + width * 4), y * width * 4);
+  }
+  return { width, height, data: out };
+}

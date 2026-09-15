@@ -46,6 +46,22 @@ export const GoogleAdsResponsiveSearchAd = z.object({
 });
 export type GoogleAdsResponsiveSearchAd = z.infer<typeof GoogleAdsResponsiveSearchAd>;
 
+/** Campaign-level creatives. Soft limits again (Google: sitelink text 25,
+ *  sitelink descriptions 35, callout 25) — validateAsset enforces the real
+ *  ones before approval. */
+export const GoogleAdsSitelink = z.object({
+  linkText: z.string().min(1).max(50),
+  description1: z.string().max(70).nullable().optional(),
+  description2: z.string().max(70).nullable().optional(),
+  finalUrl: z.string().max(500),
+});
+export const GoogleAdsImageCreative = z.object({
+  title: z.string().min(1).max(120),
+  /** The brief for the image model: subject, setting, mood, no text overlay. */
+  prompt: z.string().min(10).max(1500),
+  altText: z.string().max(200).nullable().optional(),
+});
+
 export const GoogleAdsCampaignDraftOutput = z.object({
   name: z.string().min(1).max(255),
   objective: z.string().min(1).max(600),
@@ -59,6 +75,11 @@ export const GoogleAdsCampaignDraftOutput = z.object({
     negativeKeywords: z.array(z.string().min(1).max(80)).max(50),
     ads: z.array(GoogleAdsResponsiveSearchAd).min(1).max(3),
   })).min(1).max(10),
+  sitelinks: z.array(GoogleAdsSitelink).max(8).default([]),
+  callouts: z.array(z.string().min(1).max(50)).max(10).default([]),
+  /** Briefs for the generated image creatives; the build job renders one
+   *  landscape (1.91:1) and one square (1:1) picture per brief. */
+  imageCreatives: z.array(GoogleAdsImageCreative).max(3).default([]),
   rationale: z.string().max(1500),
 });
 export type GoogleAdsCampaignDraftOutput = z.infer<typeof GoogleAdsCampaignDraftOutput>;
@@ -98,6 +119,16 @@ export const GoogleAdsDraftPatchInput = z.object({
       negativeKeywords: z.array(z.string().max(80)).max(50),
     })).max(10).optional(),
   }).optional(),
+});
+
+export const GoogleAdsDraftAssetPatchInput = z.object({
+  title: z.string().min(1).max(120).optional(),
+  linkText: z.string().max(50).optional(),
+  description1: z.string().max(70).nullable().optional(),
+  description2: z.string().max(70).nullable().optional(),
+  finalUrl: z.string().max(500).optional(),
+  text: z.string().max(50).optional(),
+  altText: z.string().max(200).nullable().optional(),
 });
 
 export const GoogleAdsPublishInput = z.object({

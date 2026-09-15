@@ -200,17 +200,72 @@ describe("Google Ads management", () => {
 
     const patch = await api(env.app, "PATCH", `/v1/admin/google-ads/orgs/${orgId}/strategies/${strategyId}`, { token, body: { title: "Riverbend search strategy v1" } });
     expect(patch.body.strategy.title).toBe("Riverbend search strategy v1");
+    // Approval queues one build per recommended campaign; nothing is drafted inline.
     const approve = await api(env.app, "POST", `/v1/admin/google-ads/orgs/${orgId}/strategies/${strategyId}/approve`, { token });
     expect(approve.body.strategy.status).toBe("approved");
+    const recommended = gen.body.strategy.content.campaigns.length;
+    expect(approve.body.builds).toHaveLength(recommended);
+    expect(approve.body.builds.every((b: any) => b.status === "queued")).toBe(true);
+    const before = await api(env.app, "GET", `/v1/admin/google-ads/orgs/${orgId}/drafts`, { token });
+    expect(before.body.drafts).toHaveLength(0);
 
-    const camp = await api(env.app, "POST", `/v1/admin/google-ads/orgs/${orgId}/strategies/${strategyId}/generate-campaign`, { token, body: {} });
-    expect(camp.status).toBe(201);
+    // The worker drafts the campaign (copy, keywords, sitelinks, callouts) and renders the images.
+    let built = 0;
+    for (let i = 0; i < 4 && built < recommended; i++) built += (await runGoogleAdsTick(env.deps)).builds;
+    expect(built).toBe(recommended);
+    const strategies = await api(env.app, "GET", `/v1/admin/google-ads/orgs/${orgId}/strategies`, { token });
+    const mine = strategies.body.strategies.find((x: any) => x.id === strategyId);
+    expect(mine.builds.every((b: any) => b.status === "completed" && b.draftId)).toBe(true);
+    expect(mine.drafts).toHaveLength(recommended);
+
+    const list2 = await api(env.app, "GET", `/v1/admin/google-ads/orgs/${orgId}/drafts`, { token });
+    expect(list2.body.drafts).toHaveLength(recommended);
+    draftId = mine.builds.find((b: any) => b.campaignIndex === 0).draftId;
+    const camp = await api(env.app, "GET", `/v1/admin/google-ads/orgs/${orgId}/drafts/${draftId}`, { token });
     expect(camp.body.draft.status).toBe("awaiting_approval");
     expect(camp.body.draft.ads.length).toBeGreaterThanOrEqual(2);
     expect(camp.body.draft.validation.ok).toBe(true);
-    draftId = camp.body.draft.id;
+    expect(camp.body.draft.creativesPending).toBe(false);
+    const kinds = camp.body.draft.creatives.map((x: any) => x.kind);
+    expect(kinds.filter((k: string) => k === "sitelink").length).toBeGreaterThanOrEqual(2);
+    expect(kinds.filter((k: string) => k === "callout").length).toBeGreaterThanOrEqual(2);
+    expect(kinds.filter((k: string) => k === "image").length).toBe(2); // landscape + square per brief
+    const image = camp.body.draft.creatives.find((x: any) => x.kind === "image");
+    expect(image.image).toBeTruthy(); // rendered and stored
+    const png = await env.app.inject({ method: "GET", url: `/v1/admin/google-ads/orgs/${orgId}/drafts/${draftId}/creatives/${image.id}/content`, headers: { authorization: `Bearer ${token}` } });
+    expect(png.statusCode).toBe(200);
+    expect(png.headers["content-type"]).toContain("image/png");
     adId = camp.body.draft.ads[0].id;
     expect(fake.state.mutations).toHaveLength(0); // nothing touched Google
+
+    // A recommendation can be rebuilt on demand; approval of the strategy does not requeue what exists.
+    const again = await api(env.app, "POST", `/v1/admin/google-ads/orgs/${orgId}/strategies/${strategyId}/generate-campaign`, { token, body: { campaignIndex: 0, instructions: "shorter headlines" } });
+    expect(again.status).toBe(202);
+    expect(again.body.build.status).toBe("queued");
+    await runGoogleAdsTick(env.deps);
+    const list3 = await api(env.app, "GET", `/v1/admin/google-ads/orgs/${orgId}/drafts`, { token });
+    expect(list3.body.drafts).toHaveLength(recommended + 1);
+  });
+
+  it("admin: sitelinks and callouts are validated like ads; images are regenerated, not edited", async () => {
+    const draft = (await api(env.app, "GET", `/v1/admin/google-ads/orgs/${orgId}/drafts/${draftId}`, { token })).body.draft;
+    const sitelink = draft.creatives.find((x: any) => x.kind === "sitelink");
+    const tooLong = await api(env.app, "PATCH", `/v1/admin/google-ads/orgs/${orgId}/drafts/${draftId}/creatives/${sitelink.id}`, { token, body: { linkText: "This sitelink text is much too long" } });
+    expect(tooLong.status).toBe(200);
+    expect(tooLong.body.validation.ok).toBe(false);
+    expect(tooLong.body.validation.issues[0].message).toMatch(/limit is 25/);
+    const blocked = await api(env.app, "POST", `/v1/admin/google-ads/orgs/${orgId}/drafts/${draftId}/creatives/${sitelink.id}/approve`, { token });
+    expect(blocked.status).toBe(400);
+    const fixed = await api(env.app, "PATCH", `/v1/admin/google-ads/orgs/${orgId}/drafts/${draftId}/creatives/${sitelink.id}`, { token, body: { linkText: "Our Programs" } });
+    expect(fixed.body.validation.ok).toBe(true);
+    const callout = draft.creatives.find((x: any) => x.kind === "callout");
+    const rejected = await api(env.app, "POST", `/v1/admin/google-ads/orgs/${orgId}/drafts/${draftId}/creatives/${callout.id}/reject`, { token, body: { reason: "Not accurate" } });
+    expect(rejected.body.draft.creatives.find((x: any) => x.id === callout.id).status).toBe("rejected");
+    const image = draft.creatives.find((x: any) => x.kind === "image");
+    const regen = await api(env.app, "POST", `/v1/admin/google-ads/orgs/${orgId}/drafts/${draftId}/creatives/${image.id}/regenerate`, { token, body: { instructions: "more daylight" } });
+    expect(regen.status).toBe(200);
+    expect(regen.body.stats.rendered).toBe(1);
+    expect(regen.body.draft.creatives.find((x: any) => x.id === image.id).prompt).toContain("more daylight");
   });
 
   it("admin: edits are validated against Google's limits and re-open review", async () => {
@@ -233,8 +288,15 @@ describe("Google Ads management", () => {
     expect(approve.status).toBe(200);
     expect(approve.body.draft.status).toBe("approved");
     expect(approve.body.draft.ads.every((a: any) => a.status === "approved")).toBe(true);
+    // Usable creatives are approved with the campaign; the mock 1×1 images fall below Google's minimum and are left out, not blocking.
+    const creatives = approve.body.draft.creatives;
+    expect(creatives.filter((x: any) => x.kind === "sitelink").every((x: any) => x.status === "approved")).toBe(true);
+    expect(creatives.filter((x: any) => x.kind === "callout" && x.status === "approved").length).toBeGreaterThanOrEqual(2);
+    expect(creatives.filter((x: any) => x.kind === "image").every((x: any) => x.status === "rejected" && /at least/.test(x.rejectedReason))).toBe(true);
     const preview = await api(env.app, "GET", `/v1/admin/google-ads/orgs/${orgId}/drafts/${draftId}/publish-preview`, { token });
     expect(preview.body.preview.blockers).toEqual([]);
+    expect(preview.body.preview.creatives.sitelinks.length).toBeGreaterThanOrEqual(2);
+    expect(preview.body.preview.creatives.images).toHaveLength(0);
     expect(preview.body.preview.account.customerId).toBe("555-666-7777");
     expect(preview.body.preview.campaign.initialStatus).toBe("PAUSED");
 
@@ -252,23 +314,34 @@ describe("Google Ads management", () => {
     expect(job.body.job.result.campaignId).toBe("5001");
 
     const writes = fake.state.mutations;
-    expect(writes).toHaveLength(2);
-    expect(writes[0]!.validateOnly).toBe(true);
-    expect(writes[1]!.validateOnly).toBe(false);
-    for (const w of writes) {
-      expect(w.cid).toBe(CUSTOMER);
-      expect(w.creds.loginCustomerId).toBe(MANAGER);
+    // Campaign batch (validate + apply), then the creatives batch (validate + apply) against the created campaign.
+    expect(writes).toHaveLength(4);
+    expect(writes.map((w) => w.validateOnly)).toEqual([true, false, true, false]);
+    for (const w of writes) { expect(w.cid).toBe(CUSTOMER); expect(w.creds.loginCustomerId).toBe(MANAGER); }
+    for (const w of writes.slice(0, 2)) {
       expect(w.ops[1].campaignOperation.create.status).toBe("PAUSED");
       expect(w.ops[1].campaignOperation.create.containsEuPoliticalAdvertising).toBe("DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING");
       expect(w.ops.filter((o: any) => o.adGroupAdOperation).length).toBe(approve.body.draft.ads.length);
+      expect(w.ops.some((o: any) => o.assetOperation)).toBe(false);
     }
+    const assetOps = writes[3]!.ops.filter((o: any) => o.assetOperation);
+    const linkOps = writes[3]!.ops.filter((o: any) => o.campaignAssetOperation);
+    const approvedCreatives = approve.body.draft.creatives.filter((x: any) => x.status === "approved");
+    expect(assetOps).toHaveLength(approvedCreatives.length);
+    expect(linkOps).toHaveLength(approvedCreatives.length);
+    expect(linkOps.every((o: any) => o.campaignAssetOperation.create.campaign === `customers/${CUSTOMER}/campaigns/5001`)).toBe(true);
+    expect(new Set(linkOps.map((o: any) => o.campaignAssetOperation.create.fieldType))).toEqual(new Set(["SITELINK", "CALLOUT"]));
+    expect(assetOps.find((o: any) => o.assetOperation.create.type === "SITELINK").assetOperation.create.sitelinkAsset.linkText).toBeTruthy();
+    expect(job.body.job.result.creatives).toMatchObject({ published: approvedCreatives.length, failed: 0 });
     const draft = await api(env.app, "GET", `/v1/admin/google-ads/orgs/${orgId}/drafts/${draftId}`, { token });
     expect(draft.body.draft.status).toBe("published");
     expect(draft.body.draft.ads.every((a: any) => a.status === "published" && a.google?.adId)).toBe(true);
+    expect(draft.body.draft.creatives.filter((x: any) => x.status === "published").every((x: any) => x.google?.assetId)).toBe(true);
 
     const ads = await api(env.app, "GET", `/v1/orgs/${orgId}/google-ads/ads`, { token });
-    expect(ads.body.ads.length).toBe(approve.body.draft.ads.length);
-    expect(ads.body.ads[0]).toMatchObject({ state: "published", createdBy: expect.stringContaining("Deedwell") });
+    const published = ads.body.ads.filter((a: any) => a.state === "published");
+    expect(published.length).toBe(approve.body.draft.ads.length); // the other builds' ads are still drafts
+    expect(published[0]).toMatchObject({ state: "published", createdBy: expect.stringContaining("Deedwell") });
     const campaigns = await api(env.app, "GET", `/v1/orgs/${orgId}/google-ads/campaigns`, { token });
     expect(campaigns.body.campaigns.find((c: any) => c.id === "5001")).toMatchObject({ status: "PAUSED", managedByDeedwell: true });
     const mail = await env.adminPool.query(`SELECT kind FROM email_outbox WHERE tenant_id = $1 AND kind = 'google_ads_published'`, [orgId]);

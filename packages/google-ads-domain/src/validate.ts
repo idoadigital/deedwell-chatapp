@@ -8,7 +8,7 @@
  * they are program rules Google revises, so they inform the reviewer rather
  * than block them.
  */
-import type { DraftAdContent, DraftContent } from "./types.js";
+import type { DraftAdContent, DraftAssetContent, DraftContent } from "./types.js";
 
 export const RSA_LIMITS = {
   headline: { max: 30, min: 3, maxCount: 15 },
@@ -19,6 +19,17 @@ export const RSA_LIMITS = {
   keyword: { max: 80, maxWords: 10 },
   /** Google Ad Grants: $10,000/month ≈ $329/day. */
   adGrantsDailyBudgetUsd: 329,
+} as const;
+
+/** Campaign-level asset limits (sitelinks, callouts, Search image assets). */
+export const ASSET_LIMITS = {
+  sitelink: { linkText: 25, description: 35, minCount: 2 },
+  callout: { text: 25 },
+  image: {
+    landscape: { ratio: 1.91, minWidth: 600, minHeight: 314, width: 1200, height: 628 },
+    square: { ratio: 1, minWidth: 300, minHeight: 300, width: 1200, height: 1200 },
+    maxBytes: 5 * 1024 * 1024,
+  },
 } as const;
 
 export interface ValidationIssue { path: string; message: string; level: "error" | "warning" }
@@ -60,6 +71,39 @@ export function validateAd(ad: DraftAdContent, path = "ad"): ValidationIssue[] {
     if (value && /[\s/]/.test(String(value))) issues.push({ path: `${path}.${key}`, level: "error", message: `Display path "${key}" cannot contain spaces or slashes.` });
   }
   if (ad.path2 && !ad.path1) issues.push({ path: `${path}.path2`, level: "error", message: "Path 2 requires Path 1." });
+  return issues;
+}
+
+/** Structural checks for one creative; images are checked on their rendered
+ *  size and bytes, text assets on Google's character limits. */
+export function validateAsset(asset: DraftAssetContent & { width?: number | null; height?: number | null; sizeBytes?: number | null }, path = "asset"): ValidationIssue[] {
+  const issues: ValidationIssue[] = [];
+  if (asset.kind === "sitelink") {
+    const text = String(asset.linkText ?? "").trim();
+    if (!text) issues.push({ path: `${path}.linkText`, level: "error", message: "Sitelink text is required." });
+    if (text.length > ASSET_LIMITS.sitelink.linkText) issues.push({ path: `${path}.linkText`, level: "error", message: `Sitelink text is ${text.length} characters; the limit is ${ASSET_LIMITS.sitelink.linkText}.` });
+    for (const key of ["description1", "description2"] as const) {
+      const v = String(asset[key] ?? "").trim();
+      if (v.length > ASSET_LIMITS.sitelink.description) issues.push({ path: `${path}.${key}`, level: "error", message: `Sitelink ${key === "description1" ? "line 1" : "line 2"} is ${v.length} characters; the limit is ${ASSET_LIMITS.sitelink.description}.` });
+    }
+    if ((asset.description1 && !asset.description2) || (!asset.description1 && asset.description2)) issues.push({ path: `${path}.description2`, level: "error", message: "Sitelink descriptions come as a pair: fill both lines or neither." });
+    const urlProblem = validateUrl(String(asset.finalUrl ?? ""));
+    if (urlProblem) issues.push({ path: `${path}.finalUrl`, level: "error", message: urlProblem });
+  } else if (asset.kind === "callout") {
+    const text = String(asset.text ?? "").trim();
+    if (!text) issues.push({ path: `${path}.text`, level: "error", message: "Callout text is required." });
+    if (text.length > ASSET_LIMITS.callout.text) issues.push({ path: `${path}.text`, level: "error", message: `Callout is ${text.length} characters; the limit is ${ASSET_LIMITS.callout.text}.` });
+    if (/[!]{2,}|[A-Z]{6,}/.test(text)) issues.push({ path: `${path}.text`, level: "warning", message: "Callout may fail Google's editorial policy (excessive punctuation or capitals)." });
+  } else if (asset.kind === "image") {
+    const spec = asset.aspect === "square" ? ASSET_LIMITS.image.square : ASSET_LIMITS.image.landscape;
+    if (asset.width && asset.height) {
+      if (asset.width < spec.minWidth || asset.height < spec.minHeight) issues.push({ path: `${path}.size`, level: "error", message: `Image is ${asset.width}×${asset.height}; Google needs at least ${spec.minWidth}×${spec.minHeight} for a ${asset.aspect ?? "landscape"} image.` });
+      if (Math.abs(asset.width / asset.height - spec.ratio) > 0.02) issues.push({ path: `${path}.aspect`, level: "error", message: `Image ratio is ${(asset.width / asset.height).toFixed(2)}:1; Google needs ${spec.ratio}:1.` });
+    } else {
+      issues.push({ path: `${path}.image`, level: "error", message: "The image has not been rendered yet." });
+    }
+    if (asset.sizeBytes && asset.sizeBytes > ASSET_LIMITS.image.maxBytes) issues.push({ path: `${path}.size`, level: "error", message: "Image file exceeds Google's 5 MB limit." });
+  }
   return issues;
 }
 
