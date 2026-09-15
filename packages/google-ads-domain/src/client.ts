@@ -211,20 +211,28 @@ export class GoogleAdsClient {
     }));
   }
 
-  /** From the manager: invite a customer account to be managed. */
+  /** From the manager: invite a customer account to be managed.
+   *  `customerClientLinks:mutate` is not a batch endpoint — it takes one
+   *  `operation` and answers with one `result` (no `partialFailure`). */
   async inviteClient(managerCustomerId: string, clientCustomerId: string): Promise<string> {
-    const results = await this.mutate(managerCustomerId, "customerClientLinks", [{
-      create: { clientCustomer: `customers/${normalizeCustomerId(clientCustomerId)}`, status: "PENDING" },
-    }]);
-    return results[0]?.resourceName ?? "";
+    const cid = normalizeCustomerId(managerCustomerId);
+    const body = await this.request<{ result?: { resourceName?: string } }>(
+      "POST", `customers/${cid}/customerClientLinks:mutate`,
+      { operation: { create: { clientCustomer: `customers/${normalizeCustomerId(clientCustomerId)}`, status: "PENDING" } } },
+    );
+    return body.result?.resourceName ?? "";
   }
 
-  /** From the customer: accept the pending manager link. */
+  /** From the customer: accept the pending manager link.
+   *  `customerManagerLinks:mutate` takes `operations` but, unlike the
+   *  campaign-style services, has no `partialFailure` field. */
   async acceptManagerLink(clientCustomerId: string, linkResourceName: string): Promise<string> {
-    const results = await this.mutate(clientCustomerId, "customerManagerLinks", [{
-      update: { resourceName: linkResourceName, status: "ACTIVE" }, updateMask: "status",
-    }]);
-    return results[0]?.resourceName ?? linkResourceName;
+    const cid = normalizeCustomerId(clientCustomerId);
+    const body = await this.request<{ results?: Array<{ resourceName?: string }> }>(
+      "POST", `customers/${cid}/customerManagerLinks:mutate`,
+      { operations: [{ update: { resourceName: linkResourceName, status: "ACTIVE" }, updateMask: "status" }] },
+    );
+    return body.results?.[0]?.resourceName ?? linkResourceName;
   }
 
   // ---- transport -----------------------------------------------------------
