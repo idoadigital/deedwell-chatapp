@@ -302,7 +302,9 @@ describe("Google Ads management", () => {
 
     const wrongName = await api(env.app, "POST", `/v1/admin/google-ads/orgs/${orgId}/drafts/${draftId}/publish`, { token, body: { confirmName: "nope" } });
     expect(wrongName.status).toBe(400);
-    const publish = await api(env.app, "POST", `/v1/admin/google-ads/orgs/${orgId}/drafts/${draftId}/publish`, { token, body: { confirmName: preview.body.preview.campaign.name } });
+    // Typed by a person: the em dash, casing and spacing of the generated name need not be reproduced.
+    const typed = String(preview.body.preview.campaign.name).replace(/\u2014/g, "-").toUpperCase().replace(/\s+/g, "  ");
+    const publish = await api(env.app, "POST", `/v1/admin/google-ads/orgs/${orgId}/drafts/${draftId}/publish`, { token, body: { confirmName: typed } });
     expect(publish.status).toBe(202);
     expect(publish.body.job.status).toBe("queued");
     expect(fake.state.mutations).toHaveLength(0); // queued, not yet executed

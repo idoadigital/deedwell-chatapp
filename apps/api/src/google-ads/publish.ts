@@ -54,6 +54,11 @@ export async function publishPreview(client: PoolClient, account: AccountRow, dr
   };
 }
 
+/** What has to match when the administrator re-types the campaign name:
+ *  letters and digits, case-insensitively. Generated names carry em dashes,
+ *  curly quotes and double spaces nobody can be expected to reproduce. */
+export const confirmKey = (value: string): string => value.normalize("NFKD").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+
 /** Records the confirmed intent and queues the job. */
 export async function requestPublish(
   deps: Deps, client: PoolClient, account: AccountRow, draftId: string, actorUserId: string,
@@ -61,7 +66,7 @@ export async function requestPublish(
 ): Promise<ReturnType<typeof jobView>> {
   const preview = await publishPreview(client, account, draftId, orgName);
   if (preview.blockers.length) throw new Error(preview.blockers.join(" "));
-  if (input.confirmName.trim().toLowerCase() !== preview.campaign.name.trim().toLowerCase()) throw new Error("The confirmation does not match the campaign name.");
+  if (confirmKey(input.confirmName) !== confirmKey(preview.campaign.name)) throw new Error("The confirmation does not match the campaign name.");
   // Prove the credential resolves now, so a queued job never sits on a dead token.
   await accessFor(deps, client, account, actorUserId);
   const id = uuidv7();
