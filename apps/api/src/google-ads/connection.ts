@@ -192,10 +192,20 @@ function stateForError(err: unknown): string {
   return "error";
 }
 
+/** Google's own reason, e.g. "DEVELOPER_TOKEN_PROHIBITED: The developer
+ *  token is not allowed with the project sent in the request." Shown to the
+ *  administrator so a rejection can be acted on without reading logs. */
+function googleReason(err: GoogleAdsApiError): string {
+  const first = (err.details as { errors?: Array<{ errorCode?: Record<string, string>; message?: string }> } | null)?.errors?.[0];
+  const code = first?.errorCode ? Object.values(first.errorCode)[0] : null;
+  const message = first?.message ?? err.message;
+  return [code, message].filter(Boolean).join(": ").slice(0, 400);
+}
+
 function messageFor(err: unknown): string {
   if (err instanceof GoogleAdsApiError) {
-    if (err.code === "developer_token") return "Deedwell's Google Ads developer token was rejected — a platform administrator needs to check it.";
-    if (err.code === "permission_denied") return "Google refused access to this account. Check that the connected Google user can administer it.";
+    if (err.code === "developer_token") return `Google rejected Deedwell's developer token (${googleReason(err)}) — a platform administrator needs to check it.`;
+    if (err.code === "permission_denied") return `Google refused access to this account (${googleReason(err)}). Check that the connected Google user can administer it.`;
     if (err.code === "unauthenticated") return "The Google authorization expired — reconnect Google to continue.";
     if (err.code === "rate_limited") return "Google Ads is rate-limiting requests; the connection will be retried.";
     if (err.code === "unavailable") return "Google Ads is temporarily unavailable; the connection will be retried.";
