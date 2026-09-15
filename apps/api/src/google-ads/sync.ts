@@ -22,6 +22,16 @@ export interface SyncStats { campaigns: number; adGroups: number; ads: number; k
 const isoDay = (d: Date) => d.toISOString().slice(0, 10);
 
 /** Runs inside a tenant transaction: the caller owns the context. */
+/** Google returns `start_date_time`/`end_date_time` as "YYYY-MM-DD HH:MM:SS"
+ *  (older versions returned YYYYMMDD); keep the calendar day for the date column. */
+function dayOf(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const compact = /^(\d{4})(\d{2})(\d{2})$/.exec(value);
+  if (compact) return `${compact[1]}-${compact[2]}-${compact[3]}`;
+  const iso = /^(\d{4}-\d{2}-\d{2})/.exec(value);
+  return iso?.[1] ?? null;
+}
+
 export async function syncAccountNow(deps: Deps, client: PoolClient, account: AccountRow, actorUserId: string | null = null, opts: { days?: number } = {}): Promise<SyncStats> {
   const tenantId: string = account.tenant_id;
   const access = await accessFor(deps, client, account, actorUserId);
@@ -40,8 +50,8 @@ export async function syncAccountNow(deps: Deps, client: PoolClient, account: Ac
               budget_resource = EXCLUDED.budget_resource, budget_micros = EXCLUDED.budget_micros, start_date = EXCLUDED.start_date,
               end_date = EXCLUDED.end_date, raw = EXCLUDED.raw, synced_at = now()`,
       [uuidv7(), tenantId, account.id, c.campaignId, c.name, c.status, c.servingStatus, c.advertisingChannelType, c.biddingStrategyType,
-        c.budgetResource, c.budgetMicros, c.startDate ? c.startDate.replace(/(\d{4})(\d{2})(\d{2})/, "$1-$2-$3") : null,
-        c.endDate ? c.endDate.replace(/(\d{4})(\d{2})(\d{2})/, "$1-$2-$3") : null, JSON.stringify(c.raw)]);
+        c.budgetResource, c.budgetMicros, dayOf(c.startDate),
+        dayOf(c.endDate), JSON.stringify(c.raw)]);
     stats.campaigns++;
   }
 

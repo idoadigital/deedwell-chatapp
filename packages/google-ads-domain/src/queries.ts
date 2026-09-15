@@ -8,7 +8,7 @@ const num = (v: unknown): number => (v == null ? 0 : Number(v));
 export const CAMPAIGNS_QUERY = `
   SELECT campaign.id, campaign.name, campaign.status, campaign.serving_status,
          campaign.advertising_channel_type, campaign.bidding_strategy_type,
-         campaign.campaign_budget, campaign.start_date, campaign.end_date,
+         campaign.campaign_budget, campaign.start_date_time, campaign.end_date_time,
          campaign_budget.amount_micros
     FROM campaign`;
 
@@ -57,7 +57,7 @@ export function mapCampaign(row: Record<string, any>): CampaignSnapshot {
     servingStatus: c.servingStatus ?? null, advertisingChannelType: c.advertisingChannelType ?? null,
     biddingStrategyType: c.biddingStrategyType ?? null, budgetResource: c.campaignBudget ?? null,
     budgetMicros: row.campaignBudget?.amountMicros != null ? Number(row.campaignBudget.amountMicros) : null,
-    startDate: c.startDate ?? null, endDate: c.endDate ?? null, raw: row,
+    startDate: c.startDateTime ?? null, endDate: c.endDateTime ?? null, raw: row,
   };
 }
 
