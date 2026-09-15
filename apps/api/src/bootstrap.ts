@@ -49,6 +49,9 @@ export interface Deps {
    *  refresh handled, audited). Drive, the Ad Grants account and future
    *  Google integrations all go through it. */
   googleConnections: GoogleConnectionService;
+  /** Same service for the Google Ads connector (its own OAuth client, own
+   *  connection rows under provider "google_ads"). */
+  googleAdsConnections: GoogleConnectionService;
 }
 
 export async function createDeps(overrides: Partial<{
@@ -136,6 +139,7 @@ export async function createDeps(overrides: Partial<{
     grantSource: createGrantSource(),
     gcp: "gcp" in overrides ? (overrides.gcp ?? null) : createGcpGrantPlatform(),
     googleConnections: new GoogleConnectionService(appPool),
+    googleAdsConnections: new GoogleConnectionService(appPool, undefined, "google_ads"),
   };
   const { executiveAssistant, attachEngineBridge } = await import("./assistant.js");
   await seedAgentDefinitions(adminPool, [

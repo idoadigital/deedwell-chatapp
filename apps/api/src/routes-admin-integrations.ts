@@ -69,7 +69,7 @@ export function registerAdminIntegrationRoutes(app: FastifyInstance, ctx: AppCon
     if (name === "meta" && !/^\d{8,}$/.test(credentials.clientId)) {
       problems.push("That does not look like a Meta App ID — it should be numeric.");
     }
-    if (name === "google" && !credentials.clientId.endsWith(".apps.googleusercontent.com")) {
+    if ((name === "google" || name === "google_ads") && !credentials.clientId.endsWith(".apps.googleusercontent.com")) {
       problems.push("That does not look like a Google OAuth client ID.");
     }
     const provider = await getProvider(deps.appPool, name);

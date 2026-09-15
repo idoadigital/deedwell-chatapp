@@ -4,6 +4,7 @@ export type {
 export { getProvider, listProviders, PROVIDER_NAMES } from "./registry.js";
 export { MetaProvider } from "./providers/meta.js";
 export { GoogleProvider } from "./providers/google.js";
+export { GoogleAdsProvider } from "./providers/google-ads.js";
 export {
   SocialPublishingService, MetaPublishingProvider,
   type PublishRequest, type PublishResult, type PublishingProvider,

@@ -317,8 +317,9 @@ export function registerConnectorRoutes(app: FastifyInstance, ctx: AppContext): 
       if (!rows[0]) throw new HttpError(404, "Connection not found");
       // Google: also give the grant back at Google (best effort), so a
       // disconnected account is not still authorized on Google's side.
-      if (rows[0].provider === "google" && rows[0].connector_type === "google_account") {
-        await deps.googleConnections.revokeAtProvider(client, req.orgId!, rows[0], req.userId ?? null);
+      if (rows[0].connector_type === "google_account") {
+        const service = rows[0].provider === "google_ads" ? deps.googleAdsConnections : rows[0].provider === "google" ? deps.googleConnections : null;
+        if (service) await service.revokeAtProvider(client, req.orgId!, rows[0], req.userId ?? null);
       }
       await audit(client, {
         tenantId: req.orgId!, actorUser: req.userId, action: "connector.disconnected",

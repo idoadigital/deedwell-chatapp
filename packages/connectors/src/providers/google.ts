@@ -15,9 +15,9 @@ const REVOKE = "https://oauth2.googleapis.com/revoke";
  * refused.
  */
 export class GoogleProvider implements ConnectorProvider {
-  readonly provider = "google";
-  readonly label = "Google";
-  readonly scopes = [
+  readonly provider: string = "google";
+  readonly label: string = "Google";
+  readonly scopes: string[] = [
     "openid",
     "email",
     "profile",

@@ -62,8 +62,17 @@ export async function readPlatformCredentials(
   }
   // Environment fallback keeps an already-deployed configuration working while
   // it is being moved into the admin console.
-  const envId = process.env[provider === "meta" ? "META_APP_ID" : "GOOGLE_OAUTH_CLIENT_ID"];
-  const envSecret = process.env[provider === "meta" ? "META_APP_SECRET" : "GOOGLE_OAUTH_CLIENT_SECRET"];
+  // Each provider has its own pair — the Google Ads client must never fall
+  // back to the general Google client, which lives in a different Cloud
+  // project without Ads API access.
+  const ENV_NAMES: Record<string, [string, string]> = {
+    meta: ["META_APP_ID", "META_APP_SECRET"],
+    google: ["GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_OAUTH_CLIENT_SECRET"],
+    google_ads: ["GOOGLE_ADS_CLIENT_ID", "GOOGLE_ADS_CLIENT_SECRET"],
+  };
+  const [idName, secretName] = ENV_NAMES[provider] ?? [];
+  const envId = idName ? process.env[idName] : undefined;
+  const envSecret = secretName ? process.env[secretName] : undefined;
   if (envId && envSecret) {
     return { clientId: envId, clientSecret: envSecret, environment, configuration: {} };
   }

@@ -53,15 +53,21 @@ export interface GoogleAccess {
 const REFRESH_AHEAD_MS = 60_000;
 
 export class GoogleConnectionService {
-  constructor(private readonly pool: Pool, private readonly log?: { warn(o: unknown, m?: string): void; info(o: unknown, m?: string): void }) {}
+  /** `provider` selects which Google OAuth client's connections this
+   *  instance manages: "google" (Gmail/Drive/…) or "google_ads". */
+  constructor(
+    private readonly pool: Pool,
+    private readonly log?: { warn(o: unknown, m?: string): void; info(o: unknown, m?: string): void },
+    private readonly provider: string = "google",
+  ) {}
 
   /** The workspace's live Google account connection, newest first. */
   async find(client: Queryable, tenantId: string): Promise<Record<string, any> | null> {
     const { rows } = await client.query(
       `SELECT * FROM connector_connections
-        WHERE tenant_id = $1 AND provider = 'google' AND connector_type = 'google_account' AND status <> 'disconnected'
+        WHERE tenant_id = $1 AND provider = $2 AND connector_type = 'google_account' AND status <> 'disconnected'
         ORDER BY (status = 'connected') DESC, created_at DESC LIMIT 1`,
-      [tenantId]
+      [tenantId, this.provider]
     );
     return (rows[0] as Record<string, any>) ?? null;
   }
@@ -101,7 +107,7 @@ export class GoogleConnectionService {
     if (row.status !== "connected") {
       throw new GoogleConnectionError("expired", row.status_detail ?? "The Google connection needs to be reconnected.");
     }
-    const provider = await getProvider(this.pool, "google");
+    const provider = await getProvider(this.pool, this.provider);
     if (!provider?.refresh) throw new GoogleConnectionError("unavailable", "Google connections are temporarily unavailable.");
 
     let tokens = unseal(row);
@@ -194,7 +200,7 @@ export class GoogleConnectionService {
    *  performs. Never throws: a dead token cannot be revoked and that is fine. */
   async revokeAtProvider(client: Queryable, tenantId: string, row: Record<string, any>, actorUserId: string | null): Promise<void> {
     try {
-      const provider = await getProvider(this.pool, "google");
+      const provider = await getProvider(this.pool, this.provider);
       if (provider?.revoke) await provider.revoke(unseal(row));
       await audit(client as PoolClient, {
         tenantId, actorUser: actorUserId, action: "google.revoked",

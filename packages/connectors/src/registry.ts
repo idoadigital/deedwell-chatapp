@@ -2,6 +2,7 @@ import type { Pool } from "pg";
 import type { ConnectorProvider } from "./types.js";
 import { MetaProvider } from "./providers/meta.js";
 import { GoogleProvider } from "./providers/google.js";
+import { GoogleAdsProvider } from "./providers/google-ads.js";
 import { readPlatformCredentials } from "./platform-config.js";
 
 type Factory = (credentials: { clientId: string; clientSecret: string } | null) => ConnectorProvider;
@@ -11,6 +12,7 @@ type Factory = (credentials: { clientId: string; clientSecret: string } | null) 
 const FACTORIES = new Map<string, Factory>([
   ["meta", (c) => new MetaProvider(c)],
   ["google", (c) => new GoogleProvider(c)],
+  ["google_ads", (c) => new GoogleAdsProvider(c)],
 ]);
 
 export const PROVIDER_NAMES = [...FACTORIES.keys()];

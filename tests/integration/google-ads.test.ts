@@ -72,17 +72,18 @@ describe("Google Ads management", () => {
   let token: string; let orgId: string; let userId: string;
   let otherToken: string; let otherOrgId: string;
   const fake = fakeApi();
-  const grantedByGoogle = ["openid", GOOGLE_SCOPE.email, GOOGLE_SCOPE.profile, GOOGLE_SCOPE.gmailRead, GOOGLE_SCOPE.gmailSend, GOOGLE_SCOPE.adwords];
+  const grantedByGoogle = ["openid", GOOGLE_SCOPE.email, GOOGLE_SCOPE.adwords];
 
+  // The Google Ads connector: its own OAuth client, own connection rows.
   const connectGoogle = async (t: string, org: string) => {
-    const auth = await api(env.app, "POST", `/v1/orgs/${org}/connectors/google/authorize`, { token: t, body: { features: ["googleads"] } });
+    const auth = await api(env.app, "POST", `/v1/orgs/${org}/connectors/google_ads/authorize`, { token: t, body: {} });
     expect(auth.status).toBe(200);
     const state = new URL(auth.body.authorizeUrl).searchParams.get("state")!;
-    const cb = await env.app.inject({ method: "GET", url: `/v1/connectors/google/callback?code=abc&state=${state}` });
+    const cb = await env.app.inject({ method: "GET", url: `/v1/connectors/google_ads/callback?code=abc&state=${state}` });
     expect(cb.body).toContain('"ok":true');
     const list = await api(env.app, "GET", `/v1/orgs/${org}/connectors`, { token: t });
-    const pending = list.body.connections.find((c: any) => c.provider === "google" && c.connectorType === "pending_selection");
-    const sel = await api(env.app, "POST", `/v1/orgs/${org}/connectors/google/select`, { token: t, body: { pendingId: pending.id, accountIds: ["sub-1"] } });
+    const pending = list.body.connections.find((c: any) => c.provider === "google_ads" && c.connectorType === "pending_selection");
+    const sel = await api(env.app, "POST", `/v1/orgs/${org}/connectors/google_ads/select`, { token: t, body: { pendingId: pending.id, accountIds: ["sub-1"] } });
     expect(sel.status).toBe(200);
   };
 

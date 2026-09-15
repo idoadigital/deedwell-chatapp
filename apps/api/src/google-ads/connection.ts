@@ -13,6 +13,7 @@
  */
 import { emailOrgAdmins, orgNameOf } from "@deedwell/email";
 import { GoogleAdsApiError, normalizeCustomerId, type CustomerInfo } from "@deedwell/google-ads-domain";
+import { getProvider } from "@deedwell/connectors";
 import { uuidv7 } from "@deedwell/database";
 import type { PoolClient } from "pg";
 import type { Deps } from "../bootstrap.js";
@@ -214,7 +215,7 @@ export async function disconnectAccount(deps: Deps, client: PoolClient, tenantId
 /** Everything the Connectors card and the Google Ads page need to render. */
 export async function connectionStatus(deps: Deps, client: PoolClient, tenantId: string) {
   const account = await loadAccount(client, tenantId);
-  const google = await deps.googleConnections.missingFor(client, tenantId, [ADWORDS_SCOPE]);
+  const google = await deps.googleAdsConnections.missingFor(client, tenantId, [ADWORDS_SCOPE]);
   const googleConnected = Boolean(google.connection) && google.connection?.status === "connected";
   const scopeGranted = googleConnected && google.missing.length === 0;
   let state: string;
@@ -226,7 +227,7 @@ export async function connectionStatus(deps: Deps, client: PoolClient, tenantId:
     state,
     account: accountView(account),
     google: { connected: googleConnected, scopeGranted, status: google.connection?.status ?? null },
-    platformReady: Boolean(settings.developerToken),
+    platformReady: Boolean(settings.developerToken) && (await getProvider(deps.appPool, "google_ads"))?.isConfigured() === true,
     managerConfigured: Boolean(settings.managerCustomerId && settings.managerRefreshToken),
   };
 }

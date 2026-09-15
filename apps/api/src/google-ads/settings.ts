@@ -144,13 +144,15 @@ export async function markManagerAttention(pool: Pool, detail: string, environme
 }
 
 /** OAuth client for the manager sign-in: GOOGLE_ADS_CLIENT_ID/SECRET when
- *  set, otherwise the platform's Google integration (the same client the
- *  connector uses). */
+ *  set, otherwise the platform's Google Ads integration (the client customers
+ *  connect with, so the manager token comes from the same Cloud project and
+ *  carries its Ads API access level), and as a last resort the general Google
+ *  integration. */
 export async function managerOAuthClient(pool: Pool): Promise<{ clientId: string; clientSecret: string } | null> {
   if (process.env.GOOGLE_ADS_CLIENT_ID && process.env.GOOGLE_ADS_CLIENT_SECRET) {
     return { clientId: process.env.GOOGLE_ADS_CLIENT_ID, clientSecret: process.env.GOOGLE_ADS_CLIENT_SECRET };
   }
-  const creds = await readPlatformCredentials(pool, "google");
+  const creds = (await readPlatformCredentials(pool, "google_ads")) ?? (await readPlatformCredentials(pool, "google"));
   return creds ? { clientId: creds.clientId, clientSecret: creds.clientSecret } : null;
 }
 

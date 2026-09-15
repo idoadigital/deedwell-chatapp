@@ -57,11 +57,11 @@ export async function customerClient(
   const settings = opts.settings ?? await loadSettingsOrThrow(deps);
   let accessToken: string;
   try {
-    const access = await deps.googleConnections.require(client, tenantId, { scopes: [ADWORDS_SCOPE], actorUserId: opts.actorUserId ?? null, feature: "google_ads" });
+    const access = await deps.googleAdsConnections.require(client, tenantId, { scopes: [ADWORDS_SCOPE], actorUserId: opts.actorUserId ?? null, feature: "google_ads" });
     accessToken = access.accessToken;
   } catch (err) {
     if (err instanceof GoogleConnectionError) {
-      if (err.code === "not_connected") throw new GoogleAdsAccessError("not_connected", "Connect your Google account first.");
+      if (err.code === "not_connected") throw new GoogleAdsAccessError("not_connected", "Connect Google Ads first.");
       if (err.code === "missing_scopes") throw new GoogleAdsAccessError("missing_scopes", "Google Ads access has not been granted yet.");
       if (err.code === "expired") throw new GoogleAdsAccessError("expired", "The Google authorization expired — reconnect to continue.");
       throw new GoogleAdsAccessError("unavailable", err.message);
