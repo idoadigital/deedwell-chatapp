@@ -10,8 +10,7 @@ export const CAMPAIGNS_QUERY = `
          campaign.advertising_channel_type, campaign.bidding_strategy_type,
          campaign.campaign_budget, campaign.start_date, campaign.end_date,
          campaign_budget.amount_micros
-    FROM campaign
-   WHERE campaign.status != 'REMOVED' OR campaign.status = 'REMOVED'`;
+    FROM campaign`;
 
 export const AD_GROUPS_QUERY = `
   SELECT ad_group.id, ad_group.name, ad_group.status, ad_group.type, ad_group.cpc_bid_micros, ad_group.campaign
