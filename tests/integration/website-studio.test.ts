@@ -176,4 +176,28 @@ describe("website studio", () => {
     expect(qa.body.latest.result.scope.categories).toContain("footer");
     for (const f of qa.body.findings) expect(["detected", "repairing", "fixed", "verified", "needs_review"]).toContain(f.status);
   }, 240_000);
+
+  it("keeps another organization out of the site's studio, jobs, content and domains", async () => {
+    const other = await registerUser(env.app, "outsider@example.org");
+    const otherOrg = await createOrg(env.app, other.token, "other-org");
+    const qa = await api(env.app, "GET", `/v1/orgs/${s.orgId}/sites/${s.siteId}/qa`, { token: s.token });
+    const paths = [
+      ["GET", `/v1/orgs/${otherOrg}/sites/${s.siteId}/studio`],
+      ["GET", `/v1/orgs/${otherOrg}/sites/${s.siteId}/editor/messages`],
+      ["GET", `/v1/orgs/${otherOrg}/sites/${s.siteId}/jobs/${qa.body.latest.id}`],
+      ["GET", `/v1/orgs/${otherOrg}/sites/${s.siteId}/qa`],
+      ["GET", `/v1/orgs/${otherOrg}/sites/${s.siteId}/posts`],
+      ["GET", `/v1/orgs/${otherOrg}/sites/${s.siteId}/domains`],
+      ["GET", `/v1/orgs/${otherOrg}/sites/${s.siteId}/versions`],
+    ] as const;
+    for (const [method, url] of paths) {
+      const res = await api(env.app, method, url, { token: other.token });
+      expect(res.status, `${method} ${url}`).toBe(404);
+    }
+    const edit = await api(env.app, "POST", `/v1/orgs/${otherOrg}/sites/${s.siteId}/editor/messages`, { token: other.token, body: { body: "Make the heading red" } });
+    expect(edit.status).toBe(404);
+    // The owner's own org on someone else's org id is refused too.
+    const cross = await api(env.app, "GET", `/v1/orgs/${otherOrg}/sites/${s.siteId}/studio`, { token: s.token });
+    expect([403, 404]).toContain(cross.status);
+  }, 30_000);
 });
