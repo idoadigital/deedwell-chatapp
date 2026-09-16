@@ -26,9 +26,11 @@ export function newVerificationToken(): string {
 export function instructionsFor(domain: string, token: string): DnsInstruction[] {
   const parts = domain.split(".");
   const apex = parts.length === 2;
-  const host = apex ? "@" : parts.slice(0, -1).join(".");
+  // Hosts are relative to the zone, the way DNS providers ask for them:
+  // "www" for www.example.org, "@" for the apex.
+  const host = apex ? "@" : parts.slice(0, -2).join(".");
   const out: DnsInstruction[] = [
-    { type: "TXT", host: `${VERIFY_PREFIX}${apex ? "" : `.${host}`}`, value: token, note: "Proves you control the domain. Can be removed after the domain is connected." },
+    { type: "TXT", host: `${VERIFY_PREFIX}${apex ? "" : `.${host}`}`, value: token, note: `Proves you control the domain (full name: ${VERIFY_PREFIX}.${domain}). Can be removed after the domain is connected.` },
   ];
   if (apex) out.push({ type: "A", host: "@", value: "216.239.32.21", note: "Apex domains cannot use a CNAME. Add all four Google A records: 216.239.32.21, 216.239.34.21, 216.239.36.21, 216.239.38.21 — DNS only (not proxied)." });
   else out.push({ type: "CNAME", host, value: DNS_TARGET, note: "Points the hostname at Deedwell's hosting. DNS only (not proxied) so the certificate can be issued." });
