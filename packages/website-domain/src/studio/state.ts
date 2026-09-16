@@ -310,8 +310,13 @@ export function patchBrandMark(html: string, logoPath: string | null, siteName: 
     return html.replace(existing, "").replace(/(<(a|p|div|span)\b[^>]*class="[^"]*\bbrand\b[^"]*"[^>]*>)(\s*)(<\/\2>)/gi, (_m, open: string, _t: string, _ws: string, close: string) => `${open}${escHtml(siteName)}${close}`);
   }
   if (!logoPath) return html;
-  // Header/footer brand element with text content only (no nested tags).
-  return html.replace(/(<(a|p|div|span)\b[^>]*class="[^"]*\bbrand\b[^"]*"[^>]*>)([^<]*)(<\/\2>)/gi, (_m, open: string, _t: string, _text: string, close: string) => `${open}${img}${close}`);
+  // Header/footer brand element: its content (the name, possibly wrapped in
+  // spans) becomes the image. Anything already holding an image is left.
+  const out = html.replace(/(<(a|p|div|span)\b[^>]*class="[^"]*\bbrand\b[^"]*"[^>]*>)((?:(?!<\/\2>)[\s\S])*?)(<\/\2>)/gi, (m: string, open: string, _t: string, inner: string, close: string) => (/<img\b|<svg\b/i.test(inner) ? m : `${open}${img}${close}`));
+  if (out.includes("brand__logo")) return out;
+  // No brand element: the header's home link that reads as the site name.
+  const name = escRe(escHtml(siteName.trim()));
+  return out.replace(/(<a\b[^>]*href="\/(?:index\.html)?"[^>]*>)(\s*(?:<[^>]+>\s*)*)([^<]*)((?:\s*<\/[^>]+>)*\s*)(<\/a>)/i, (m: string, open: string, _pre: string, text: string, _post: string, close: string) => (new RegExp(`^\\s*${name}\\s*$`, "i").test(text) ? `${open}${img}${close}` : m));
 }
 
 // ---- designed pages: wording edits --------------------------------------------

@@ -171,6 +171,20 @@ describe("logo operation", () => {
     expect(html).not.toContain("brand__logo");
     expect(html).toContain('<a class="brand" href="/">Org</a>');
   });
+  it("replaces a wrapped or differently-tagged brand name too, but never an existing image", () => {
+    const wrapped = '<header><a href="/" class="site-brand brand"><span class="brand__name">Org</span></a></header><footer><div class="brand"><svg></svg></div></footer>';
+    const r = applyOperations(stateWith(wrapped, "/images/logo.png"), [{ kind: "logo", action: "use-brand" }]);
+    const html = renderWorkingPage(r.state, "home");
+    expect(html).toContain('<a href="/" class="site-brand brand"><img class="brand__logo" src="/images/logo.png" alt="Org"></a>');
+    expect(html).toContain('<div class="brand"><svg></svg></div>');
+  });
+  it("falls back to the header home link that reads as the site name", () => {
+    const bare = '<header class="hdr"><a href="/" class="logo-link"><strong>Org</strong></a><nav><a href="/about/">About</a></nav></header>';
+    const r = applyOperations(stateWith(bare, "/images/logo.png"), [{ kind: "logo", action: "use-brand" }]);
+    const html = renderWorkingPage(r.state, "home");
+    expect(html).toContain('<a href="/" class="logo-link"><img class="brand__logo" src="/images/logo.png" alt="Org"></a>');
+    expect(html).toContain('<a href="/about/">About</a>');
+  });
   it("explains when there is no brand logo to use", () => {
     const r = applyOperations(stateWith(designed, null), [{ kind: "logo", action: "use-brand" }]);
     expect(r.rejected[0]).toMatch(/Brand Style/);
