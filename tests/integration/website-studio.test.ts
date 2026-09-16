@@ -263,6 +263,83 @@ describe("website studio", () => {
     expect((await router.inject({ method: "GET", url: "/preview/generosity-global/" })).body).not.toContain("Water for Africa Gala");
   }, 60_000);
 
+  it("Fix it on a finding hands it to the editor and settles the finding from the real outcome", async () => {
+    const base = `/v1/orgs/${s.orgId}/sites/${s.siteId}`;
+    const qa = await api(env.app, "GET", `${base}/qa`, { token: s.token });
+    const jobId = qa.body.latest.id as string;
+    const mk = async (title: string, description: string) => {
+      const id = crypto.randomUUID();
+      await env.deps.adminPool.query("INSERT INTO site_qa_findings (id, tenant_id, site_id, job_id, severity, category, page, viewport, title, description, status) VALUES ($1,$2,$3,$4,'medium','responsive','home',390,$5,$6,'needs_review')", [id, s.orgId, s.siteId, jobId, title, description]);
+      return id;
+    };
+    const fixable = await mk("Hero heading too large on mobile", "Reduce the hero heading so it fits at 390px.");
+    const vague = await mk("Something feels off", "The vibe is wrong.");
+    const versions = (await api(env.app, "GET", `${base}/versions`, { token: s.token })).body.versions.length;
+
+    const started = await api(env.app, "POST", `${base}/qa/findings/${fixable}/fix`, { token: s.token });
+    expect(started.status, JSON.stringify(started.body)).toBe(202);
+    const mid = (await api(env.app, "GET", `${base}/qa`, { token: s.token })).body.findings.find((f: any) => f.id === fixable);
+    expect(mid.status).toBe("repairing");
+    expect(mid.repair.jobId).toBe(started.body.jobId);
+    expect((await api(env.app, "POST", `${base}/qa/findings/${vague}/fix`, { token: s.token })).status, "one change at a time").toBe(409);
+    await drain();
+    const job = await api(env.app, "GET", `${base}/jobs/${started.body.jobId}`, { token: s.token });
+    expect(job.body.job.kind).toBe("edit");
+    expect(job.body.job.status).toBe("complete");
+    expect(job.body.job.context.findingId).toBe(fixable);
+    const done = (await api(env.app, "GET", `${base}/qa`, { token: s.token })).body.findings.find((f: any) => f.id === fixable);
+    expect(done.status).toBe("fixed");
+    expect(done.attempts).toBe(1);
+    expect(done.repair.by).toBe("editor");
+    expect((await api(env.app, "GET", `${base}/versions`, { token: s.token })).body.versions.length, "the fix is a new preview version").toBe(versions + 1);
+    // It shows in the editor conversation too.
+    const msgs = await api(env.app, "GET", `${base}/editor/messages`, { token: s.token });
+    expect(msgs.body.messages.some((m: any) => m.job_id === started.body.jobId && m.role === "user" && /Fix this QA finding/.test(m.body))).toBe(true);
+
+    // A finding the editor cannot act on goes back to review with a note, not a fake fix.
+    const second = await api(env.app, "POST", `${base}/qa/findings/${vague}/fix`, { token: s.token });
+    expect(second.status).toBe(202);
+    await drain();
+    const back = (await api(env.app, "GET", `${base}/qa`, { token: s.token })).body.findings.find((f: any) => f.id === vague);
+    expect(back.status).toBe("needs_review");
+    expect(back.attempts).toBe(1);
+    expect(back.repair.ok).toBe(false);
+  }, 120_000);
+
+  it("\"update the site logo\" uses the current brand logo on every page, designed pages included", async () => {
+    const base = `/v1/orgs/${s.orgId}/sites/${s.siteId}`;
+    // No brand logo yet: the editor says where to add one instead of failing on tokens.
+    const none = await api(env.app, "POST", `${base}/editor/messages`, { token: s.token, body: { body: "Update the site logo" } });
+    expect(none.status).toBe(202);
+    await drain();
+    let msgs = (await api(env.app, "GET", `${base}/editor/messages`, { token: s.token })).body.messages;
+    let reply = msgs.filter((m: any) => m.job_id === none.body.jobId && m.role === "assistant").pop();
+    expect(reply.body).toMatch(/Brand Style/);
+    expect(reply.body).not.toMatch(/designed markup/);
+
+    // Upload a brand logo, mark the about page as designed, then ask again.
+    const png = Buffer.from("89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d49444154789c6360f8cfc00000030101009f9c11ff0000000049454e44ae426082", "hex").toString("base64");
+    const up = await api(env.app, "POST", `/v1/orgs/${s.orgId}/files`, { token: s.token, body: { filename: "logo.png", mime: "image/png", contentBase64: png } });
+    expect(up.status).toBe(201);
+    expect((await api(env.app, "PUT", `/v1/orgs/${s.orgId}/brand/logo`, { token: s.token, body: { fileId: up.body.fileId ?? up.body.id } })).status).toBe(200);
+    await env.deps.adminPool.query("UPDATE site_pages SET rendered_hash = split_part(rendered_hash, ':', 1) || ':designed' WHERE site_id = $1 AND slug = 'about'", [s.siteId]);
+    const started = await api(env.app, "POST", `${base}/editor/messages`, { token: s.token, body: { body: "Update the site logo" } });
+    expect(started.status).toBe(202);
+    await drain();
+    const job = await api(env.app, "GET", `${base}/jobs/${started.body.jobId}`, { token: s.token });
+    expect(job.body.job.status, JSON.stringify(job.body.job.result)).toBe("complete");
+    msgs = (await api(env.app, "GET", `${base}/editor/messages`, { token: s.token })).body.messages;
+    reply = msgs.filter((m: any) => m.job_id === started.body.jobId && m.role === "assistant").pop();
+    expect(reply.context?.failed).not.toBe(true);
+    for (const path of ["/preview/generosity-global/", "/preview/generosity-global/about/"]) {
+      const html = (await router.inject({ method: "GET", url: path })).body;
+      expect(html, path).toContain('class="brand__logo"');
+      expect(html, path).toContain("/images/logo.png");
+    }
+    expect((await router.inject({ method: "GET", url: "/preview/generosity-global/images/logo.png" })).statusCode).toBe(200);
+    await env.deps.adminPool.query("UPDATE site_pages SET rendered_hash = split_part(rendered_hash, ':', 1) || ':pipeline' WHERE site_id = $1 AND slug = 'about'", [s.siteId]);
+  }, 120_000);
+
   it("keeps another organization out of the site's studio, jobs, content and domains", async () => {
     const other = await registerUser(env.app, "outsider@example.org");
     const otherOrg = await createOrg(env.app, other.token, "other-org");
@@ -285,6 +362,8 @@ describe("website studio", () => {
     expect(edit.status).toBe(404);
     const block = await api(env.app, "PUT", `/v1/orgs/${otherOrg}/sites/${s.siteId}/pages/home/blocks/0`, { token: other.token, body: { block: { kind: "text", heading: null, body: "x" } } });
     expect(block.status).toBe(404);
+    const anyFinding = (await env.deps.adminPool.query("SELECT id FROM site_qa_findings WHERE site_id = $1 LIMIT 1", [s.siteId])).rows[0];
+    if (anyFinding) expect((await api(env.app, "POST", `/v1/orgs/${otherOrg}/sites/${s.siteId}/qa/findings/${anyFinding.id}/fix`, { token: other.token })).status).toBe(404);
     // The owner's own org on someone else's org id is refused too.
     const cross = await api(env.app, "GET", `/v1/orgs/${otherOrg}/sites/${s.siteId}/studio`, { token: s.token });
     expect([403, 404]).toContain(cross.status);

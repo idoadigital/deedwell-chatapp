@@ -34,6 +34,11 @@ export interface WorkingState {
   language: DesignLanguage;
   tokens: DesignTokens;
   overrides: StyleOverride[];
+  /** Where the organization's brand logo lives inside the site, when Brand
+   *  Style has one — regardless of whether the site currently shows it. */
+  brandLogoPath: string | null;
+  /** "brand": show the brand logo; "none": the site hides it. */
+  logo: "brand" | "none";
   images: SiteImage[];
   organization: Organization;
   donateUrl: string | null;
@@ -82,7 +87,9 @@ export async function loadWorkingState(client: PoolClient, siteId: string): Prom
     const ext = f?.mime === "image/png" ? "png" : f?.mime === "image/jpeg" ? "jpg" : f?.mime === "image/webp" ? "webp" : null;
     return ext ? `/images/logo.${ext}` : null;
   })()) : null;
-  const organization = await loadOrganization(client, site.tenant_id, site, intake, logoPath);
+  const edits = (site.edits ?? {}) as { overrides?: unknown; logo?: unknown };
+  const logoSetting: "brand" | "none" = edits.logo === "none" ? "none" : "brand";
+  const organization = await loadOrganization(client, site.tenant_id, site, intake, logoSetting === "none" ? null : logoPath);
   const donations = (site.donations ?? {}) as { donateUrl?: string | null };
   const donateUrl = str(donations.donateUrl) ?? str(intake.site_donate_url);
 
@@ -91,7 +98,7 @@ export async function loadWorkingState(client: PoolClient, siteId: string): Prom
   const tokensParsed = DesignTokens.safeParse(theme.tokens);
   const tokens = tokensParsed.success ? tokensParsed.data : fallbackTokens(language, { primaryColor: str(intake.site_brand_primary_color) });
   const images: SiteImage[] = Array.isArray(site.images) ? site.images : [];
-  const overrides: StyleOverride[] = Array.isArray((site.edits as { overrides?: unknown })?.overrides) ? (site.edits as { overrides: StyleOverride[] }).overrides : [];
+  const overrides: StyleOverride[] = Array.isArray(edits.overrides) ? (edits.overrides as StyleOverride[]) : [];
 
   const { rows: pageRows } = await client.query("SELECT slug, title, blocks, seo, order_idx, status, rendered_html, rendered_hash FROM site_pages WHERE site_id = $1 ORDER BY order_idx", [siteId]);
   const { rows: plans } = await client.query("SELECT scope, output FROM site_build_stages WHERE site_id = $1 AND stage = 'page_plan'", [siteId]);
@@ -106,7 +113,7 @@ export async function loadWorkingState(client: PoolClient, siteId: string): Prom
     return { page, status: r.status === "hidden" ? "hidden" : "published", orderIdx: r.order_idx ?? i, composition, designedHtml: designed };
   });
   if (!pages.some((p) => p.page.slug === "home") && pages[0]) pages[0].page = { ...pages[0].page, slug: "home" };
-  return { site: { id: site.id, slug: site.slug, name: site.name, tenantId: site.tenant_id }, pages, language, tokens, overrides, images, organization, donateUrl, native: tokensParsed.success };
+  return { site: { id: site.id, slug: site.slug, name: site.name, tenantId: site.tenant_id }, pages, language, tokens, overrides, brandLogoPath: logoPath, logo: logoSetting, images, organization, donateUrl, native: tokensParsed.success };
 }
 
 export function navOf(state: WorkingState): Array<{ title: string; href: string }> {
@@ -172,6 +179,7 @@ export function applyOperations(input: WorkingState, ops: SiteEditOp[]): ApplyRe
   const everyPage = () => state.pages.forEach((p) => changed.add(p.page.slug));
 
   const designedOnly = (op: SiteEditOp): boolean => {
+    if (op.kind === "logo") return false;
     const slug = "page" in op ? op.page : null;
     const wp = slug && slug !== "*" ? pageOf(slug) : null;
     if (op.kind === "tokens" ? state.pages.every((p) => p.designedHtml) : Boolean(wp?.designedHtml)) {
@@ -182,7 +190,7 @@ export function applyOperations(input: WorkingState, ops: SiteEditOp[]): ApplyRe
   };
 
   for (const op of ops) {
-    if (op.kind !== "style" && designedOnly(op)) continue;
+    if (op.kind !== "style" && op.kind !== "logo" && designedOnly(op)) continue;
     switch (op.kind) {
       case "style": {
         const selector = cleanSelector(op.selector);
@@ -263,6 +271,14 @@ export function applyOperations(input: WorkingState, ops: SiteEditOp[]): ApplyRe
         state.tokens = merged.data; everyPage(); notes.push(`design tokens: ${Object.keys(op.patch).join(", ")} changed`);
         break;
       }
+      case "logo": {
+        if (op.action === "use-brand" && !state.brandLogoPath) { rejected.push("logo: the organization has no brand logo yet — upload one in Mission Profile → Brand Style first"); break; }
+        state.logo = op.action === "use-brand" ? "brand" : "none";
+        state.organization = { ...state.organization, logoPath: state.logo === "brand" ? state.brandLogoPath : null };
+        for (const wp of state.pages) if (wp.designedHtml) wp.designedHtml = patchBrandMark(wp.designedHtml, state.logo === "brand" ? state.brandLogoPath : null, state.site.name);
+        everyPage(); notes.push(op.action === "use-brand" ? "logo: the current brand logo is used on every page" : "logo: removed from every page");
+        break;
+      }
       case "page-cta": {
         const wp = pageOf(op.page);
         if (!wp) { rejected.push(`page-cta: no page ${op.page}`); break; }
@@ -272,6 +288,27 @@ export function applyOperations(input: WorkingState, ops: SiteEditOp[]): ApplyRe
     }
   }
   return { state, changed, notes, rejected };
+}
+
+// ---- designed pages: the brand mark --------------------------------------------
+
+/**
+ * Puts the brand logo into (or takes it out of) a designed page without
+ * re-rendering it: an existing <img class="brand__logo"> gets the current
+ * path; otherwise the header/footer brand element gets the image in place
+ * of the name. With no path, the image goes and the name comes back.
+ */
+export function patchBrandMark(html: string, logoPath: string | null, siteName: string): string {
+  const img = logoPath ? `<img class="brand__logo" src="${escHtml(logoPath)}" alt="${escHtml(siteName)}">` : "";
+  const existing = /<img\b[^>]*class="[^"]*\bbrand__logo\b[^"]*"[^>]*>/gi;
+  if (existing.test(html)) {
+    if (logoPath) return html.replace(existing, img);
+    // Remove the image; a brand element left empty shows the name again.
+    return html.replace(existing, "").replace(/(<(a|p|div|span)\b[^>]*class="[^"]*\bbrand\b[^"]*"[^>]*>)(\s*)(<\/\2>)/gi, (_m, open: string, _t: string, _ws: string, close: string) => `${open}${escHtml(siteName)}${close}`);
+  }
+  if (!logoPath) return html;
+  // Header/footer brand element with text content only (no nested tags).
+  return html.replace(/(<(a|p|div|span)\b[^>]*class="[^"]*\bbrand\b[^"]*"[^>]*>)([^<]*)(<\/\2>)/gi, (_m, open: string, _t: string, _text: string, close: string) => `${open}${img}${close}`);
 }
 
 // ---- designed pages: wording edits --------------------------------------------
@@ -329,7 +366,7 @@ export function patchDesignedCopy(html: string, before: SiteBlock, after: SiteBl
 export async function saveWorkingState(client: PoolClient, state: WorkingState, changed: Iterable<string>): Promise<void> {
   const slugs = new Set(changed);
   await client.query("UPDATE sites SET theme = theme || $2::jsonb, edits = $3::jsonb WHERE id = $1",
-    [state.site.id, JSON.stringify({ tokens: state.tokens, language: state.language }), JSON.stringify({ overrides: state.overrides })]);
+    [state.site.id, JSON.stringify({ tokens: state.tokens, language: state.language }), JSON.stringify({ overrides: state.overrides, logo: state.logo })]);
   for (const [i, wp] of state.pages.entries()) {
     const html = slugs.has(wp.page.slug) ? renderWorkingPage(state, wp.page.slug) : null;
     await client.query(

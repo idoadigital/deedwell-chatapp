@@ -58,6 +58,7 @@ strong{font-weight:var(--fw-strong)}
 .site-header{position:sticky;top:0;z-index:50;background:var(--c-bg);border-bottom:var(--bw) solid var(--c-border)}
 .site-header__inner{display:flex;align-items:center;gap:var(--s-5);min-height:var(--nav-h)}
 .brand{font-family:var(--font-heading);font-weight:var(--fw-strong);font-size:1.15rem;letter-spacing:-.01em;color:inherit;text-decoration:none;margin-right:auto;line-height:1.2;max-width:60%;overflow-wrap:anywhere}
+.brand__logo{display:block;height:40px;width:auto;max-width:220px;object-fit:contain}.footer__about .brand__logo{height:44px}
 .site-nav{display:flex;align-items:center;gap:var(--s-5)}
 .site-nav ul{display:flex;flex-wrap:wrap;gap:var(--s-2) var(--s-5)}
 .site-nav a:not(.btn){color:inherit;text-decoration:none;font-weight:500;padding:var(--s-2) 0;border-bottom:2px solid transparent;white-space:nowrap}

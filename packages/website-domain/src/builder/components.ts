@@ -483,13 +483,20 @@ export function catalogForPrompt(): string {
 
 // ---- header + footer ---------------------------------------------------------
 
+/** The brand in the header and footer: the organization's logo when Brand
+ *  Style has one (and the site has not hidden it), the name otherwise. */
+export function brandMark(ctx: RenderCtx): string {
+  const logo = ctx.organization.logoPath;
+  return logo ? `<img class="brand__logo" src="${esc(logo)}" alt="${esc(ctx.site.name)}">` : esc(ctx.site.name);
+}
+
 export function renderHeader(ctx: RenderCtx, variant: DesignTokens["header"], hasImageHero: boolean): string {
   const pages = ctx.nav.filter((n) => n.href !== "/").slice(0, 4);
   const current = `/${ctx.page.slug === "home" ? "" : `${ctx.page.slug}/`}`;
   const link = (n: { title: string; href: string }) => `<li><a href="${esc(n.href)}"${n.href === current ? ' aria-current="page"' : ""}>${esc(n.title)}</a></li>`;
   const cta = ctx.primaryCta ?? (ctx.donateUrl ? { label: "Donate", href: ctx.donateUrl } : { label: "Contact", href: "/contact/" });
   const transparent = variant === "transparent-over-hero" && hasImageHero;
-  return `<header class="site-header site-header--${variant}${transparent ? " is-transparent" : ""}"><div class="container site-header__inner"><a class="brand" href="/"${current === "/" ? ' aria-current="page"' : ""}>${esc(ctx.site.name)}</a><button class="nav-toggle" type="button" aria-expanded="false" aria-controls="site-nav"><span class="visually-hidden">Menu</span><span class="nav-toggle__bar" aria-hidden="true"></span></button><nav class="site-nav" id="site-nav" aria-label="Main"><ul>${pages.map(link).join("")}</ul>${btn(cta.label, cta.href, "primary").replace('class="btn btn--primary"', 'class="btn btn--primary site-header__cta"')}</nav></div></header>`;
+  return `<header class="site-header site-header--${variant}${transparent ? " is-transparent" : ""}"><div class="container site-header__inner"><a class="brand" href="/"${current === "/" ? ' aria-current="page"' : ""}>${brandMark(ctx)}</a><button class="nav-toggle" type="button" aria-expanded="false" aria-controls="site-nav"><span class="visually-hidden">Menu</span><span class="nav-toggle__bar" aria-hidden="true"></span></button><nav class="site-nav" id="site-nav" aria-label="Main"><ul>${pages.map(link).join("")}</ul>${btn(cta.label, cta.href, "primary").replace('class="btn btn--primary"', 'class="btn btn--primary site-header__cta"')}</nav></div></header>`;
 }
 
 export function renderFooter(ctx: RenderCtx): string {
@@ -499,5 +506,5 @@ export function renderFooter(ctx: RenderCtx): string {
     org.status ? `${esc(org.legalName ?? org.name)} is a registered ${esc(org.status)}.` : "",
     org.ein ? `EIN ${esc(org.ein)}.` : "",
   ].filter(Boolean).join(" ");
-  return `<footer class="site-footer"><div class="container"><div class="footer__grid"><div class="footer__about"><p class="brand">${esc(ctx.site.name)}</p>${org.mission ? `<p>${esc(clampText(org.mission, 200))}</p>` : ""}</div><nav class="footer__nav" aria-label="Footer"><h2 class="footer__heading">Pages</h2><ul>${ctx.nav.map((n) => `<li><a href="${esc(n.href)}">${esc(n.title)}</a></li>`).join("")}</ul></nav><div class="footer__contact"><h2 class="footer__heading">Contact</h2><address>${org.contactEmail ? `<p><a href="mailto:${esc(org.contactEmail)}">${esc(org.contactEmail)}</a></p>` : ""}${org.contactPhone ? `<p><a href="tel:${esc(org.contactPhone.replace(/[^+0-9]/g, ""))}">${esc(org.contactPhone)}</a></p>` : ""}${org.headquarters ? `<p>${esc(org.headquarters)}</p>` : ""}</address></div></div><div class="footer__legal">${legal ? `<p class="footer__status">${legal}</p>` : ""}<p>© ${year} ${esc(org.legalName ?? org.name)}. <a href="/privacy-policy/">Privacy policy</a></p></div></div></footer>`;
+  return `<footer class="site-footer"><div class="container"><div class="footer__grid"><div class="footer__about"><p class="brand">${brandMark(ctx)}</p>${org.mission ? `<p>${esc(clampText(org.mission, 200))}</p>` : ""}</div><nav class="footer__nav" aria-label="Footer"><h2 class="footer__heading">Pages</h2><ul>${ctx.nav.map((n) => `<li><a href="${esc(n.href)}">${esc(n.title)}</a></li>`).join("")}</ul></nav><div class="footer__contact"><h2 class="footer__heading">Contact</h2><address>${org.contactEmail ? `<p><a href="mailto:${esc(org.contactEmail)}">${esc(org.contactEmail)}</a></p>` : ""}${org.contactPhone ? `<p><a href="tel:${esc(org.contactPhone.replace(/[^+0-9]/g, ""))}">${esc(org.contactPhone)}</a></p>` : ""}${org.headquarters ? `<p>${esc(org.headquarters)}</p>` : ""}</address></div></div><div class="footer__legal">${legal ? `<p class="footer__status">${legal}</p>` : ""}<p>© ${year} ${esc(org.legalName ?? org.name)}. <a href="/privacy-policy/">Privacy policy</a></p></div></div></footer>`;
 }

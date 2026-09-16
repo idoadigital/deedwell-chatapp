@@ -45,6 +45,16 @@ async function say(ctx: Ctx, siteId: string, jobId: string, body: string, contex
     [uuidv7(), ctx.tenantId, siteId, jobId, body, JSON.stringify(context)]);
 }
 
+/** A job started from a QA finding settles that finding from its outcome:
+ *  a verified change fixes it, anything else sends it back for review. */
+async function settleFinding(ctx: Ctx, job: { id: string; context: unknown }, ok: boolean, note: string): Promise<void> {
+  const findingId = (job.context as { findingId?: string } | null)?.findingId;
+  if (!findingId) return;
+  await ctx.client.query(
+    "UPDATE site_qa_findings SET status = $2, attempts = attempts + 1, repair = repair || $3::jsonb WHERE id = $1",
+    [findingId, ok ? "fixed" : "needs_review", JSON.stringify({ jobId: job.id, by: "editor", ok, notes: [note.slice(0, 200)], at: new Date().toISOString() })]);
+}
+
 function measurementsOf(pages: InspectedPage[]): Record<string, Measurement> {
   const out: Record<string, Measurement> = {};
   for (const p of pages) for (const m of p.measurements) out[`${p.slug}|${p.viewport}|${m.selector}`] = m;
@@ -73,7 +83,7 @@ export function buildWebsiteEditWorkflow(): WorkflowDefinition<WebsiteServices> 
         const job = await loadJob(ctx.client, input.jobId);
         if (!job) throw new Error("Edit job not found");
         const progress = progressFor(ctx, job);
-        const context = (job.context ?? {}) as { page?: string; viewport?: string; selection?: { label?: string; selector?: string; sectionId?: string | null; text?: string } | null };
+        const context = (job.context ?? {}) as { page?: string; viewport?: string; selection?: { label?: string; selector?: string; sectionId?: string | null; text?: string } | null; finding?: Record<string, unknown> | null };
         const state = await loadWorkingState(ctx.client, input.siteId);
         const pageSlug = state.pages.some((p) => p.page.slug === context.page) ? context.page! : "home";
         const width = VIEWPORT_PX[context.viewport ?? "desktop"] ?? 1440;
@@ -102,7 +112,7 @@ export function buildWebsiteEditWorkflow(): WorkflowDefinition<WebsiteServices> 
         const blocks: ModelDataBlock[] = [
           { label: "instruction", content: job.instruction ?? "" },
           { label: "site_content", content: JSON.stringify({ note: "Blog posts and events managed in the dashboard CMS. Only status=published ones show on the site; the router renders them at /blog/<slug>/ and /events/<slug>/ and fills feed sections from them.", posts: cmsPosts, events: cmsEvents, now: new Date().toISOString() }) },
-          { label: "context", content: JSON.stringify({ page: pageSlug, viewport: context.viewport ?? "desktop", viewportWidth: width, selection: context.selection ?? null }) },
+          { label: "context", content: JSON.stringify({ page: pageSlug, viewport: context.viewport ?? "desktop", viewportWidth: width, selection: context.selection ?? null, qaFinding: context.finding ?? null }) },
           { label: "page_map", content: inspected ? JSON.stringify({ slug: pageSlug, width, sections: inspected.map.sections.map((s) => ({ id: s.id, component: wp.composition.sections.find((x) => x.id === s.id)?.component ?? s.component, top: s.top, height: s.height, heading: s.heading, elements: s.elements })), checks: inspected.checks, description: describeMap(inspected.map) }) : JSON.stringify({ slug: pageSlug, width, unavailable: true, sections: wp.composition.sections.map((s) => ({ id: s.id, component: s.component })) }) },
           { label: "page_blocks", content: JSON.stringify(wp.page.blocks.map((b, i) => ({ index: i, ...b }))) },
           { label: "composition", content: wp.designedHtml ? JSON.stringify({ designed: true, note: "This page keeps hand-designed markup: ONLY \"style\" operations apply to it (selectors from page_map). section/copy/section-add/move/remove/tokens/page-cta are not available for this page — if the request needs them, set understood=false and explain that the page would need to be regenerated." }) : JSON.stringify(wp.composition) },
@@ -124,12 +134,14 @@ export function buildWebsiteEditWorkflow(): WorkflowDefinition<WebsiteServices> 
           await progress?.fail("plan", String((err as Error).message ?? err).slice(0, 200));
           await progress?.complete({ status: "failed", error: "Couldn't work out how to make this change.", result: { reason: String((err as Error).message ?? err).slice(0, 300) } });
           await say(ctx, input.siteId, job.id, "Couldn't complete this change — I could not work out a safe way to do it. Try describing the section and what you want differently.", { failed: true });
+          await settleFinding(ctx, job, false, "The editor could not plan a fix.");
           return { state: { ...ctx.state, failed: true }, complete: true };
         }
         if (!plan.understood || !plan.operations.length) {
           await progress?.done("plan", "Needs clarification");
           await progress?.complete({ status: "complete", summary: plan.clarification ?? "Nothing to change.", result: { plan, clarification: plan.clarification } });
           await say(ctx, input.siteId, job.id, plan.clarification ?? "I could not map that to a change on this page. Could you tell me which section and what should change?", { clarification: true });
+          await settleFinding(ctx, job, false, plan.clarification ?? "Needs a person's decision.");
           return { state: { ...ctx.state, clarification: true }, complete: true };
         }
         const viewports = [...new Set([...plan.viewports, width, ...(width < 700 ? nearby(width) : [])])].filter((v) => v >= 320 && v <= 1920).slice(0, 5);
@@ -173,6 +185,7 @@ export function buildWebsiteEditWorkflow(): WorkflowDefinition<WebsiteServices> 
           await progress?.fail("apply", applied.rejected.join("; ").slice(0, 300) || "Nothing changed");
           await progress?.complete({ status: "failed", error: "Couldn't complete this change.", result: { rejected: applied.rejected } });
           await say(ctx, input.siteId, job.id, `Couldn't complete this change — ${applied.rejected[0] ?? "the operations did not apply to this page"}.`, { failed: true });
+          await settleFinding(ctx, job, false, applied.rejected[0] ?? "The change did not apply.");
           return { state: { ...ctx.state, failed: true }, complete: true };
         }
         await saveAndBuild(ctx, applied.state, applied.changed, job, plan, progress);
@@ -253,6 +266,7 @@ export function buildWebsiteEditWorkflow(): WorkflowDefinition<WebsiteServices> 
           await progress?.complete({ status: "failed", error: "Couldn't complete this change.", result: { problems, passed, rolledBack: Boolean(job.release_before) } });
           await say(ctx, input.siteId, job.id, `Couldn't complete this change. I made it, checked it in a browser and found a problem (${reason}), so I put the previous version back. You can try again with different wording.`, { failed: true, problems });
           await audit(ctx.client, { tenantId: ctx.tenantId, actorAgent: websiteEditor.agentKey, action: "site.edit_rolled_back", entityType: "site", entityId: input.siteId, metadata: { jobId: job.id, problems } });
+          await settleFinding(ctx, job, false, `Rolled back: ${reason}`);
           return { state: { ...ctx.state, failed: true, problems }, complete: true };
         }
 
@@ -264,6 +278,7 @@ export function buildWebsiteEditWorkflow(): WorkflowDefinition<WebsiteServices> 
         await progress?.complete({ status: "complete", summary: plan.title, result: { verified: passed, problems, notes: ctx.state.notes, rejected: ctx.state.rejected }, releaseAfter: (ctx.state.releaseAfter as string) ?? null });
         await say(ctx, input.siteId, job.id, reply, { verified: passed, problems, releaseId: ctx.state.releaseAfter ?? null, title: plan.title });
         await audit(ctx.client, { tenantId: ctx.tenantId, actorAgent: websiteEditor.agentKey, action: "site.edit_verified", entityType: "site", entityId: input.siteId, metadata: { jobId: job.id, verified: passed.length, problems: problems.length } });
+        await settleFinding(ctx, job, true, plan.title);
         return { state: { ...ctx.state, done: true }, complete: true };
       },
     },

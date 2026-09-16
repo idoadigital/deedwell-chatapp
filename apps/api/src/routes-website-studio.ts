@@ -228,6 +228,37 @@ export function registerWebsiteStudioRoutes(app: FastifyInstance, ctx: AppContex
     });
   });
 
+  // "Fix it" on a finding: the AI editor takes exactly that finding as its
+  // request — page, viewport and evidence included — and the finding is
+  // settled from the edit job's outcome.
+  app.post(`${base}/qa/findings/:findingId/fix`, async (req, reply) => {
+    ctx.requireRole(req, "member");
+    await requireTokens(ctx, req);
+    const { findingId } = req.params as { findingId: string };
+    const result = await ctx.inOrg(req, async (client) => {
+      const site = await siteOf(req, client);
+      const { rows } = await client.query("SELECT id, severity, category, page, viewport, title, description, evidence, status, attempts FROM site_qa_findings WHERE id = $1 AND site_id = $2", [findingId, site.id]);
+      const finding = rows[0];
+      if (!finding) throw new HttpError(404, "Finding not found");
+      if (finding.status === "repairing") throw new HttpError(409, "This finding is already being fixed.");
+      const inFlight = await activeRun(client, site.project_id);
+      if (inFlight) throw new HttpError(409, inFlight.definition === WEBSITE_EDIT_WORKFLOW ? "Deedwell is still working on the previous change." : `A website ${inFlight.definition.replace("website-", "")} is running for this site; try again when it finishes.`);
+      const vp = finding.viewport == null ? "desktop" : finding.viewport <= 480 ? "mobile" : finding.viewport <= 1024 ? "tablet" : "desktop";
+      const body = `Fix this QA finding: ${finding.title}. ${finding.description}`.slice(0, 2000);
+      const context = { page: finding.page ?? "home", viewport: vp, findingId: finding.id, finding: { title: finding.title, description: finding.description, category: finding.category, severity: finding.severity, page: finding.page, viewport: finding.viewport, evidence: finding.evidence } };
+      const messageId = uuidv7();
+      const jobId = await createJob(client, { tenantId: req.orgId!, siteId: site.id, kind: "edit", instruction: body, context, createdBy: req.userId, releaseBefore: site.preview_release_id });
+      await client.query("INSERT INTO site_edit_messages (id, tenant_id, site_id, job_id, role, body, context, created_by) VALUES ($1,$2,$3,$4,'user',$5,$6,$7)",
+        [messageId, req.orgId, site.id, jobId, body, JSON.stringify(context), req.userId]);
+      await client.query("UPDATE site_qa_findings SET status = 'repairing', repair = repair || $2::jsonb WHERE id = $1", [finding.id, JSON.stringify({ jobId, requestedBy: req.userId })]);
+      const runId = await ctx.deps.engine.start(client, { tenantId: req.orgId!, projectId: site.project_id, definition: WEBSITE_EDIT_WORKFLOW, createdBy: req.userId!, input: { siteId: site.id, jobId } });
+      await client.query("UPDATE site_jobs SET run_id = $2 WHERE id = $1", [jobId, runId]);
+      await audit(client, { tenantId: req.orgId!, actorUser: req.userId, action: "site.qa_fix_requested", entityType: "site", entityId: site.id, metadata: { findingId: finding.id, jobId, runId, title: finding.title } });
+      return { jobId, runId, findingId: finding.id };
+    });
+    return reply.status(202).send(result);
+  });
+
   app.get(`${base}/qa/:jobId/screenshots/:name`, async (req, reply) => {
     ctx.requireRole(req, "viewer");
     const { jobId, name } = req.params as { jobId: string; name: string };

@@ -49,15 +49,15 @@ describe("custom domain instructions", () => {
 import { DEFAULT_LANGUAGE, fallbackTokens, normalizeComposition } from "../builder/index.js";
 import { applyOperations, renderWorkingPage, type WorkingState } from "./state.js";
 
-function stateWith(designedHtml: string | null): WorkingState {
+function stateWith(designedHtml: string | null, brandLogoPath: string | null = null): WorkingState {
   const page = { slug: "home", title: "Home", seoDescription: "", blocks: [{ kind: "hero" as const, heading: "Clean water", tagline: "For every village", ctaText: "Donate", ctaHref: "/donate/" }, { kind: "text" as const, heading: "About", body: "We dig wells." }] };
   const language = DEFAULT_LANGUAGE;
   const composition = normalizeComposition(null, { page, images: [], donateUrl: null, language });
   return {
     site: { id: "s", slug: "org", name: "Org", tenantId: "t" },
     pages: [{ page, status: "published", orderIdx: 0, composition, designedHtml }],
-    language, tokens: fallbackTokens(language, { primaryColor: null }), overrides: [], images: [],
-    organization: { name: "Org", logoPath: null, legalName: null, mission: null, headquarters: null, status: null, ein: null, contactEmail: null, contactPhone: null },
+    language, tokens: fallbackTokens(language, { primaryColor: null }), overrides: [], brandLogoPath, logo: "brand", images: [],
+    organization: { name: "Org", logoPath: brandLogoPath, legalName: null, mission: null, headquarters: null, status: null, ein: null, contactEmail: null, contactPhone: null },
     donateUrl: null, native: true,
   };
 }
@@ -143,5 +143,37 @@ describe("designed pages: wording edits", () => {
     expect("error" in added && /add or remove/.test(added.error)).toBe(true);
     const same = patchDesignedCopy(html, before, before);
     expect(same).toEqual({ html, changed: [] });
+  });
+});
+
+describe("logo operation", () => {
+  const designed = '<html><body><header class="site-header"><a class="brand" href="/">Org</a></header><main></main><footer><p class="brand">Org</p></footer></body></html>';
+  it("puts the brand logo on a pipeline page and into a designed page's brand marks", () => {
+    const r = applyOperations(stateWith(null, "/images/logo.png"), [{ kind: "logo", action: "use-brand" }]);
+    expect(r.rejected).toEqual([]);
+    expect(renderWorkingPage(r.state, "home")).toMatch(/<a class="brand" href="\/" aria-current="page"><img class="brand__logo" src="\/images\/logo.png" alt="Org" ?\/?><\/a>/);
+    const d = applyOperations(stateWith(designed, "/images/logo.png"), [{ kind: "logo", action: "use-brand" }]);
+    expect(d.rejected).toEqual([]);
+    const html = renderWorkingPage(d.state, "home");
+    expect(html).toContain('<a class="brand" href="/"><img class="brand__logo" src="/images/logo.png" alt="Org"></a>');
+    expect(html).toContain('<p class="brand"><img class="brand__logo" src="/images/logo.png" alt="Org"></p>');
+    expect(d.changed.has("home")).toBe(true);
+  });
+  it("refreshes an existing designed logo to the current file, and removes it on request", () => {
+    const withOld = designed.replace('>Org</a>', '><img class="brand__logo" src="/images/logo.jpg" alt="Org"></a>');
+    const r = applyOperations(stateWith(withOld, "/images/logo.png"), [{ kind: "logo", action: "use-brand" }]);
+    expect(renderWorkingPage(r.state, "home")).toContain('src="/images/logo.png"');
+    expect(renderWorkingPage(r.state, "home")).not.toContain("logo.jpg");
+    const gone = applyOperations(r.state, [{ kind: "logo", action: "remove" }]);
+    expect(gone.state.logo).toBe("none");
+    expect(gone.state.organization.logoPath).toBeNull();
+    const html = renderWorkingPage(gone.state, "home");
+    expect(html).not.toContain("brand__logo");
+    expect(html).toContain('<a class="brand" href="/">Org</a>');
+  });
+  it("explains when there is no brand logo to use", () => {
+    const r = applyOperations(stateWith(designed, null), [{ kind: "logo", action: "use-brand" }]);
+    expect(r.rejected[0]).toMatch(/Brand Style/);
+    expect(r.changed.size).toBe(0);
   });
 });

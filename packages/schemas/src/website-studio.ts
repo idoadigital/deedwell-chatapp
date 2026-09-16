@@ -65,6 +65,11 @@ export const SiteEditOp = z.discriminatedUnion("kind", [
     value: z.string().max(8000),
   }),
   z.object({ kind: z.literal("tokens"), patch: DesignTokens.deepPartial() }),
+  /** The site's logo is the organization's brand logo (Mission Profile →
+   *  Brand Style): "use-brand" puts the current one on every page (and
+   *  refreshes it after a new upload), "remove" takes it off. Works on
+   *  designed pages too — the brand mark is patched, not re-rendered. */
+  z.object({ kind: z.literal("logo"), action: z.enum(["use-brand", "remove"]) }),
   z.object({ kind: z.literal("page-cta"), page: z.string().max(60), primaryCta: z.object({ label: z.string().max(40), href: z.string().max(500) }).nullable() }),
 ]);
 export type SiteEditOp = z.infer<typeof SiteEditOp>;

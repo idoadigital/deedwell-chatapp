@@ -458,6 +458,11 @@ export function siteEditPlan(request: ModelRequest) {
     ops.push({ kind: "section", page, sectionId: ctx.selection.sectionId, set: { density: "dense" } });
     parts.push("tightened that section");
   }
+  if (/\blogo\b/.test(lower) && !/\b(bigger|smaller|larger|left|right|center)\b/.test(lower)) {
+    const remove = /\b(remove|hide|drop|take (off|out|away))\b/.test(lower);
+    ops.push({ kind: "logo", action: remove ? "remove" : "use-brand" });
+    parts.push(remove ? "removed the logo" : "put the current brand logo on every page");
+  }
   const understood = ops.length > 0;
   return {
     understood,
