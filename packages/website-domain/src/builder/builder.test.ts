@@ -30,6 +30,7 @@ const SAMPLE: Record<SiteBlock["kind"], SiteBlock> = {
   logos: { kind: "logos", heading: "Partners", names: ["Riverbend Library", "County Schools"] },
   split: { kind: "split", heading: "A year of mentoring", body: "What a year looks like.", highlights: ["Weekly meetings", "Trained mentors"], ctaText: "Learn more", ctaHref: "/programs/" },
   donate: { kind: "donate", heading: "Give", body: "Your gift funds mentoring.", href: "https://donate.example.org", tiers: [{ amount: "$25", effect: "A month of materials" }, { amount: "$100", effect: "A mentor's training" }], buttonText: "Donate" },
+  feed: { kind: "feed", source: "events", heading: "Upcoming events", intro: null, limit: 3, slug: null, ctaText: null },
 };
 
 const pageWith = (blocks: SiteBlock[], slug = "home"): SitePage => ({ slug, title: "Home", seoDescription: "A test", blocks });

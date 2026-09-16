@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { cleanDeclarations, cleanSelector, injectOverrides, mergeOverride, overridesCss } from "./overrides.js";
 import { instructionsFor } from "./domains.js";
+import { fillFeeds, hasFeeds } from "./content.js";
 
 describe("overrides layer", () => {
   it("keeps allowed properties with safe values and drops the rest", () => {
@@ -78,5 +79,46 @@ describe("designed (pre-pipeline) pages", () => {
   it("re-renders pipeline pages from their plan", () => {
     const { state } = applyOperations(stateWith(null), [{ kind: "copy", page: "home", blockIndex: 0, field: "heading", value: "Changed" }]);
     expect(renderWorkingPage(state, "home")).toContain("Changed");
+  });
+});
+
+describe("content feeds", () => {
+  const now = new Date("2026-09-16T12:00:00Z");
+  const events = [
+    { slug: "annual-water-fundraiser", title: "Annual Water Fundraiser", description: "Join us.\n\nMore detail.", featured_image_key: null, starts_at: "2026-10-12T18:00:00Z", ends_at: null, location: "Kigali Convention Center", mode: "in_person", registration_url: "https://tickets.example.org", cta_label: null, organizer: null, status: "published" },
+    { slug: "past-gala", title: "Past Gala", description: "Was fun.", featured_image_key: null, starts_at: "2026-01-01T18:00:00Z", ends_at: null, location: null, mode: "in_person", registration_url: null, cta_label: null, organizer: null, status: "published" },
+    { slug: "secret", title: "Draft event", description: "x", featured_image_key: null, starts_at: "2026-11-01T18:00:00Z", ends_at: null, location: null, mode: "virtual", registration_url: null, cta_label: null, organizer: null, status: "draft" },
+  ];
+  const posts = [
+    { slug: "hello", title: "Hello", excerpt: "First post", content: "Body", author: "Jane", featured_image_key: null, published_at: "2026-09-01T00:00:00Z", seo_title: null, seo_description: null },
+    { slug: "later", title: "Scheduled", excerpt: "Not yet", content: "Body", author: null, featured_image_key: null, published_at: "2026-12-01T00:00:00Z", seo_title: null, seo_description: null },
+  ];
+  const wrap = (feed: string) => `<html><body><section id="s3"><h2>Upcoming</h2>${feed}<p class="actions"><a href="/events/">All events</a></p></section></body></html>`;
+
+  it("features one named record and stays connected to it", () => {
+    const html = fillFeeds(wrap('<div class="feed feed--feature" data-feed="events" data-limit="3" data-slug="annual-water-fundraiser"><p class="feed__empty">Upcoming events will appear here.</p></div>'), { posts, events }, now);
+    expect(html).toContain("Annual Water Fundraiser");
+    expect(html).toContain('href="/events/annual-water-fundraiser/"');
+    expect(html).toContain("Kigali Convention Center");
+    expect(html).toContain('href="https://tickets.example.org"');
+    expect(html).not.toContain("feed__empty");
+    expect(html).toContain('data-slug="annual-water-fundraiser"');
+  });
+  it("lists only upcoming published events, soonest first, within the limit", () => {
+    const html = fillFeeds(wrap('<div class="feed feed--cards" data-feed="events" data-limit="3"><p class="feed__empty">Upcoming events will appear here.</p></div>'), { posts, events }, now);
+    expect(html).toContain("Annual Water Fundraiser");
+    expect(html).not.toContain("Past Gala");
+    expect(html).not.toContain("Draft event");
+  });
+  it("shows the newest published posts and skips scheduled ones", () => {
+    const html = fillFeeds(wrap('<div class="feed feed--cards" data-feed="posts" data-limit="3"><p class="feed__empty">New posts will appear here.</p></div>'), { posts, events }, now);
+    expect(html).toContain('href="/blog/hello/"');
+    expect(html).not.toContain("Scheduled");
+  });
+  it("keeps the quiet placeholder when nothing matches", () => {
+    const src = wrap('<div class="feed feed--cards" data-feed="posts" data-limit="3" data-slug="missing"><p class="feed__empty">New posts will appear here.</p></div>');
+    expect(fillFeeds(src, { posts: [], events: [] }, now)).toBe(src);
+    expect(hasFeeds(src)).toBe(true);
+    expect(hasFeeds("<p>plain</p>")).toBe(false);
   });
 });

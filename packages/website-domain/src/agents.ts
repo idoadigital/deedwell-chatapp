@@ -153,6 +153,13 @@ RULES
   dates or claims. If the facts are missing, say so in "clarification" instead of inventing.
 - Use "section" for layout, variant, density, background, image side; "section-add"/"-move"/"-remove"
   for composition; "tokens" only for genuinely site-wide look changes; "page-cta" for the main button.
+- Blog posts and events are CMS records (site_content). To show them on a page — "feature our
+  fundraiser", "show our latest three posts" — add a ContentFeed section with a "feed" block:
+  {kind:"feed", source:"events"|"posts", slug:<the record's slug> for one record, or limit:N for
+  the newest/soonest}. The page then stays connected to the record. NEVER paste an event or post
+  into a text/copy block, and never invent one: if site_content has no matching record, ask.
+  Making an existing feed "more prominent" is a "section" change (variant "feature", background)
+  or a "style" change, not a new block.
 - Every plan lists measurable expectations for what you changed so it can be verified in a browser.
 - A page whose "composition" says designed=true keeps its own markup: only "style" operations apply
   to it. If the request needs more than styling there, set understood=false and say so plainly.

@@ -416,6 +416,19 @@ export const CATALOG: Record<ComponentName, ComponentSpec> = {
       return shell(ctx, s, `${head(s, null, b.heading)}<div class="faq">${b.items.slice(0, 10).map((i, n) => `<details class="faq__item"${n === 0 ? " open" : ""}><summary>${esc(i.q)}</summary><div class="faq__answer"><p>${esc(i.a)}</p></div></details>`).join("")}</div>`, { narrow: true });
     },
   },
+  ContentFeed: {
+    family: "engagement", accepts: ["feed"], variants: ["cards", "feature"],
+    whenToUse: "Upcoming events or latest blog posts from the CMS — or one featured record by slug. Stays connected to the record; never paste an event or post into copy.",
+    render: (ctx, s, block) => {
+      const b = block as B<"feed">;
+      const all = b.source === "events" ? "/events/" : "/blog/";
+      const empty = b.source === "events" ? "Upcoming events will appear here." : "New posts will appear here.";
+      // The router replaces the placeholder with the live records; this is
+      // what the inspector and an offline render see.
+      const placeholder = `<div class="feed feed--${esc(s.variant ?? (b.slug ? "feature" : "cards"))}" data-feed="${b.source}" data-limit="${b.limit}"${b.slug ? ` data-slug="${esc(b.slug)}"` : ""}><p class="feed__empty">${empty}</p></div>`;
+      return shell(ctx, { ...s, motion: "stagger" }, `${head(s, null, b.heading, b.intro)}${placeholder}<p class="actions"><a class="btn btn--secondary" href="${all}">${esc(b.ctaText ?? (b.source === "events" ? "All events" : "All posts"))}</a></p>`);
+    },
+  },
   ContactSection: {
     family: "other", accepts: ["form", "contact"], variants: ["split", "stacked"],
     whenToUse: "Contact details beside a short form.",
@@ -450,6 +463,7 @@ function blockText(block: SiteBlock): string {
     case "hero": return block.tagline;
     case "form": return block.heading;
     case "stats": return block.items.map((i) => `${i.value} ${i.label}`).join(", ");
+    case "feed": return block.intro ?? block.heading;
   }
 }
 
@@ -457,7 +471,7 @@ function blockText(block: SiteBlock): string {
 export const DEFAULT_COMPONENT: Record<SiteBlock["kind"], ComponentName> = {
   hero: "EditorialHero", text: "EditorialTextSection", programs: "ProgramEditorialGrid", stats: "ImpactMetrics",
   cta: "DonateCTA", form: "ContactSection", contact: "ContactSection", quote: "QuoteSection", steps: "ProgramTimeline",
-  faq: "FAQ", team: "TeamGrid", logos: "PartnersStrip", split: "SplitStorySection", donate: "DonateModule",
+  faq: "FAQ", team: "TeamGrid", logos: "PartnersStrip", split: "SplitStorySection", donate: "DonateModule", feed: "ContentFeed",
 };
 
 /** A compact description of the library for the planner's prompt. */

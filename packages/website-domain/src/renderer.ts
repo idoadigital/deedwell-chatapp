@@ -271,6 +271,14 @@ function renderBlock(block: SiteBlock, siteSlug: string, formBase: string, tone:
           })
           .join("")}<label class="hp" for="${block.formKey}-website" aria-hidden="true">Leave this field empty</label><input class="hp" id="${block.formKey}-website" name="website" type="text" tabindex="-1" autocomplete="off"><button class="button" type="submit">Send message</button></form>`
       );
+
+    case "feed":
+      // Filled by the site router from the CMS at request time.
+      return shell(
+        `<div class="section-head"><h2>${esc(block.heading)}</h2>${block.intro ? `<p>${esc(block.intro)}</p>` : ""}</div><div class="feed" data-feed="${block.source}" data-limit="${block.limit}"${block.slug ? ` data-slug="${esc(block.slug)}"` : ""}><p class="feed__empty">${
+          block.source === "events" ? "Upcoming events will appear here." : "New posts will appear here."
+        }</p></div><div class="actions"><a class="button" href="${block.source === "events" ? "/events/" : "/blog/"}">${esc(block.ctaText ?? (block.source === "events" ? "All events" : "All posts"))}</a></div>`
+      );
   }
 }
 

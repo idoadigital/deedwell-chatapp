@@ -95,8 +95,13 @@ export function buildWebsiteEditWorkflow(): WorkflowDefinition<WebsiteServices> 
         const { rows: history } = await ctx.client.query("SELECT role, body, context FROM site_edit_messages WHERE site_id = $1 AND created_at < now() ORDER BY created_at DESC LIMIT 12", [input.siteId]);
         const profile = await loadMissionProfile(ctx.client, ctx.services.storage, ctx.tenantId).catch(() => null);
         const { rows: lastEdits } = await ctx.client.query("SELECT result->'plan' AS plan FROM site_jobs WHERE site_id = $1 AND kind = 'edit' AND status = 'complete' AND id <> $2 ORDER BY created_at DESC LIMIT 3", [input.siteId, job.id]);
+        // What the CMS holds: the editor connects pages to these records
+        // (a "feed" block) instead of copying them into the page.
+        const { rows: cmsPosts } = await ctx.client.query("SELECT slug, title, excerpt, status, published_at FROM site_posts WHERE site_id = $1 ORDER BY COALESCE(published_at, created_at) DESC LIMIT 20", [input.siteId]);
+        const { rows: cmsEvents } = await ctx.client.query("SELECT slug, title, status, starts_at, ends_at, location, mode FROM site_events WHERE site_id = $1 ORDER BY starts_at DESC LIMIT 20", [input.siteId]);
         const blocks: ModelDataBlock[] = [
           { label: "instruction", content: job.instruction ?? "" },
+          { label: "site_content", content: JSON.stringify({ note: "Blog posts and events managed in the dashboard CMS. Only status=published ones show on the site; the router renders them at /blog/<slug>/ and /events/<slug>/ and fills feed sections from them.", posts: cmsPosts, events: cmsEvents, now: new Date().toISOString() }) },
           { label: "context", content: JSON.stringify({ page: pageSlug, viewport: context.viewport ?? "desktop", viewportWidth: width, selection: context.selection ?? null }) },
           { label: "page_map", content: inspected ? JSON.stringify({ slug: pageSlug, width, sections: inspected.map.sections.map((s) => ({ id: s.id, component: wp.composition.sections.find((x) => x.id === s.id)?.component ?? s.component, top: s.top, height: s.height, heading: s.heading, elements: s.elements })), checks: inspected.checks, description: describeMap(inspected.map) }) : JSON.stringify({ slug: pageSlug, width, unavailable: true, sections: wp.composition.sections.map((s) => ({ id: s.id, component: s.component })) }) },
           { label: "page_blocks", content: JSON.stringify(wp.page.blocks.map((b, i) => ({ index: i, ...b }))) },

@@ -125,7 +125,7 @@ export const COMPONENTS = [
   // media
   "FullBleedImage", "ImageStrip",
   // other
-  "TeamGrid", "PartnersStrip", "FAQ", "ContactSection", "ProseSection",
+  "TeamGrid", "PartnersStrip", "FAQ", "ContactSection", "ProseSection", "ContentFeed",
 ] as const;
 export type ComponentName = (typeof COMPONENTS)[number];
 

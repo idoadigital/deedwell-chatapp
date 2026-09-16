@@ -2,10 +2,10 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { audit, uuidv7, withContext } from "@deedwell/database";
 import {
-  SiteDomainInput, SiteDonationsInput, SiteEditorMessageInput, SiteEventInput, SiteMediaInput, SitePageStatusInput, SitePostInput, SiteQaStartInput,
+  SiteBlock, SiteDomainInput, SiteDonationsInput, SiteEditorMessageInput, SiteEventInput, SiteMediaInput, SitePage, SitePageStatusInput, SitePostInput, SiteQaStartInput,
 } from "@deedwell/schemas";
 import {
-  WEBSITE_EDIT_WORKFLOW, WEBSITE_QA_WORKFLOW, assembleRelease, createJob, instructionsFor, loadJob, loadSiteLogoFrom, newVerificationToken, nextStatus, observeDns, probeHttps, publishRelease, restoreRelease, siteUrls,
+  WEBSITE_EDIT_WORKFLOW, WEBSITE_QA_WORKFLOW, assembleRelease, createJob, instructionsFor, loadJob, loadSiteLogoFrom, loadWorkingState, newVerificationToken, nextStatus, normalizeComposition, observeDns, probeHttps, publishRelease, restoreRelease, saveWorkingState, siteUrls,
 } from "@deedwell/website-domain";
 import { HttpError, type AppContext } from "./app.js";
 import { requireTokens } from "./billing-gate.js";
@@ -282,6 +282,53 @@ export function registerWebsiteStudioRoutes(app: FastifyInstance, ctx: AppContex
       const release = await assembleRelease({ client, storage: ctx.deps.storage, tenantId: req.orgId!, siteId: site.id, kind: "content", label: `${input.status === "hidden" ? "Hid" : "Restored"} the ${slug} page`, createdBy: req.userId, createdByKind: "user", logo });
       await audit(client, { tenantId: req.orgId!, actorUser: req.userId, action: "site.page_status", entityType: "site", entityId: site.id, metadata: { slug, status: input.status, releaseId: release.releaseId } });
       return { ok: true, version: release.version };
+    });
+  });
+
+  // ---- structured page content --------------------------------------------------
+  // The copy blocks of every page, as the CMS sees them: programs, team,
+  // FAQs, stats, partners and plain copy all live here. Editing a block
+  // re-renders only its page (deterministically) into a new content release;
+  // a page that keeps designed markup is read-only here and styled in the
+  // AI editor instead.
+  app.get(`${base}/content`, async (req) => {
+    ctx.requireRole(req, "viewer");
+    return ctx.inOrg(req, async (client) => {
+      const site = await siteOf(req, client);
+      const state = await loadWorkingState(client, site.id);
+      const { rows: meta } = await client.query("SELECT slug, updated_at FROM site_pages WHERE site_id = $1", [site.id]);
+      const updated = new Map<string, unknown>(meta.map((r) => [r.slug, r.updated_at]));
+      return {
+        pages: state.pages.map((p) => ({ slug: p.page.slug, title: p.page.title, status: p.status, designed: Boolean(p.designedHtml), updatedAt: updated.get(p.page.slug) ?? null, blocks: p.page.blocks })),
+      };
+    });
+  });
+  app.put(`${base}/pages/:slug/blocks/:index`, async (req) => {
+    ctx.requireRole(req, "member");
+    const { slug, index } = req.params as { slug: string; index: string };
+    const body = z.object({ block: z.unknown(), label: z.string().max(80).optional() }).parse(req.body);
+    const at = Number(index);
+    if (!Number.isInteger(at) || at < 0) throw new HttpError(400, "Bad block index");
+    return ctx.inOrg(req, async (client) => {
+      const site = await siteOf(req, client);
+      const state = await loadWorkingState(client, site.id);
+      const wp = state.pages.find((p) => p.page.slug === slug);
+      const current = wp?.page.blocks[at];
+      if (!wp || !current) throw new HttpError(404, "Block not found");
+      if (wp.designedHtml) throw new HttpError(409, "This page keeps its designed layout; change its wording with the AI editor.");
+      const parsed = SiteBlock.safeParse(body.block);
+      if (!parsed.success) throw new HttpError(400, `Invalid content: ${parsed.error.issues[0]?.path.join(".")} ${parsed.error.issues[0]?.message}`);
+      if (parsed.data.kind !== current.kind) throw new HttpError(400, "A section's type cannot change here.");
+      wp.page.blocks[at] = parsed.data;
+      const page = SitePage.safeParse(wp.page);
+      if (!page.success) throw new HttpError(400, `Invalid page: ${page.error.issues[0]?.message}`);
+      wp.composition = normalizeComposition(wp.composition, { page: wp.page, images: state.images, donateUrl: state.donateUrl, language: state.language });
+      await saveWorkingState(client, state, [slug]);
+      const logo = await loadSiteLogoFrom(client, ctx.deps.storage);
+      const label = body.label ?? `${wp.page.title}: ${current.kind} content updated`;
+      const release = await assembleRelease({ client, storage: ctx.deps.storage, tenantId: req.orgId!, siteId: site.id, kind: "content", label: label.slice(0, 80), createdBy: req.userId, createdByKind: "user", logo });
+      await audit(client, { tenantId: req.orgId!, actorUser: req.userId, action: "site.block_updated", entityType: "site", entityId: site.id, metadata: { slug, index: at, kind: current.kind, releaseId: release.releaseId } });
+      return { ok: true, version: release.version, block: parsed.data };
     });
   });
 

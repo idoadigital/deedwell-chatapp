@@ -3,7 +3,7 @@ import formbody from "@fastify/formbody";
 import type { Pool } from "pg";
 import { uuidv7, type StorageAdapter } from "@deedwell/database";
 import { summarize } from "@deedwell/observability";
-import { MOTION_SCRIPT_HASH, extractShell, injectContentLinks, renderEvent, renderEventList, renderPost, renderPostList } from "@deedwell/website-domain";
+import { MOTION_SCRIPT_HASH, extractShell, fillFeeds, hasFeeds, injectContentLinks, renderEvent, renderEventList, renderPost, renderPostList } from "@deedwell/website-domain";
 import { emailOrgAdmins, orgNameOf } from "@deedwell/email";
 
 /**
@@ -183,7 +183,7 @@ export function buildSiteRouter(deps: SiteRouterDeps): FastifyInstance {
     try {
       const content = await deps.storage.get(`${site.releasePrefix}/${path}`);
       const ext = path.split(".").pop() ?? "html";
-      const body = ext === "html" ? rewriteForPrefix(await withContentLinks(site, content.toString("utf8")), prefix) : content;
+      const body = ext === "html" ? rewriteForPrefix(await withContentLinks(site, await withFeeds(site, content.toString("utf8"))), prefix) : content;
       return reply
         .type(CONTENT_TYPES[ext] ?? "application/octet-stream")
         .header("cache-control", mode === "live" ? "public, max-age=60" : "no-store")
@@ -205,6 +205,19 @@ export function buildSiteRouter(deps: SiteRouterDeps): FastifyInstance {
       `SELECT (SELECT count(*)::int FROM site_posts WHERE site_id = $1 AND status = 'published' AND (published_at IS NULL OR published_at <= now())) AS posts,
               (SELECT count(*)::int FROM site_events WHERE site_id = $1 AND status IN ('published','cancelled')) AS events`, [siteId]);
     return { posts: rows[0]?.posts ?? 0, events: rows[0]?.events ?? 0 };
+  }
+
+  /** Feed sections ("upcoming events", "latest posts", one featured
+   *  record) are windows onto the CMS, filled now from what is published. */
+  async function withFeeds(site: ResolvedSite, html: string): Promise<string> {
+    if (!hasFeeds(html)) return html;
+    try {
+      const [posts, events] = await Promise.all([
+        deps.adminPool.query("SELECT * FROM site_posts WHERE site_id = $1 AND status = 'published' ORDER BY published_at DESC NULLS LAST LIMIT 50", [site.siteId]),
+        deps.adminPool.query("SELECT * FROM site_events WHERE site_id = $1 AND status IN ('published','cancelled') ORDER BY starts_at ASC LIMIT 100", [site.siteId]),
+      ]);
+      return fillFeeds(html, { posts: posts.rows, events: events.rows });
+    } catch { return html; }
   }
 
   /** The footer links to Blog / Events once the site has that content. */

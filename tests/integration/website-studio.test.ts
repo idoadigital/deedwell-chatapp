@@ -189,6 +189,59 @@ describe("website studio", () => {
     for (const f of qa.body.findings) expect(["detected", "repairing", "fixed", "verified", "needs_review"]).toContain(f.status);
   }, 240_000);
 
+  it("the CMS edits programs, team and FAQ entries in place and feed sections stay connected to events", async () => {
+    const base = `/v1/orgs/${s.orgId}/sites/${s.siteId}`;
+    const content = await api(env.app, "GET", `${base}/content`, { token: s.token });
+    expect(content.status).toBe(200);
+    const pages = content.body.pages as Array<{ slug: string; title: string; designed: boolean; blocks: any[] }>;
+    expect(pages.length).toBeGreaterThan(0);
+    const programs = pages.flatMap((p) => p.blocks.map((b, index) => ({ page: p, index, block: b }))).find((x) => x.block.kind === "programs");
+    expect(programs, "the generated site has a programs section to manage").toBeTruthy();
+    const versionsBefore = (await api(env.app, "GET", `${base}/versions`, { token: s.token })).body.versions.length;
+
+    // Rename a program, add one, reorder — one content version, only that page re-rendered.
+    const edited = { ...programs!.block, items: [{ name: "Solar Wells", description: "Boreholes powered by the sun, maintained by the village." }, ...programs!.block.items.slice(1), { name: "Hygiene Clubs", description: "School clubs that teach handwashing." }] };
+    const saved = await api(env.app, "PUT", `${base}/pages/${programs!.page.slug}/blocks/${programs!.index}`, { token: s.token, body: { block: edited } });
+    expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+    expect(saved.body.version).toBe(versionsBefore + 1);
+    // Content saves as the preview; the live site changes when it is published.
+    const path = programs!.page.slug === "home" ? "/preview/generosity-global/" : `/preview/generosity-global/${programs!.page.slug}/`;
+    const page = await router.inject({ method: "GET", url: path });
+    expect(page.body).toContain("Solar Wells");
+    expect(page.body).toContain("Hygiene Clubs");
+    const versions = (await api(env.app, "GET", `${base}/versions`, { token: s.token })).body.versions;
+    expect(versions[0].kind).toBe("content");
+
+    // Bad content is refused with a reason, and a section cannot change type.
+    const bad = await api(env.app, "PUT", `${base}/pages/${programs!.page.slug}/blocks/${programs!.index}`, { token: s.token, body: { block: { ...edited, items: [] } } });
+    expect(bad.status).toBe(400);
+    const swap = await api(env.app, "PUT", `${base}/pages/${programs!.page.slug}/blocks/${programs!.index}`, { token: s.token, body: { block: { kind: "text", heading: null, body: "x" } } });
+    expect(swap.status).toBe(400);
+
+    // A feed section is a window onto the CMS: the event published earlier
+    // appears in it on the served page, and the record stays the source.
+    const home = pages.find((p) => p.slug === "home")!;
+    await env.deps.adminPool.query("UPDATE site_pages SET blocks = blocks || $2::jsonb WHERE site_id = $1 AND slug = 'home'",
+      [s.siteId, JSON.stringify([{ kind: "feed", source: "events", heading: "Join us", intro: null, limit: 3, slug: "water-for-africa-dinner", ctaText: null }])]);
+    const feedSaved = await api(env.app, "PUT", `${base}/pages/home/blocks/${home.blocks.length}`, { token: s.token, body: { block: { kind: "feed", source: "events", heading: "Join us this year", intro: null, limit: 3, slug: "water-for-africa-dinner", ctaText: null } } });
+    expect(feedSaved.status, JSON.stringify(feedSaved.body)).toBe(200);
+    const homeHtml = (await router.inject({ method: "GET", url: "/preview/generosity-global/" })).body;
+    expect(homeHtml).toContain("Join us this year");
+    expect(homeHtml).toContain("Water for Africa Dinner");
+    expect(homeHtml).toMatch(/href="\/preview\/generosity-global\/events\/water-for-africa-dinner\/"/);
+    expect(homeHtml).not.toContain("feed__empty");
+    // Editing the event in the CMS changes the homepage without a rebuild.
+    const ev = (await api(env.app, "GET", `${base}/events`, { token: s.token })).body.events.find((e: any) => e.slug === "water-for-africa-dinner");
+    const renamed = await api(env.app, "PATCH", `${base}/events/${ev.id}`, { token: s.token, body: { title: "Water for Africa Gala" } });
+    expect(renamed.status).toBe(200);
+    const versionsAfter = (await api(env.app, "GET", `${base}/versions`, { token: s.token })).body.versions.length;
+    expect((await router.inject({ method: "GET", url: "/preview/generosity-global/" })).body).toContain("Water for Africa Gala");
+    expect(versionsAfter, "no rebuild for a CMS change").toBe(versions.length + 1);
+    // An unpublished event never leaks into the feed.
+    await api(env.app, "PATCH", `${base}/events/${ev.id}`, { token: s.token, body: { status: "draft" } });
+    expect((await router.inject({ method: "GET", url: "/preview/generosity-global/" })).body).not.toContain("Water for Africa Gala");
+  }, 60_000);
+
   it("keeps another organization out of the site's studio, jobs, content and domains", async () => {
     const other = await registerUser(env.app, "outsider@example.org");
     const otherOrg = await createOrg(env.app, other.token, "other-org");
@@ -201,6 +254,7 @@ describe("website studio", () => {
       ["GET", `/v1/orgs/${otherOrg}/sites/${s.siteId}/posts`],
       ["GET", `/v1/orgs/${otherOrg}/sites/${s.siteId}/domains`],
       ["GET", `/v1/orgs/${otherOrg}/sites/${s.siteId}/versions`],
+      ["GET", `/v1/orgs/${otherOrg}/sites/${s.siteId}/content`],
     ] as const;
     for (const [method, url] of paths) {
       const res = await api(env.app, method, url, { token: other.token });
@@ -208,6 +262,8 @@ describe("website studio", () => {
     }
     const edit = await api(env.app, "POST", `/v1/orgs/${otherOrg}/sites/${s.siteId}/editor/messages`, { token: other.token, body: { body: "Make the heading red" } });
     expect(edit.status).toBe(404);
+    const block = await api(env.app, "PUT", `/v1/orgs/${otherOrg}/sites/${s.siteId}/pages/home/blocks/0`, { token: other.token, body: { block: { kind: "text", heading: null, body: "x" } } });
+    expect(block.status).toBe(404);
     // The owner's own org on someone else's org id is refused too.
     const cross = await api(env.app, "GET", `/v1/orgs/${otherOrg}/sites/${s.siteId}/studio`, { token: s.token });
     expect([403, 404]).toContain(cross.status);

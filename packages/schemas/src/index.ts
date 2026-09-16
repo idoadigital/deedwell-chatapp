@@ -645,6 +645,20 @@ export const SiteBlock = z.discriminatedUnion("kind", [
       .default([]),
     buttonText: z.string().max(60).default("Donate"),
   }),
+  // A window onto the CMS: the router fills it at request time from the
+  // site's published events or blog posts, so the section stays connected
+  // to the record — editing the event in the dashboard changes the page.
+  z.object({
+    kind: z.literal("feed"),
+    source: z.enum(["events", "posts"]),
+    heading: z.string().max(200),
+    intro: z.string().max(400).nullable().default(null),
+    /** How many to show, soonest/newest first — ignored when a slug is set. */
+    limit: z.number().int().min(1).max(6).default(3),
+    /** One specific record, by its CMS slug ("feature our fundraiser"). */
+    slug: z.string().regex(/^[a-z0-9-]+$/).max(80).nullable().default(null),
+    ctaText: z.string().max(60).nullable().default(null),
+  }),
 ]);
 export type SiteBlock = z.infer<typeof SiteBlock>;
 
