@@ -301,7 +301,21 @@ export function applyOperations(input: WorkingState, ops: SiteEditOp[]): ApplyRe
  * path; otherwise the header/footer brand element gets the image in place
  * of the name. With no path, the image goes and the name comes back.
  */
+const BRAND_LOGO_CSS = `<style id="site-brand-logo">.brand__logo{display:block;height:40px;width:auto;max-width:220px;object-fit:contain}.footer__about .brand__logo,footer .brand__logo{height:44px}</style>`;
+
+/** A designed page rarely styles .brand__logo itself; the size rule rides
+ *  along with the image so the logo never renders at its natural size. */
+function withBrandLogoCss(html: string, logoPath: string | null): string {
+  const stripped = html.replace(/<style id="site-brand-logo">[\s\S]*?<\/style>/i, "");
+  if (!logoPath || /\.brand__logo\s*\{/.test(stripped)) return stripped;
+  return /<\/head>/i.test(stripped) ? stripped.replace(/<\/head>/i, `${BRAND_LOGO_CSS}</head>`) : BRAND_LOGO_CSS + stripped;
+}
+
 export function patchBrandMark(html: string, logoPath: string | null, siteName: string): string {
+  return withBrandLogoCss(patchBrandMarkup(html, logoPath, siteName), logoPath);
+}
+
+function patchBrandMarkup(html: string, logoPath: string | null, siteName: string): string {
   const img = logoPath ? `<img class="brand__logo" src="${escHtml(logoPath)}" alt="${escHtml(siteName)}">` : "";
   const existing = /<img\b[^>]*class="[^"]*\bbrand__logo\b[^"]*"[^>]*>/gi;
   if (existing.test(html)) {

@@ -330,6 +330,9 @@ describe("website studio", () => {
     expect(set.body.sites[0].version, JSON.stringify(set.body.sites)).toBeGreaterThan(0);
     expect(set.body.sites[0].published).toBe(false);
     expect((await router.inject({ method: "GET", url: "/preview/generosity-global/" })).body).toContain('class="brand__logo"');
+    // The live site (older published release) shows it at serve time too.
+    const liveHome = (await router.inject({ method: "GET", url: "/generosity-global/" })).body;
+    expect(liveHome, "live page carries the current brand logo without a republish").toContain('class="brand__logo"');
     const servedLogo = await router.inject({ method: "GET", url: "/generosity-global/images/logo.png" });
     expect(servedLogo.statusCode, "the live site serves the current brand file").toBe(200);
     expect(servedLogo.headers["content-type"]).toBe("image/png");
@@ -340,6 +343,7 @@ describe("website studio", () => {
     expect(cleared.body.sites[0].version).toBeGreaterThan(set.body.sites[0].version);
     expect((await api(env.app, "GET", `${base}/versions`, { token: s.token })).body.versions[0].label).toBe("Brand logo removed");
     expect((await router.inject({ method: "GET", url: "/preview/generosity-global/" })).body).not.toContain('class="brand__logo"');
+    expect((await router.inject({ method: "GET", url: "/generosity-global/" })).body, "live drops it too").not.toContain('class="brand__logo"');
     expect((await api(env.app, "PUT", `/v1/orgs/${s.orgId}/brand/logo`, { token: s.token, body: { fileId: up.body.fileId ?? up.body.id } })).status).toBe(200);
     await env.deps.adminPool.query("UPDATE site_pages SET rendered_hash = split_part(rendered_hash, ':', 1) || ':designed' WHERE site_id = $1 AND slug = 'about'", [s.siteId]);
     const started = await api(env.app, "POST", `${base}/editor/messages`, { token: s.token, body: { body: "Update the site logo" } });

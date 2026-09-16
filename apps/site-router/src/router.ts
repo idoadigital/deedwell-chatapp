@@ -3,7 +3,7 @@ import formbody from "@fastify/formbody";
 import type { Pool } from "pg";
 import { uuidv7, type StorageAdapter } from "@deedwell/database";
 import { summarize } from "@deedwell/observability";
-import { MOTION_SCRIPT_HASH, extractShell, fillFeeds, hasFeeds, injectContentLinks, renderEvent, renderEventList, renderPost, renderPostList } from "@deedwell/website-domain";
+import { MOTION_SCRIPT_HASH, extractShell, fillFeeds, hasFeeds, injectContentLinks, patchBrandMark, renderEvent, renderEventList, renderPost, renderPostList } from "@deedwell/website-domain";
 import { emailOrgAdmins, orgNameOf } from "@deedwell/email";
 
 /**
@@ -190,7 +190,7 @@ export function buildSiteRouter(deps: SiteRouterDeps): FastifyInstance {
     try {
       const content = await deps.storage.get(`${site.releasePrefix}/${path}`);
       const ext = path.split(".").pop() ?? "html";
-      const body = ext === "html" ? rewriteForPrefix(await withContentLinks(site, await withFeeds(site, content.toString("utf8"))), prefix) : content;
+      const body = ext === "html" ? rewriteForPrefix(await withContentLinks(site, await withFeeds(site, await withBrandMark(site, content.toString("utf8")))), prefix) : content;
       return reply
         .type(CONTENT_TYPES[ext] ?? "application/octet-stream")
         .header("cache-control", mode === "live" ? "public, max-age=60" : "no-store")
@@ -214,16 +214,31 @@ export function buildSiteRouter(deps: SiteRouterDeps): FastifyInstance {
     return { posts: rows[0]?.posts ?? 0, events: rows[0]?.events ?? 0 };
   }
 
-  /** The organization's current Brand Style logo, when it has one. */
-  async function currentBrandLogo(tenantId: string): Promise<{ bytes: Buffer; mime: string } | null> {
+  /** The organization's current Brand Style logo file, when it has one. */
+  async function brandLogoFile(tenantId: string): Promise<{ mime: string; storageKey: string; ext: string } | null> {
     try {
       const { rows } = await deps.adminPool.query("SELECT value FROM org_facts WHERE tenant_id = $1 AND fact_key = 'brand_logo_file_id' AND status <> 'rejected' LIMIT 1", [tenantId]);
       const fileId = String(rows[0]?.value ?? "").trim().replace(/^"|"$/g, "");
       if (!/^[0-9a-f-]{36}$/.test(fileId)) return null;
       const file = (await deps.adminPool.query("SELECT mime, storage_key FROM files WHERE id = $1 AND tenant_id = $2", [fileId, tenantId])).rows[0];
-      if (!file || !/^image\/(png|jpeg|webp)$/.test(file.mime)) return null;
-      return { bytes: await deps.storage.get(file.storage_key), mime: file.mime };
+      const ext = file?.mime === "image/png" ? "png" : file?.mime === "image/jpeg" ? "jpg" : file?.mime === "image/webp" ? "webp" : null;
+      return file && ext ? { mime: file.mime, storageKey: file.storage_key, ext } : null;
     } catch { return null; }
+  }
+  async function currentBrandLogo(tenantId: string): Promise<{ bytes: Buffer; mime: string } | null> {
+    const file = await brandLogoFile(tenantId);
+    if (!file) return null;
+    try { return { bytes: await deps.storage.get(file.storageKey), mime: file.mime }; } catch { return null; }
+  }
+
+  /** Brand Style is the source of truth for the logo: every served page
+   *  shows the organization's current logo (or none), whatever the release
+   *  was built with — no republish needed after a change in the dashboard. */
+  async function withBrandMark(site: ResolvedSite, html: string): Promise<string> {
+    try {
+      const [file, named] = await Promise.all([brandLogoFile(site.tenantId), deps.adminPool.query("SELECT name FROM sites WHERE id = $1", [site.siteId])]);
+      return patchBrandMark(html, file ? `/images/logo.${file.ext}` : null, String(named.rows[0]?.name ?? ""));
+    } catch { return html; }
   }
 
   /** Feed sections ("upcoming events", "latest posts", one featured

@@ -178,6 +178,16 @@ describe("logo operation", () => {
     expect(html).toContain('<a href="/" class="site-brand brand"><img class="brand__logo" src="/images/logo.png" alt="Org"></a>');
     expect(html).toContain('<div class="brand"><svg></svg></div>');
   });
+  it("brings sizing CSS along on a designed page that has none, and drops it with the logo", () => {
+    const r = applyOperations(stateWith('<html><head><title>x</title></head><body><a class="brand" href="/">Org</a></body></html>', "/images/logo.png"), [{ kind: "logo", action: "use-brand" }]);
+    const html = renderWorkingPage(r.state, "home");
+    expect(html).toContain('<style id="site-brand-logo">');
+    expect(html.indexOf("site-brand-logo")).toBeLessThan(html.indexOf("</head>"));
+    const gone = renderWorkingPage(applyOperations(r.state, [{ kind: "logo", action: "remove" }]).state, "home");
+    expect(gone).not.toContain("site-brand-logo");
+    const styled = applyOperations(stateWith('<html><head><style>.brand__logo{height:30px}</style></head><body><a class="brand" href="/">Org</a></body></html>', "/images/logo.png"), [{ kind: "logo", action: "use-brand" }]);
+    expect(renderWorkingPage(styled.state, "home")).not.toContain("site-brand-logo");
+  });
   it("falls back to the header home link that reads as the site name", () => {
     const bare = '<header class="hdr"><a href="/" class="logo-link"><strong>Org</strong></a><nav><a href="/about/">About</a></nav></header>';
     const r = applyOperations(stateWith(bare, "/images/logo.png"), [{ kind: "logo", action: "use-brand" }]);
