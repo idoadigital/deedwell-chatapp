@@ -9,7 +9,7 @@ import {
 } from "@deedwell/website-domain";
 import { HttpError, type AppContext } from "./app.js";
 import { requireTokens } from "./billing-gate.js";
-import { transcribeClip } from "./stt.js";
+import { transcribeClip } from "./transcribe.js";
 
 /**
  * The website studio: the AI editor's conversation and jobs, versions
@@ -492,8 +492,15 @@ export function registerWebsiteStudioRoutes(app: FastifyInstance, ctx: AppContex
   app.post("/v1/orgs/:orgId/dictate", async (req) => {
     ctx.requireRole(req, "member");
     const { audioBase64, mime } = z.object({ audioBase64: z.string().max(12_000_000), mime: z.string().max(80) }).parse(req.body);
-    const result = await transcribeClip(Buffer.from(audioBase64, "base64"), mime);
-    if (!result.available) throw new HttpError(501, result.reason ?? "Speech-to-text is not configured.");
-    return { text: result.text };
+    const bytes = Buffer.from(audioBase64, "base64");
+    if (bytes.length < 1000) throw new HttpError(400, "That recording was too short to transcribe.");
+    try {
+      return { text: await transcribeClip(bytes, mime) };
+    } catch (err) {
+      const message = String((err as Error).message ?? err);
+      throw new HttpError(/not available|Unsupported/i.test(message) ? 503 : 502, /not available/i.test(message)
+        ? "Voice input is not available on this server — type your request instead."
+        : "Could not transcribe that recording. Try again, or type your request.");
+    }
   });
 }
