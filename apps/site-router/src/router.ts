@@ -170,6 +170,13 @@ export function buildSiteRouter(deps: SiteRouterDeps): FastifyInstance {
       if (html) return reply.type("text/html; charset=utf-8").header("cache-control", mode === "live" ? "public, max-age=60" : "no-store").send(rewriteForPrefix(html, prefix));
       // fall through to the site's 404
     }
+    // The brand logo follows Brand Style: whatever the page references at
+    // /images/logo.*, the organization's current logo file is what is served,
+    // so a replaced logo shows on the live site without a republish.
+    if (/^images\/logo\.(png|jpe?g|webp)$/i.test(clean)) {
+      const current = await currentBrandLogo(site.tenantId);
+      if (current) return reply.type(current.mime).header("cache-control", "public, max-age=300").send(current.bytes);
+    }
     // Uploaded media (featured images) lives with the site, not the release,
     // so a new upload never needs a rebuild.
     const media = /^media\/([a-z0-9-]+\.(?:png|jpe?g|webp|gif))$/i.exec(clean);
@@ -205,6 +212,18 @@ export function buildSiteRouter(deps: SiteRouterDeps): FastifyInstance {
       `SELECT (SELECT count(*)::int FROM site_posts WHERE site_id = $1 AND status = 'published' AND (published_at IS NULL OR published_at <= now())) AS posts,
               (SELECT count(*)::int FROM site_events WHERE site_id = $1 AND status IN ('published','cancelled')) AS events`, [siteId]);
     return { posts: rows[0]?.posts ?? 0, events: rows[0]?.events ?? 0 };
+  }
+
+  /** The organization's current Brand Style logo, when it has one. */
+  async function currentBrandLogo(tenantId: string): Promise<{ bytes: Buffer; mime: string } | null> {
+    try {
+      const { rows } = await deps.adminPool.query("SELECT value FROM org_facts WHERE tenant_id = $1 AND fact_key = 'brand_logo_file_id' AND status <> 'rejected' LIMIT 1", [tenantId]);
+      const fileId = String(rows[0]?.value ?? "").trim().replace(/^"|"$/g, "");
+      if (!/^[0-9a-f-]{36}$/.test(fileId)) return null;
+      const file = (await deps.adminPool.query("SELECT mime, storage_key FROM files WHERE id = $1 AND tenant_id = $2", [fileId, tenantId])).rows[0];
+      if (!file || !/^image\/(png|jpeg|webp)$/.test(file.mime)) return null;
+      return { bytes: await deps.storage.get(file.storage_key), mime: file.mime };
+    } catch { return null; }
   }
 
   /** Feed sections ("upcoming events", "latest posts", one featured

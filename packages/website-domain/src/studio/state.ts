@@ -81,9 +81,12 @@ export async function loadWorkingState(client: PoolClient, siteId: string): Prom
   const theme = (site.theme ?? {}) as Record<string, unknown>;
   const intake = await loadIntake(client, siteId);
   const logo = (await client.query("SELECT value FROM org_facts WHERE tenant_id = $1 AND fact_key = 'brand_logo_file_id' LIMIT 1", [site.tenant_id])).rows[0];
-  const logoPath = logo ? (await (async () => {
-    const id = String(logo.value ?? "").replace(/^"|"$/g, "");
-    const f = (await client.query("SELECT mime FROM files WHERE id = $1", [id]).catch(() => ({ rows: [] as Array<{ mime: string }> }))).rows[0];
+  const logoId = String(logo?.value ?? "").trim().replace(/^"|"$/g, "");
+  // A cleared logo is an empty value; querying files with it would abort
+  // the surrounding transaction, so it is checked before any query.
+  const logoPath = /^[0-9a-f-]{36}$/.test(logoId) ? (await (async () => {
+    const id = logoId;
+    const f = (await client.query("SELECT mime FROM files WHERE id = $1", [id])).rows[0];
     const ext = f?.mime === "image/png" ? "png" : f?.mime === "image/jpeg" ? "jpg" : f?.mime === "image/webp" ? "webp" : null;
     return ext ? `/images/logo.${ext}` : null;
   })()) : null;

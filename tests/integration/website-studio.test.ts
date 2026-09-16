@@ -321,6 +321,25 @@ describe("website studio", () => {
     const png = Buffer.from("89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d49444154789c6360f8cfc00000030101009f9c11ff0000000049454e44ae426082", "hex").toString("base64");
     const up = await api(env.app, "POST", `/v1/orgs/${s.orgId}/files`, { token: s.token, body: { filename: "logo.png", mime: "image/png", contentBase64: png } });
     expect(up.status).toBe(201);
+    // Setting the brand logo updates the generated site by itself: a content
+    // version with the logo on every page (kept as preview here, since this
+    // site has unpublished changes), and the live site serves the new file.
+    const set = await api(env.app, "PUT", `/v1/orgs/${s.orgId}/brand/logo`, { token: s.token, body: { fileId: up.body.fileId ?? up.body.id } });
+    expect(set.status).toBe(200);
+    expect(set.body.sites).toHaveLength(1);
+    expect(set.body.sites[0].version, JSON.stringify(set.body.sites)).toBeGreaterThan(0);
+    expect(set.body.sites[0].published).toBe(false);
+    expect((await router.inject({ method: "GET", url: "/preview/generosity-global/" })).body).toContain('class="brand__logo"');
+    const servedLogo = await router.inject({ method: "GET", url: "/generosity-global/images/logo.png" });
+    expect(servedLogo.statusCode, "the live site serves the current brand file").toBe(200);
+    expect(servedLogo.headers["content-type"]).toBe("image/png");
+    // Clearing it takes the logo off again.
+    const cleared = await api(env.app, "DELETE", `/v1/orgs/${s.orgId}/brand/logo`, { token: s.token });
+    expect(cleared.status).toBe(200);
+    expect(JSON.stringify(cleared.body.sites)).not.toMatch(/skipped/);
+    expect(cleared.body.sites[0].version).toBeGreaterThan(set.body.sites[0].version);
+    expect((await api(env.app, "GET", `${base}/versions`, { token: s.token })).body.versions[0].label).toBe("Brand logo removed");
+    expect((await router.inject({ method: "GET", url: "/preview/generosity-global/" })).body).not.toContain('class="brand__logo"');
     expect((await api(env.app, "PUT", `/v1/orgs/${s.orgId}/brand/logo`, { token: s.token, body: { fileId: up.body.fileId ?? up.body.id } })).status).toBe(200);
     await env.deps.adminPool.query("UPDATE site_pages SET rendered_hash = split_part(rendered_hash, ':', 1) || ':designed' WHERE site_id = $1 AND slug = 'about'", [s.siteId]);
     const started = await api(env.app, "POST", `${base}/editor/messages`, { token: s.token, body: { body: "Update the site logo" } });

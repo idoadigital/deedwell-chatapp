@@ -8,3 +8,4 @@ export * from "./qa.js";
 export * from "./qa-workflow.js";
 export * from "./content.js";
 export * from "./domains.js";
+export * from "./logo-sync.js";

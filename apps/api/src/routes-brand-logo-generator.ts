@@ -7,6 +7,7 @@ import { LogoBrief, LogoConcept } from "@deedwell/schemas";
 import { HttpError, type AppContext } from "./app.js";
 import { requireTokens } from "./billing-gate.js";
 import { LOGO_MAX_BYTES } from "./brand.js";
+import { syncSitesToBrandLogo } from "@deedwell/website-domain";
 import { setLogoFact } from "./routes-brand.js";
 import { buildLogoBrief, planLogoConcepts, renderLogoConcept, type LogoOrgContext } from "./logo-generator.js";
 import { transcribeClip } from "./transcribe.js";
@@ -175,9 +176,11 @@ export function registerBrandLogoGeneratorRoutes(app: FastifyInstance, ctx: AppC
         entityType: "files", entityId: fileId,
         metadata: { filename, generationId: input.generationId, concept: input.concept.title, logoType: input.concept.logoType },
       });
-      return { id: fileId, filename, mime: "image/png", size_bytes: bytes.length };
+      // The generated website follows Brand Style.
+      const sites = await syncSitesToBrandLogo(client, ctx.deps.storage, req.orgId!, req.userId ?? null);
+      return { id: fileId, filename, mime: "image/png", size_bytes: bytes.length, sites };
     });
-    return { logo: { fileId: file.id, filename: file.filename, mime: file.mime, size: file.size_bytes } };
+    return { logo: { fileId: file.id, filename: file.filename, mime: file.mime, size: file.size_bytes }, sites: file.sites };
   });
 
   /** Voice input for the request box, for browsers without on-device

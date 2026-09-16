@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { audit, invalidateMissionProfile, uuidv7 } from "@deedwell/database";
+import { syncSitesToBrandLogo } from "@deedwell/website-domain";
 import { HttpError, type AppContext } from "./app.js";
 import { BRAND_LOGO_FACT, LOGO_MAX_BYTES, LOGO_MIMES } from "./brand.js";
 
@@ -38,20 +39,23 @@ export function registerBrandRoutes(app: FastifyInstance, ctx: AppContext): void
         tenantId: req.orgId!, actorUser: req.userId, action: "brand.logo_set",
         entityType: "files", entityId: row.id, metadata: { filename: row.filename },
       });
-      return row;
+      // The generated website follows Brand Style.
+      const sites = await syncSitesToBrandLogo(client, ctx.deps.storage, req.orgId!, req.userId ?? null);
+      return { row, sites };
     });
-    return { logo: { fileId: file.id, filename: file.filename, mime: file.mime, size: Number(file.size_bytes) } };
+    return { logo: { fileId: file.row.id, filename: file.row.filename, mime: file.row.mime, size: Number(file.row.size_bytes) }, sites: file.sites };
   });
 
   app.delete("/v1/orgs/:orgId/brand/logo", async (req) => {
     ctx.requireRole(req, "member");
     invalidateMissionProfile(req.orgId!);
-    await ctx.inOrg(req, async (client) => {
+    const sites = await ctx.inOrg(req, async (client) => {
       // Cleared, not deleted: an empty value is "no logo".
       await setLogoFact(client, req.orgId!, req.userId!, "");
       await audit(client, { tenantId: req.orgId!, actorUser: req.userId, action: "brand.logo_cleared", entityType: "org_facts", metadata: { key: BRAND_LOGO_FACT } });
+      return syncSitesToBrandLogo(client, ctx.deps.storage, req.orgId!, req.userId ?? null);
     });
-    return { ok: true };
+    return { ok: true, sites };
   });
 }
 
