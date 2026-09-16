@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { cleanDeclarations, cleanSelector, injectOverrides, mergeOverride, overridesCss } from "./overrides.js";
 import { instructionsFor } from "./domains.js";
 import { fillFeeds, hasFeeds } from "./content.js";
-import { patchDesignedCopy } from "./state.js";
+import { designedEditableFields, patchDesignedCopy } from "./state.js";
 
 describe("overrides layer", () => {
   it("keeps allowed properties with safe values and drops the rest", () => {
@@ -135,6 +135,22 @@ describe("designed pages: wording edits", () => {
     expect(r.html).toContain("<h3>Wells &amp; solar pumps</h3>");
     expect(r.html).toContain('title="Schools"');
     expect(r.changed).toEqual(["heading", "items.0.name"]);
+  });
+  it("adds a hero eyebrow or tagline the design left out, clears a field with its element, and lists what is editable", () => {
+    const hero = '<html><body><section class="hero"><h1>Clean water</h1><p class="lead">For every village</p><a href="/donate/">Donate</a></section></body></html>';
+    const b = { kind: "hero" as const, heading: "Clean water", tagline: "For every village", ctaText: "Donate", ctaHref: "/donate/", eyebrow: null };
+    expect(designedEditableFields(hero, b)).toEqual(["heading", "tagline", "ctaText", "ctaHref", "eyebrow"]);
+    const added = patchDesignedCopy(hero, b, { ...b, eyebrow: "Kigali, Rwanda" });
+    expect("error" in added).toBe(false);
+    if ("error" in added) return;
+    expect(added.html).toContain('<p class="eyebrow">Kigali, Rwanda</p><h1>Clean water</h1>');
+    const cleared = patchDesignedCopy(added.html, { ...b, eyebrow: "Kigali, Rwanda" }, { ...b, tagline: "", eyebrow: "Kigali, Rwanda" });
+    expect("error" in cleared).toBe(false);
+    if ("error" in cleared) return;
+    expect(cleared.html).not.toContain('<p class="lead">');
+    expect(cleared.html).toContain("<h1>Clean water</h1>");
+    const nope = patchDesignedCopy(hero, { ...b, secondaryText: null }, { ...b, secondaryText: "Learn more" });
+    expect("error" in nope && /not part of this page's design/.test(nope.error)).toBe(true);
   });
   it("refuses a change whose current text is not on the page, and any change of shape", () => {
     const missing = patchDesignedCopy(html, { ...before, items: [{ name: "Paraphrased", description: "x" }, before.items[1]!] }, { ...before, items: [{ name: "New", description: "x" }, before.items[1]!] });

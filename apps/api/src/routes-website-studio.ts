@@ -5,7 +5,7 @@ import {
   SiteBlock, SiteDomainInput, SiteDonationsInput, SiteEditorMessageInput, SiteEventInput, SiteMediaInput, SitePage, SitePageStatusInput, SitePostInput, SiteQaStartInput,
 } from "@deedwell/schemas";
 import {
-  WEBSITE_EDIT_WORKFLOW, WEBSITE_QA_WORKFLOW, assembleRelease, createJob, instructionsFor, loadJob, loadSiteLogoFrom, loadWorkingState, newVerificationToken, nextStatus, normalizeComposition, observeDns, patchDesignedCopy, probeHttps, publishRelease, restoreRelease, saveWorkingState, siteUrls,
+  WEBSITE_EDIT_WORKFLOW, WEBSITE_QA_WORKFLOW, assembleRelease, createJob, designedEditableFields, instructionsFor, loadJob, loadSiteLogoFrom, loadWorkingState, newVerificationToken, nextStatus, normalizeComposition, observeDns, patchDesignedCopy, probeHttps, publishRelease, restoreRelease, saveWorkingState, siteUrls,
 } from "@deedwell/website-domain";
 import { HttpError, type AppContext } from "./app.js";
 import { requireTokens } from "./billing-gate.js";
@@ -330,7 +330,11 @@ export function registerWebsiteStudioRoutes(app: FastifyInstance, ctx: AppContex
       const { rows: meta } = await client.query("SELECT slug, updated_at FROM site_pages WHERE site_id = $1", [site.id]);
       const updated = new Map<string, unknown>(meta.map((r) => [r.slug, r.updated_at]));
       return {
-        pages: state.pages.map((p) => ({ slug: p.page.slug, title: p.page.title, status: p.status, designed: Boolean(p.designedHtml), updatedAt: updated.get(p.page.slug) ?? null, blocks: p.page.blocks })),
+        pages: state.pages.map((p) => ({
+          slug: p.page.slug, title: p.page.title, status: p.status, designed: Boolean(p.designedHtml), updatedAt: updated.get(p.page.slug) ?? null, blocks: p.page.blocks,
+          // On a designed page only the fields present in (or insertable into) the design can change.
+          editable: p.designedHtml ? p.page.blocks.map((b) => designedEditableFields(p.designedHtml!, b)) : null,
+        })),
       };
     });
   });
@@ -358,7 +362,12 @@ export function registerWebsiteStudioRoutes(app: FastifyInstance, ctx: AppContex
       wp.page.blocks[at] = parsed.data;
       const page = SitePage.safeParse(wp.page);
       if (!page.success) throw new HttpError(400, `Invalid page: ${page.error.issues[0]?.message}`);
-      if (!wp.designedHtml) wp.composition = normalizeComposition(wp.composition, { page: wp.page, images: state.images, donateUrl: state.donateUrl, language: state.language });
+      if (!wp.designedHtml) {
+        // The CMS is now the truth for this block's wording: an earlier AI
+        // edit's per-section overrides would otherwise keep showing on top of it.
+        for (const sec of wp.composition.sections) if (sec.block === at && sec.overrides) delete sec.overrides;
+        wp.composition = normalizeComposition(wp.composition, { page: wp.page, images: state.images, donateUrl: state.donateUrl, language: state.language });
+      }
       await saveWorkingState(client, state, [slug]);
       const logo = await loadSiteLogoFrom(client, ctx.deps.storage);
       const label = body.label ?? `${wp.page.title}: ${current.kind} content updated`;

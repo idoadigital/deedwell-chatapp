@@ -338,23 +338,44 @@ function patchBrandMarkup(html: string, logoPath: string | null, siteName: strin
 const escHtml = (v: string) => v.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]!));
 const escRe = (v: string) => v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-/** Every string leaf of a block, by dot path. */
+/** Every text field of a block, by dot path — null/empty included as "",
+ *  so a field the design left out can be told apart from an added entry. */
 function textLeaves(value: unknown, path: string[] = [], out: Array<[string, string]> = []): Array<[string, string]> {
   if (typeof value === "string") out.push([path.join("."), value]);
+  else if (value === null || value === undefined) { if (path.length) out.push([path.join("."), ""]); }
   else if (Array.isArray(value)) value.forEach((v, i) => textLeaves(v, [...path, String(i)], out));
-  else if (value && typeof value === "object") for (const [k, v] of Object.entries(value)) textLeaves(v, [...path, k], out);
+  else if (value && typeof value === "object") for (const [k, v] of Object.entries(value)) { if (!path.length && k === "kind") continue; textLeaves(v, [...path, k], out); }
   return out;
 }
 
 export interface DesignedPatch { html: string; changed: string[] }
 
+/** Fields a designed page can gain even when its design left them out:
+ *  where the text goes, relative to what every design has. */
+const INSERTABLE: Record<string, (html: string, text: string) => string | null> = {
+  "hero.eyebrow": (html, text) => { const m = /<h1\b/i.exec(html); return m ? `${html.slice(0, m.index)}<p class="eyebrow">${escHtml(text)}</p>${html.slice(m.index)}` : null; },
+  "hero.tagline": (html, text) => { const m = /<\/h1>/i.exec(html); return m ? `${html.slice(0, m.index + 5)}<p class="lead">${escHtml(text)}</p>${html.slice(m.index + 5)}` : null; },
+};
+
+/** Which fields of a block a designed page can change: present on the
+ *  page as written, or insertable. Drives the CMS form for such pages. */
+export function designedEditableFields(html: string, block: SiteBlock): string[] {
+  const out: string[] = [];
+  for (const [field, value] of textLeaves(block)) {
+    const from = value.trim();
+    if (from.length >= 2 && (html.includes(escHtml(from)) || html.includes(from))) out.push(field);
+    else if (!from && INSERTABLE[`${block.kind}.${field}`]) out.push(field);
+  }
+  return out;
+}
+
 /**
  * A page that keeps designed markup cannot be re-rendered from its blocks
  * without losing the design, so a wording change is made to the markup
  * itself: each changed text is found in the page (as the designer escaped
- * it) and replaced. The shape must stay the same — entries are not added or
- * removed here — and every changed text must be present on the page, or
- * the whole edit is refused with the field that could not be found.
+ * it) and replaced; a cleared field's element goes; a few fields the design
+ * left out can be added in a known place. Entries are never added or
+ * removed here, and a change that cannot be made is refused with the field.
  */
 export function patchDesignedCopy(html: string, before: SiteBlock, after: SiteBlock): DesignedPatch | { error: string } {
   const prev = new Map(textLeaves(before));
@@ -363,16 +384,28 @@ export function patchDesignedCopy(html: string, before: SiteBlock, after: SiteBl
   let out = html;
   const changed: string[] = [];
   for (const [field, value] of next) {
-    const old = prev.get(field)!;
-    if (old === value) continue;
-    const from = old.trim();
-    if (from.length < 2) return { error: `"${field}" is too short to find on the page.` };
-    const variants = [escHtml(from), from];
+    const old = (prev.get(field) ?? "").trim();
+    const now = value.trim();
+    if (old === now) continue;
+    if (!old) {
+      const insert = INSERTABLE[`${before.kind}.${field}`];
+      const inserted = insert ? insert(out, now) : null;
+      if (!inserted) return { error: `"${field}" is not part of this page's design, so it cannot be added here.` };
+      out = inserted; changed.push(field); continue;
+    }
+    if (old.length < 2) return { error: `"${field}" is too short to find on the page.` };
+    const variants = [escHtml(old), old];
     const hit = variants.find((v) => out.includes(v));
-    if (!hit) return { error: `The current text of "${field}" ("${from.slice(0, 60)}${from.length > 60 ? "…" : ""}") is not on the designed page as written, so it cannot be replaced here. Change it in the AI editor instead.` };
+    if (!hit) return { error: `The current text of "${field}" ("${old.slice(0, 60)}${old.length > 60 ? "…" : ""}") is not on the designed page as written, so it cannot be replaced here. Change it in the AI editor instead.` };
+    if (!now) {
+      // Cleared: the element that holds exactly this text goes with it.
+      const el = new RegExp(`<(p|span|small|em|strong|h[1-6])\\b[^>]*>\\s*${escRe(hit)}\\s*<\\/\\1>`, "i");
+      out = el.test(out) ? out.replace(el, "") : out.replace(new RegExp(`(>[^<]*?)${escRe(hit)}(?=[^<]*<)`), "$1");
+      changed.push(field); continue;
+    }
     // Only text between tags is replaced — never an attribute or a tag.
     const re = new RegExp(`(>[^<]*?)${escRe(hit)}(?=[^<]*<)`, "g");
-    const replaced = out.replace(re, (_m, lead: string) => `${lead}${escHtml(value.trim())}`);
+    const replaced = out.replace(re, (_m, lead: string) => `${lead}${escHtml(now)}`);
     if (replaced === out) return { error: `"${field}" appears on the page only inside markup, so it cannot be replaced here. Change it in the AI editor instead.` };
     out = replaced;
     changed.push(field);
