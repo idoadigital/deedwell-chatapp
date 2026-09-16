@@ -217,6 +217,11 @@ describe("Google Ads management", () => {
     const mine = strategies.body.strategies.find((x: any) => x.id === strategyId);
     expect(mine.builds.every((b: any) => b.status === "completed" && b.draftId)).toBe(true);
     expect(mine.drafts).toHaveLength(recommended);
+    const one = await api(env.app, "GET", `/v1/admin/google-ads/orgs/${orgId}/strategies/${strategyId}`, { token });
+    expect(one.status).toBe(200);
+    expect(one.body.strategy).toMatchObject({ id: strategyId, status: "approved" });
+    expect(one.body.strategy.drafts).toHaveLength(recommended);
+    expect((await api(env.app, "GET", `/v1/admin/google-ads/orgs/${orgId}/strategies/00000000-0000-7000-8000-000000000000`, { token })).status).toBe(404);
 
     const list2 = await api(env.app, "GET", `/v1/admin/google-ads/orgs/${orgId}/drafts`, { token });
     expect(list2.body.drafts).toHaveLength(recommended);
@@ -344,6 +349,22 @@ describe("Google Ads management", () => {
     const published = ads.body.ads.filter((a: any) => a.state === "published");
     expect(published.length).toBe(approve.body.draft.ads.length); // the other builds' ads are still drafts
     expect(published[0]).toMatchObject({ state: "published", createdBy: expect.stringContaining("Deedwell") });
+    const single = await api(env.app, "GET", `/v1/orgs/${orgId}/google-ads/ads/${published[0].id}`, { token });
+    expect(single.status).toBe(200);
+    expect(single.body.ad).toMatchObject({ id: published[0].id, state: "published" });
+    const adminSingle = await api(env.app, "GET", `/v1/admin/google-ads/orgs/${orgId}/ads/${published[0].id}`, { token });
+    expect(adminSingle.body.ad.id).toBe(published[0].id);
+    // Activity pages: total counts everything, the page honours limit/offset and filters.
+    const page = await api(env.app, "GET", `/v1/admin/google-ads/orgs/${orgId}/activity?limit=2&offset=0`, { token });
+    expect(page.body.activity).toHaveLength(2);
+    expect(page.body.total).toBeGreaterThan(2);
+    const next = await api(env.app, "GET", `/v1/admin/google-ads/orgs/${orgId}/activity?limit=2&offset=2`, { token });
+    expect(next.body.activity[0].id).not.toBe(page.body.activity[0].id);
+    const only = await api(env.app, "GET", `/v1/admin/google-ads/orgs/${orgId}/activity?action=campaign_published`, { token });
+    expect(only.body.activity.every((a: any) => a.action === "campaign_published")).toBe(true);
+    expect(only.body.total).toBeGreaterThan(0);
+    const searched = await api(env.app, "GET", `/v1/orgs/${orgId}/google-ads/activity?q=${encodeURIComponent("campaign_published")}&limit=5`, { token });
+    expect(searched.body.activity.length).toBeGreaterThan(0);
     const campaigns = await api(env.app, "GET", `/v1/orgs/${orgId}/google-ads/campaigns`, { token });
     expect(campaigns.body.campaigns.find((c: any) => c.id === "5001")).toMatchObject({ status: "PAUSED", managedByDeedwell: true });
     const mail = await env.adminPool.query(`SELECT kind FROM email_outbox WHERE tenant_id = $1 AND kind = 'google_ads_published'`, [orgId]);

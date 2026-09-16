@@ -182,7 +182,7 @@ export function deedwellAdState(draftStatus: string, live: { status: string | nu
 }
 
 /** "Ads created by Deedwell": every draft ad with its live counterpart. */
-export async function deedwellAds(client: PoolClient, account: Record<string, any>, range: DateRange) {
+export async function deedwellAds(client: PoolClient, account: Record<string, any>, range: DateRange, opts: { adId?: string } = {}) {
   const { rows } = await client.query(
     `SELECT da.*, d.name AS campaign_name, d.status AS draft_campaign_status, d.published_campaign_id, d.content AS draft_content,
             creator.display_name AS created_by_name, approver.display_name AS approved_by_name,
@@ -200,8 +200,8 @@ export async function deedwellAds(client: PoolClient, account: Record<string, an
          SELECT SUM(impressions) impressions, SUM(clicks) clicks, SUM(cost_micros) cost_micros, SUM(conversions) conversions, SUM(conversions_value) conversions_value
            FROM google_ads_metrics_daily md WHERE md.account_id = da.account_id AND md.level = 'ad' AND md.entity_id = da.google_ad_id AND md.day BETWEEN $2 AND $3
        ) m ON true
-      WHERE da.account_id = $1
-      ORDER BY da.created_at DESC, da.position`, [account.id, range.since, range.until]);
+      WHERE da.account_id = $1 AND ($4::uuid IS NULL OR da.id = $4)
+      ORDER BY da.created_at DESC, da.position`, [account.id, range.since, range.until, opts.adId ?? null]);
   return rows.map((r) => {
     const groups = (r.draft_content?.adGroups ?? []) as Array<{ key: string; name: string }>;
     const live = r.google_ad_id ? { status: r.live_status ?? null, approvalStatus: r.live_approval_status ?? null } : null;

@@ -25,7 +25,7 @@ import { decideDraft, decideDraftAd, decideDraftAsset, jobView, listDrafts, load
 import { publishPreview, requestPublish, setCampaignBudget, setCampaignStatus } from "./google-ads/publish.js";
 import { accountsAcrossTenants, campaignDetail, campaignsWithMetrics, deedwellAds, overview, resolveRange } from "./google-ads/reports.js";
 import { clearManagerConnection, managerOAuthClient, readGoogleAdsSettings, saveGoogleAdsSettings, saveManagerConnection, settingsView } from "./google-ads/settings.js";
-import { accountView, listActivity, loadAccount, logActivity } from "./google-ads/store.js";
+import { accountView, activityQueryOf, listActivity, loadAccount, logActivity } from "./google-ads/store.js";
 import { syncAccount } from "./google-ads/sync.js";
 import { translateAdsError } from "./routes-google-ads.js";
 
@@ -205,7 +205,16 @@ export function registerAdminGoogleAdsRoutes(app: FastifyInstance, ctx: AppConte
 
   app.get(`${base}/orgs/:orgId/ads`, async (req) => withAccount(req, async (client, account) => ({ ads: await deedwellAds(client, account, rangeOf(req)) })));
 
-  app.get(`${base}/orgs/:orgId/activity`, async (req) => inTenant(req, async (client, orgId) => ({ activity: await listActivity(client, orgId, { limit: 200 }) })));
+  app.get(`${base}/orgs/:orgId/ads/:adId`, async (req) => withAccount(req, async (client, account) => {
+    const { adId } = req.params as { adId: string };
+    const [ad] = await deedwellAds(client, account, rangeOf(req), { adId });
+    if (!ad) throw new HttpError(404, "Ad not found");
+    return { ad };
+  }));
+
+  /** Paged and filterable: ?limit=&offset=&q=&action=&actor=&entity=&from=&to= → { activity, total }. */
+  app.get(`${base}/orgs/:orgId/activity`, async (req) => inTenant(req, async (client, orgId) =>
+    listActivity(client, orgId, activityQueryOf((req.query ?? {}) as Record<string, string | undefined>, 200))));
 
   app.get(`${base}/orgs/:orgId/compliance`, async (req) => withAccount(req, (client, account) => complianceReport(client, account)));
 
@@ -226,6 +235,17 @@ export function registerAdminGoogleAdsRoutes(app: FastifyInstance, ctx: AppConte
         drafts: drafts.filter((d) => d.strategy_id === r.id).map((d) => ({ id: d.id, status: d.status, name: d.name, campaignIndex: d.campaign_index })),
       })),
     };
+  }));
+
+  app.get(`${base}/orgs/:orgId/strategies/:strategyId`, async (req) => withAccount(req, async (client, account) => {
+    const { strategyId } = req.params as { strategyId: string };
+    const { rows } = await client.query(`SELECT id FROM google_ads_strategies WHERE id = $1 AND account_id = $2`, [strategyId, account.id]);
+    if (!rows[0]) throw new HttpError(404, "Strategy not found");
+    const strategy = await loadStrategy(client, strategyId);
+    const builds = await listBuilds(client, account.id, { strategyId });
+    const { rows: drafts } = await client.query(
+      `SELECT id, status, name, (model_meta->>'campaignIndex')::int AS campaign_index FROM google_ads_drafts WHERE account_id = $1 AND strategy_id = $2 ORDER BY created_at DESC`, [account.id, strategyId]);
+    return { strategy: { ...strategy, builds, drafts: drafts.map((d) => ({ id: d.id, status: d.status, name: d.name, campaignIndex: d.campaign_index })) } };
   }));
 
   app.get(`${base}/orgs/:orgId/builds`, async (req) => withAccount(req, async (client, account) => {

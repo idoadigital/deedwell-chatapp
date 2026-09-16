@@ -11,7 +11,7 @@ import { GoogleAdsAccessError } from "./google-ads/access.js";
 import { complianceReport } from "./google-ads/compliance.js";
 import { connectionStatus, disconnectAccount, discoverAccounts, ensureManagerLink, selectAccount } from "./google-ads/connection.js";
 import { campaignDetail, campaignsWithMetrics, deedwellAds, overview, resolveRange } from "./google-ads/reports.js";
-import { accountView, listActivity, loadAccount } from "./google-ads/store.js";
+import { accountView, activityQueryOf, listActivity, loadAccount } from "./google-ads/store.js";
 import { syncAccount } from "./google-ads/sync.js";
 
 const MIN_MANUAL_SYNC_MS = Number(process.env.GOOGLE_ADS_MANUAL_SYNC_MS ?? 5 * 60_000);
@@ -123,10 +123,18 @@ export function registerGoogleAdsRoutes(app: FastifyInstance, ctx: AppContext): 
     return { ads };
   });
 
+  app.get(`${base}/ads/:adId`, async (req) => {
+    ctx.requireRole(req, "viewer");
+    const { adId } = req.params as { adId: string };
+    const [ad] = await withAccount(req, (client, account) => deedwellAds(client, account, rangeOf(req), { adId }));
+    if (!ad) throw new HttpError(404, "Ad not found");
+    return { ad };
+  });
+
+  /** Paged: ?limit=&offset=&q=&action=&from=&to= → { activity, total }. */
   app.get(`${base}/activity`, async (req) => {
     ctx.requireRole(req, "viewer");
-    const activity = await ctx.inOrg(req, (client) => listActivity(client, req.orgId!, { limit: 60 }));
-    return { activity };
+    return ctx.inOrg(req, (client) => listActivity(client, req.orgId!, activityQueryOf((req.query ?? {}) as Record<string, string | undefined>, 100)));
   });
 
   app.get(`${base}/compliance`, async (req) => {

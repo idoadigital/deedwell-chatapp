@@ -96,16 +96,57 @@ export function emitOrgEvent(deps: Deps, tenantId: string, type: string, extra: 
   } catch { /* SSE is best-effort */ }
 }
 
-export async function listActivity(client: PoolClient, tenantId: string, opts: { limit?: number; accountId?: string | null } = {}) {
+export interface ActivityQuery {
+  limit?: number;
+  offset?: number;
+  accountId?: string | null;
+  /** Case-insensitive match on the summary, action, actor name or email. */
+  search?: string | null;
+  action?: string | null;
+  actorKind?: string | null;
+  entityType?: string | null;
+  /** ISO dates (inclusive) on created_at. */
+  since?: string | null;
+  until?: string | null;
+}
+
+/** One page of the activity log plus the total that matches, so the UI can
+ *  page through thousands of rows without loading them all. */
+export async function listActivity(client: PoolClient, tenantId: string, opts: ActivityQuery = {}) {
+  const limit = Math.min(Math.max(Number(opts.limit) || 100, 1), 200);
+  const offset = Math.max(Number(opts.offset) || 0, 0);
+  const where = [`a.tenant_id = $1`, `($2::uuid IS NULL OR a.account_id = $2)`];
+  const params: unknown[] = [tenantId, opts.accountId ?? null];
+  const add = (clause: string, value: unknown) => { params.push(value); where.push(clause.replace("?", `$${params.length}`)); };
+  if (opts.search?.trim()) {
+    params.push(`%${opts.search.trim()}%`);
+    const n = `$${params.length}`;
+    where.push(`(a.summary ILIKE ${n} OR a.action ILIKE ${n} OR u.display_name ILIKE ${n} OR u.email ILIKE ${n})`);
+  }
+  if (opts.action) add(`a.action = ?`, opts.action);
+  if (opts.actorKind) add(`a.actor_kind = ?`, opts.actorKind);
+  if (opts.entityType) add(`a.entity_type = ?`, opts.entityType);
+  if (opts.since && /^\d{4}-\d{2}-\d{2}$/.test(opts.since)) add(`a.created_at >= ?::date`, opts.since);
+  if (opts.until && /^\d{4}-\d{2}-\d{2}$/.test(opts.until)) add(`a.created_at < (?::date + interval '1 day')`, opts.until);
+  const from = `FROM google_ads_activity a LEFT JOIN users u ON u.id = a.actor_user_id WHERE ${where.join(" AND ")}`;
+  const { rows: count } = await client.query(`SELECT COUNT(*) AS n ${from}`, params);
   const { rows } = await client.query(
-    `SELECT a.*, u.display_name AS actor_name, u.email AS actor_email
-       FROM google_ads_activity a LEFT JOIN users u ON u.id = a.actor_user_id
-      WHERE a.tenant_id = $1 AND ($2::uuid IS NULL OR a.account_id = $2)
-      ORDER BY a.created_at DESC LIMIT $3`,
-    [tenantId, opts.accountId ?? null, opts.limit ?? 100]);
-  return rows.map((r) => ({
-    id: r.id, action: r.action, actorKind: r.actor_kind, actor: r.actor_name ?? r.actor_email ?? null,
-    entityType: r.entity_type, entityId: r.entity_id, previousState: r.previous_state, newState: r.new_state,
-    summary: r.summary, metadata: r.metadata ?? {}, createdAt: r.created_at,
-  }));
+    `SELECT a.*, u.display_name AS actor_name, u.email AS actor_email ${from} ORDER BY a.created_at DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+    [...params, limit, offset]);
+  return {
+    activity: rows.map((r) => ({
+      id: r.id, action: r.action, actorKind: r.actor_kind, actor: r.actor_name ?? r.actor_email ?? null,
+      entityType: r.entity_type, entityId: r.entity_id, previousState: r.previous_state, newState: r.new_state,
+      summary: r.summary, metadata: r.metadata ?? {}, createdAt: r.created_at,
+    })),
+    total: Number(count[0]?.n ?? 0), limit, offset,
+  };
+}
+
+/** Query-string → ActivityQuery, shared by the customer and admin routes. */
+export function activityQueryOf(q: Record<string, string | undefined>, maxLimit: number): ActivityQuery {
+  return {
+    limit: Math.min(Number(q.limit) || maxLimit, maxLimit), offset: Number(q.offset) || 0,
+    search: q.q ?? null, action: q.action ?? null, actorKind: q.actor ?? null, entityType: q.entity ?? null, since: q.from ?? null, until: q.to ?? null,
+  };
 }
