@@ -30,7 +30,7 @@ export function buildWebsiteQaWorkflow(): WorkflowDefinition<WebsiteServices> {
         const progress = ctx.services.studio ? new JobProgress(ctx.services.studio, { id: job.id, tenantId: ctx.tenantId, siteId: input.siteId, kind: "qa" }, job.steps ?? [], "testing") : null;
         try {
           const outcome = await runQaPass({ client: ctx.client, storage: ctx.services.storage, tenantId: ctx.tenantId, siteId: input.siteId, jobId: job.id, runId: ctx.runId, progress, provider: ctx.services.provider, critic: ctx.services.designer, instruction: job.instruction, createdBy: job.created_by });
-          await progress?.complete({ status: outcome.status === "failed" ? "failed" : "complete", summary: summarizeQa(outcome), result: { outcome }, releaseAfter: outcome.releaseId });
+          await progress?.complete({ status: outcome.status === "failed" ? "failed" : "complete", summary: summarizeQa(outcome), result: { outcome }, releaseAfter: outcome.releaseId, releaseTx: ctx.client });
           return { state: { ...ctx.state, outcome }, complete: true };
         } catch (err) {
           // An honest failure, not a retry: re-running would repeat minutes of browser work.

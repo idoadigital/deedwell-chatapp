@@ -84,15 +84,23 @@ export class JobProgress {
 
   async setStatus(status: JobStatus): Promise<void> { this.status = status; await this.flush(); }
 
-  async complete(args: { status: "complete" | "failed"; summary?: string | null; error?: string | null; result?: Record<string, unknown>; releaseAfter?: string | null }): Promise<void> {
+  /**
+   * Ends the job. When the release it points at was created in a still-open
+   * transaction, pass that transaction as `releaseTx`: the foreign key is
+   * written through it (it commits with the release) and nothing else may
+   * write the row afterwards — this is the job's last write.
+   */
+  async complete(args: { status: "complete" | "failed"; summary?: string | null; error?: string | null; result?: Record<string, unknown>; releaseAfter?: string | null; releaseTx?: QueryLike }): Promise<void> {
     this.status = args.status;
     // Whatever was still running when the job ended is closed honestly.
     for (const s of this.steps) if (s.status === "running") { s.status = args.status === "complete" ? "done" : "failed"; s.finishedAt = new Date().toISOString(); }
     for (const s of this.steps) if (s.status === "pending") s.status = "skipped";
+    const viaTx = Boolean(args.releaseAfter && args.releaseTx);
     await this.services.pool.query(
       `UPDATE site_jobs SET status = $2, steps = $3, summary = COALESCE($4, summary), error = $5, result = result || $6::jsonb,
               release_after = COALESCE($7, release_after), finished_at = now() WHERE id = $1`,
-      [this.job.id, args.status, JSON.stringify(this.steps), args.summary ?? null, args.error ?? null, JSON.stringify(args.result ?? {}), args.releaseAfter ?? null]);
+      [this.job.id, args.status, JSON.stringify(this.steps), args.summary ?? null, args.error ?? null, JSON.stringify(args.result ?? {}), viaTx ? null : args.releaseAfter ?? null]);
+    if (viaTx) await args.releaseTx!.query("UPDATE site_jobs SET release_after = $2 WHERE id = $1", [this.job.id, args.releaseAfter]);
     this.emit();
   }
 

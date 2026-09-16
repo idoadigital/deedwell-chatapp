@@ -177,16 +177,20 @@ export async function inspectPages(args: InspectArgs): Promise<{ available: bool
   }
   const out: InspectedPage[] = [];
   const assets = args.assets ?? {};
+  // Pages are served from a private origin so root-relative links and
+  // images resolve exactly as they do on the router; nothing else loads.
+  const ORIGIN = "http://site.inspect.local";
+  const docs = new Map<string, string>(args.pages.map((p) => [p.slug === "home" ? "/" : `/${p.slug}/`, p.html]));
   try {
     for (const vp of args.viewports) {
       const context = await browser.newContext({ viewport: { width: vp, height: vp < 700 ? 844 : vp < 1100 ? 1024 : 900 }, deviceScaleFactor: 1, reducedMotion: "reduce" });
-      // Only the release's own images load; everything else is refused, so
-      // the render never depends on the network.
       await context.route("**/*", (route: { request: () => { url: () => string }; continue: () => void; abort: () => void; fulfill: (o: unknown) => void }) => {
         const url = route.request().url();
         if (url.startsWith("data:") || url.startsWith("about:")) return route.continue();
         let path = "";
         try { path = new URL(url).pathname; } catch { /* not a url */ }
+        const doc = url.startsWith(ORIGIN) ? docs.get(path.endsWith("/") ? path : `${path}/`) ?? docs.get(path) : undefined;
+        if (doc !== undefined) return route.fulfill({ status: 200, contentType: "text/html; charset=utf-8", body: doc });
         const bytes = assets[path];
         if (bytes) { const ext = path.split(".").pop() ?? "png"; return route.fulfill({ status: 200, contentType: CONTENT_TYPES[ext] ?? "application/octet-stream", body: bytes }); }
         return route.abort();
@@ -194,7 +198,7 @@ export async function inspectPages(args: InspectArgs): Promise<{ available: bool
       for (const p of args.pages) {
         const page = await context.newPage();
         try {
-          await page.setContent(p.html, { waitUntil: "load" });
+          await page.goto(`${ORIGIN}${p.slug === "home" ? "/" : `/${p.slug}/`}`, { waitUntil: "load" });
           // Reveal-on-scroll elements start invisible; the inspector sees the final layout.
           await page.addStyleTag({ content: "[data-reveal],[data-reveal='stagger']>*{opacity:1!important;transform:none!important}[data-reveal='image'] img{clip-path:none!important}" });
           await page.evaluate("document.fonts && document.fonts.ready");

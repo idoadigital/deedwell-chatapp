@@ -666,7 +666,7 @@ async function postGenerationQa(ctx: Ctx, siteId: string): Promise<StepResult> {
   const progress = ctx.services.studio ? new JobProgress(ctx.services.studio, { id: jobId, tenantId: ctx.tenantId, siteId, kind: "qa" }, [], "testing") : null;
   try {
     const outcome = await runQaPass({ client: ctx.client, storage: ctx.services.storage, tenantId: ctx.tenantId, siteId, jobId, runId: ctx.runId, progress, provider: ctx.services.provider, critic: ctx.services.designer, createdBy: ctx.createdBy });
-    await progress?.complete({ status: outcome.status === "failed" ? "failed" : "complete", summary: summarizeQa(outcome), result: { outcome }, releaseAfter: outcome.releaseId });
+    await progress?.complete({ status: outcome.status === "failed" ? "failed" : "complete", summary: summarizeQa(outcome), result: { outcome }, releaseAfter: outcome.releaseId, releaseTx: ctx.client });
     const latest = (await ctx.client.query("SELECT r.id, r.version FROM sites s JOIN site_releases r ON r.id = s.preview_release_id WHERE s.id = $1", [siteId])).rows[0];
     return { state: { ...ctx.state, qa: outcome, qaJobId: jobId, releaseId: latest?.id ?? ctx.state.releaseId, version: latest?.version ?? ctx.state.version }, next: "request_publish" };
   } catch (err) {

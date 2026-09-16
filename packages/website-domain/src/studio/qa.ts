@@ -108,12 +108,19 @@ function layoutFindings(p: InspectedPage, siteName: string, allViewports: number
   for (const t of c.tinyText.slice(0, 3)) {
     out.push(mk({ severity: sev("medium"), category: "accessibility", page: p.slug, viewport: p.viewport, title: "Text too small to read", description: `${t.selector} renders at ${t.fontSize}px.`, evidence: t,
       recheck: (x) => x.tinyText.some((y) => y.selector === t.selector),
-      strategies: [() => [{ kind: "style", page: p.slug, selector: t.selector, viewport: "all", declarations: { "font-size": "0.875rem" }, note: "QA: legible text size" }]] }));
+      strategies: [
+        () => [{ kind: "style", page: p.slug, selector: generalize(t.selector), viewport: "all", declarations: { "font-size": "0.875rem" }, note: "QA: legible text size" }],
+        () => [{ kind: "style", page: p.slug, selector: t.selector, viewport: "all", declarations: { "font-size": "0.875rem" }, note: "QA: legible text size" }],
+      ] }));
   }
   for (const t of c.smallTapTargets.slice(0, 3)) {
     out.push(mk({ severity: sev("medium"), category: "accessibility", page: p.slug, viewport: p.viewport, title: "Tap target too small", description: `${t.selector} is ${t.width}×${t.height}px; aim for 44px.`, evidence: t,
       recheck: (x) => x.smallTapTargets.some((y) => y.selector === t.selector),
-      strategies: [() => [{ kind: "style", page: p.slug, selector: t.selector, viewport: "mobile", declarations: { "min-height": "44px", "min-width": "44px", padding: "10px 14px", display: "inline-flex", "align-items": "center" }, note: "QA: 44px tap target" }]] }));
+      strategies: [
+        // Siblings share the problem (a footer's link list, say): fix the group first.
+        () => [{ kind: "style", page: p.slug, selector: generalize(t.selector), viewport: "mobile", declarations: { "min-height": "44px", "min-width": "44px", padding: "10px 14px", display: "inline-flex", "align-items": "center" }, note: "QA: 44px tap target" }],
+        () => [{ kind: "style", page: p.slug, selector: t.selector, viewport: "mobile", declarations: { "min-height": "44px", "min-width": "44px", padding: "10px 14px", display: "inline-flex", "align-items": "center" }, note: "QA: 44px tap target" }],
+      ] }));
   }
   if (c.brokenImages.length && p.viewport === allViewports[0]) {
     out.push(mk({ severity: sev("high"), category: "imagery", page: p.slug, viewport: null, title: "An image does not load", description: `${c.brokenImages.length} image(s) fail to load: ${c.brokenImages.slice(0, 3).join(", ")}.`, evidence: { images: c.brokenImages } }));
@@ -149,6 +156,9 @@ function layoutFindings(p: InspectedPage, siteName: string, allViewports: number
   }
   return out;
 }
+
+/** "footer ul > li:nth-of-type(3) > a:nth-of-type(1)" → "footer ul > li > a". */
+const generalize = (selector: string) => selector.replace(/:nth-of-type\(\d+\)/g, "");
 
 function sectionOf(p: InspectedPage, selector: string): string {
   const m = /^#([A-Za-z0-9_-]+)/.exec(selector);

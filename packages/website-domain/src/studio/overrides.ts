@@ -24,6 +24,8 @@ export const ALLOWED_PROPERTIES = new Set([
  *  those inside. No url(), no expression(), no @, no braces or semicolons. */
 const VALUE = /^[A-Za-z0-9#%.,+\-\s()\/*"'!]+$/;
 const FORBIDDEN = /url\s*\(|expression|@import|javascript:|behavior|binding|\\|<|>|\{|\}|;/i;
+// Selectors may use the child combinator; nothing else that a value may not.
+const FORBIDDEN_SELECTOR = /url\s*\(|expression|@import|javascript:|\\|<|\{|\}|;/i;
 const SELECTOR = /^[A-Za-z0-9_\-#.\s>:\[\]="'*+~,()]+$/;
 
 export function cleanDeclarations(raw: Record<string, string>): Record<string, string> {
@@ -40,7 +42,7 @@ export function cleanDeclarations(raw: Record<string, string>): Record<string, s
 
 export function cleanSelector(raw: string): string | null {
   const s = raw.trim().replace(/\s+/g, " ");
-  if (!s || s.length > 160 || !SELECTOR.test(s) || FORBIDDEN.test(s)) return null;
+  if (!s || s.length > 160 || !SELECTOR.test(s) || FORBIDDEN_SELECTOR.test(s)) return null;
   return s;
 }
 

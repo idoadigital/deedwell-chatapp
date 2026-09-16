@@ -54,7 +54,8 @@ export const SiteEditOp = z.discriminatedUnion("kind", [
     component: z.string().max(40), variant: z.string().max(40).optional(),
     background: z.enum(["default", "muted", "surface", "dark", "primary", "accent-tint"]).optional(),
     /** A new copy block the section presents, or the index of an existing one. */
-    block: z.union([SiteBlock, z.number().int().min(0)]),
+    // Lazy: index.ts re-exports this module, so SiteBlock is not initialised yet at load time.
+    block: z.union([z.lazy(() => SiteBlock), z.number().int().min(0)]),
     purpose: z.string().max(200).default("Added by the editor"),
   }),
   z.object({
