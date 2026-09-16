@@ -43,3 +43,40 @@ describe("custom domain instructions", () => {
     expect(rows.map((r) => [r.type, r.host])).toEqual([["TXT", "_deedwell"], ["A", "@"]]);
   });
 });
+
+import { DEFAULT_LANGUAGE, fallbackTokens, normalizeComposition } from "../builder/index.js";
+import { applyOperations, renderWorkingPage, type WorkingState } from "./state.js";
+
+function stateWith(designedHtml: string | null): WorkingState {
+  const page = { slug: "home", title: "Home", seoDescription: "", blocks: [{ kind: "hero" as const, heading: "Clean water", tagline: "For every village", ctaText: "Donate", ctaHref: "/donate/" }, { kind: "text" as const, heading: "About", body: "We dig wells." }] };
+  const language = DEFAULT_LANGUAGE;
+  const composition = normalizeComposition(null, { page, images: [], donateUrl: null, language });
+  return {
+    site: { id: "s", slug: "org", name: "Org", tenantId: "t" },
+    pages: [{ page, status: "published", orderIdx: 0, composition, designedHtml }],
+    language, tokens: fallbackTokens(language, { primaryColor: null }), overrides: [], images: [],
+    organization: { name: "Org", logoPath: null, legalName: null, mission: null, headquarters: null, status: null, ein: null, contactEmail: null, contactPhone: null },
+    donateUrl: null, native: true,
+  };
+}
+
+describe("designed (pre-pipeline) pages", () => {
+  const designed = "<!doctype html><html><head><title>Org</title></head><body><section id=\"top\"><h1 class=\"big\">Clean water</h1></section></body></html>";
+  it("keeps their own markup and only takes style overrides", () => {
+    const { state, changed, rejected } = applyOperations(stateWith(designed), [
+      { kind: "style", page: "home", selector: "#top h1", viewport: "mobile", declarations: { "font-size": "30px" } },
+      { kind: "section", page: "home", sectionId: "s0", set: { density: "airy" } },
+      { kind: "copy", page: "home", blockIndex: 0, field: "heading", value: "Changed" },
+    ]);
+    expect([...changed]).toEqual(["home"]);
+    expect(rejected).toHaveLength(2);
+    expect(state.pages[0]!.page.blocks[0]).toMatchObject({ heading: "Clean water" });
+    const html = renderWorkingPage(state, "home");
+    expect(html).toContain('<h1 class="big">Clean water</h1>');
+    expect(html).toContain('<style id="site-overrides">@media (max-width: 639px){#top h1{font-size:30px !important}}</style>');
+  });
+  it("re-renders pipeline pages from their plan", () => {
+    const { state } = applyOperations(stateWith(null), [{ kind: "copy", page: "home", blockIndex: 0, field: "heading", value: "Changed" }]);
+    expect(renderWorkingPage(state, "home")).toContain("Changed");
+  });
+});

@@ -154,6 +154,8 @@ RULES
 - Use "section" for layout, variant, density, background, image side; "section-add"/"-move"/"-remove"
   for composition; "tokens" only for genuinely site-wide look changes; "page-cta" for the main button.
 - Every plan lists measurable expectations for what you changed so it can be verified in a browser.
+- A page whose "composition" says designed=true keeps its own markup: only "style" operations apply
+  to it. If the request needs more than styling there, set understood=false and say so plainly.
 - If the request is unclear or impossible with these operations, set understood=false with one question.
 - The reply is for a nonprofit leader, not a developer: two or three plain sentences.`,
   allowedTools: [],

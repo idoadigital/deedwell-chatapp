@@ -19,7 +19,14 @@ import { cleanDeclarations, cleanSelector, injectOverrides, mergeOverride, overr
  * page: nothing a model wrote reaches a page as markup.
  */
 
-export interface WorkingPage { page: SitePage; status: "published" | "hidden"; orderIdx: number; composition: PageComposition }
+export interface WorkingPage {
+  page: SitePage; status: "published" | "hidden"; orderIdx: number; composition: PageComposition;
+  /** The page's own designed markup when it was not rendered by the current
+   *  pipeline (an older model-designed site). Such a page is edited with
+   *  style overrides only — its markup is never re-rendered from the plan,
+   *  which would replace the design the nonprofit already approved. */
+  designedHtml: string | null;
+}
 
 export interface WorkingState {
   site: { id: string; slug: string; name: string; tenantId: string };
@@ -86,13 +93,17 @@ export async function loadWorkingState(client: PoolClient, siteId: string): Prom
   const images: SiteImage[] = Array.isArray(site.images) ? site.images : [];
   const overrides: StyleOverride[] = Array.isArray((site.edits as { overrides?: unknown })?.overrides) ? (site.edits as { overrides: StyleOverride[] }).overrides : [];
 
-  const { rows: pageRows } = await client.query("SELECT slug, title, blocks, seo, order_idx, status FROM site_pages WHERE site_id = $1 ORDER BY order_idx", [siteId]);
+  const { rows: pageRows } = await client.query("SELECT slug, title, blocks, seo, order_idx, status, rendered_html, rendered_hash FROM site_pages WHERE site_id = $1 ORDER BY order_idx", [siteId]);
   const { rows: plans } = await client.query("SELECT scope, output FROM site_build_stages WHERE site_id = $1 AND stage = 'page_plan'", [siteId]);
   const planFor = new Map<string, unknown>(plans.map((p) => [p.scope, (p.output as { composition?: unknown })?.composition ?? p.output]));
   const pages: WorkingPage[] = pageRows.map((r, i) => {
     const page = SitePage.parse({ slug: r.slug, title: r.title, blocks: r.blocks, seoDescription: r.seo?.description ?? "" });
     const composition = normalizeComposition(planFor.get(r.slug) ?? null, { page, images, donateUrl, language });
-    return { page, status: r.status === "hidden" ? "hidden" : "published", orderIdx: r.order_idx ?? i, composition };
+    // A release swaps in rendered_html whose hash matches the copy; the
+    // pipeline tags its own renders ":pipeline", so anything else is a design.
+    const hash = String(r.rendered_hash ?? "");
+    const designed = r.rendered_html && hash.split(":")[0] === pageContentHash(page) && !hash.endsWith(":pipeline") ? String(r.rendered_html) : null;
+    return { page, status: r.status === "hidden" ? "hidden" : "published", orderIdx: r.order_idx ?? i, composition, designedHtml: designed };
   });
   if (!pages.some((p) => p.page.slug === "home") && pages[0]) pages[0].page = { ...pages[0].page, slug: "home" };
   return { site: { id: site.id, slug: site.slug, name: site.name, tenantId: site.tenant_id }, pages, language, tokens, overrides, images, organization, donateUrl, native: tokensParsed.success };
@@ -106,6 +117,7 @@ export function navOf(state: WorkingState): Array<{ title: string; href: string 
 export function renderWorkingPage(state: WorkingState, slug: string, opts: { withScript?: boolean } = {}): string {
   const wp = state.pages.find((p) => p.page.slug === slug);
   if (!wp) throw new Error(`No page "${slug}"`);
+  if (wp.designedHtml) return injectOverrides(wp.designedHtml, overridesCss(state.overrides, slug));
   const nav = navOf(state);
   const html = renderPage({
     ctx: { site: { name: state.site.name, slug: state.site.slug }, tokens: state.tokens, images: state.images, organization: state.organization, donateUrl: state.donateUrl, nav },
@@ -159,7 +171,18 @@ export function applyOperations(input: WorkingState, ops: SiteEditOp[]): ApplyRe
   const touch = (slug: string) => changed.add(slug);
   const everyPage = () => state.pages.forEach((p) => changed.add(p.page.slug));
 
+  const designedOnly = (op: SiteEditOp): boolean => {
+    const slug = "page" in op ? op.page : null;
+    const wp = slug && slug !== "*" ? pageOf(slug) : null;
+    if (op.kind === "tokens" ? state.pages.every((p) => p.designedHtml) : Boolean(wp?.designedHtml)) {
+      rejected.push(`${op.kind}: ${slug ?? "site"} keeps its designed markup; only styling changes (style) can be made to it`);
+      return true;
+    }
+    return false;
+  };
+
   for (const op of ops) {
+    if (op.kind !== "style" && designedOnly(op)) continue;
     switch (op.kind) {
       case "style": {
         const selector = cleanSelector(op.selector);
@@ -267,7 +290,7 @@ export async function saveWorkingState(client: PoolClient, state: WorkingState, 
               rendered_html = COALESCE($7, rendered_html), rendered_hash = COALESCE($8, rendered_hash)
         WHERE site_id = $1 AND slug = $2`,
       [state.site.id, wp.page.slug, wp.page.title, JSON.stringify(wp.page.blocks), JSON.stringify({ description: wp.page.seoDescription }), i,
-        html, html ? `${pageContentHash(wp.page)}:pipeline` : null]);
+        html, html ? `${pageContentHash(wp.page)}${wp.designedHtml ? ":designed" : ":pipeline"}` : null]);
     const existing = await client.query("SELECT id FROM site_build_stages WHERE site_id = $1 AND stage = 'page_plan' AND scope = $2", [state.site.id, wp.page.slug]);
     if (existing.rows[0]) {
       await client.query("UPDATE site_build_stages SET output = jsonb_set(COALESCE(output, '{}'::jsonb), '{composition}', $2::jsonb) WHERE id = $1", [existing.rows[0].id, JSON.stringify(wp.composition)]);
