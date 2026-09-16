@@ -363,6 +363,8 @@ describe("Google Ads management", () => {
     const only = await api(env.app, "GET", `/v1/admin/google-ads/orgs/${orgId}/activity?action=campaign_published`, { token });
     expect(only.body.activity.every((a: any) => a.action === "campaign_published")).toBe(true);
     expect(only.body.total).toBeGreaterThan(0);
+    const several = await api(env.app, "GET", `/v1/admin/google-ads/orgs/${orgId}/activity?action=campaign_published,campaign_approved`, { token });
+    expect(new Set(several.body.activity.map((a: any) => a.action))).toEqual(new Set(["campaign_published", "campaign_approved"]));
     const searched = await api(env.app, "GET", `/v1/orgs/${orgId}/google-ads/activity?q=${encodeURIComponent("campaign_published")}&limit=5`, { token });
     expect(searched.body.activity.length).toBeGreaterThan(0);
     const campaigns = await api(env.app, "GET", `/v1/orgs/${orgId}/google-ads/campaigns`, { token });

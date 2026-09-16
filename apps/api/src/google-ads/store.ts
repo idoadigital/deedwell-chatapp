@@ -102,6 +102,7 @@ export interface ActivityQuery {
   accountId?: string | null;
   /** Case-insensitive match on the summary, action, actor name or email. */
   search?: string | null;
+  /** One action, or several comma-separated. */
   action?: string | null;
   actorKind?: string | null;
   entityType?: string | null;
@@ -123,7 +124,9 @@ export async function listActivity(client: PoolClient, tenantId: string, opts: A
     const n = `$${params.length}`;
     where.push(`(a.summary ILIKE ${n} OR a.action ILIKE ${n} OR u.display_name ILIKE ${n} OR u.email ILIKE ${n})`);
   }
-  if (opts.action) add(`a.action = ?`, opts.action);
+  // One action or a comma-separated set (the customer feed asks for the
+  // handful of events that describe work done for them).
+  if (opts.action) add(`a.action = ANY(?::text[])`, opts.action.split(",").map((a) => a.trim()).filter(Boolean));
   if (opts.actorKind) add(`a.actor_kind = ?`, opts.actorKind);
   if (opts.entityType) add(`a.entity_type = ?`, opts.entityType);
   if (opts.since && /^\d{4}-\d{2}-\d{2}$/.test(opts.since)) add(`a.created_at >= ?::date`, opts.since);
