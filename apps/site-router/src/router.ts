@@ -44,6 +44,7 @@ const CONTENT_TYPES: Record<string, string> = {
   jpg: "image/jpeg",
   jpeg: "image/jpeg",
   webp: "image/webp",
+  gif: "image/gif",
   svg: "image/svg+xml",
 };
 
@@ -168,6 +169,15 @@ export function buildSiteRouter(deps: SiteRouterDeps): FastifyInstance {
       const html = await renderContent(site, dynamic[1] as "blog" | "events", dynamic[2] ?? null);
       if (html) return reply.type("text/html; charset=utf-8").header("cache-control", mode === "live" ? "public, max-age=60" : "no-store").send(rewriteForPrefix(html, prefix));
       // fall through to the site's 404
+    }
+    // Uploaded media (featured images) lives with the site, not the release,
+    // so a new upload never needs a rebuild.
+    const media = /^media\/([a-z0-9-]+\.(?:png|jpe?g|webp|gif))$/i.exec(clean);
+    if (media) {
+      try {
+        const content = await deps.storage.get(`tenants/${site.tenantId}/sites/${site.siteId}/media/${media[1]}`);
+        return reply.type(CONTENT_TYPES[media[1]!.split(".").pop()!.toLowerCase()] ?? "application/octet-stream").header("cache-control", "public, max-age=3600").send(content);
+      } catch { return reply.status(404).header("cache-control", "no-store").send("Not found"); }
     }
     const path = clean === "" ? "index.html" : /\.[a-z0-9]+$/i.test(clean) ? clean : `${clean}/index.html`;
     try {

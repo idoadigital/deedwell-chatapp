@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { audit, uuidv7, withContext } from "@deedwell/database";
 import {
-  SiteDomainInput, SiteDonationsInput, SiteEditorMessageInput, SiteEventInput, SitePageStatusInput, SitePostInput, SiteQaStartInput,
+  SiteDomainInput, SiteDonationsInput, SiteEditorMessageInput, SiteEventInput, SiteMediaInput, SitePageStatusInput, SitePostInput, SiteQaStartInput,
 } from "@deedwell/schemas";
 import {
   WEBSITE_EDIT_WORKFLOW, WEBSITE_QA_WORKFLOW, assembleRelease, createJob, instructionsFor, loadJob, loadSiteLogoFrom, newVerificationToken, nextStatus, observeDns, probeHttps, publishRelease, restoreRelease, siteUrls,
@@ -243,6 +243,31 @@ export function registerWebsiteStudioRoutes(app: FastifyInstance, ctx: AppContex
     return reply.type("image/jpeg").header("cache-control", "private, max-age=3600").send(bytes);
   });
 
+  // ---- media ---------------------------------------------------------------------
+  // Featured images for posts and events. Stored with the site (not inside a
+  // release) and served by the router at /media/<key>, so publishing a post
+  // with a picture never rebuilds the website.
+  const MEDIA_EXT: Record<string, string> = { "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp", "image/gif": "gif" };
+  const MAX_MEDIA_BYTES = 8_000_000;
+  app.post(`${base}/media`, async (req, reply) => {
+    ctx.requireRole(req, "member");
+    const input = SiteMediaInput.parse(req.body);
+    const content = Buffer.from(input.contentBase64, "base64");
+    if (content.length === 0) throw new HttpError(400, "The image is empty");
+    if (content.length > MAX_MEDIA_BYTES) throw new HttpError(413, "Images are limited to 8 MB");
+    const magic = content.subarray(0, 4).toString("hex");
+    const looksLike = { "image/png": magic.startsWith("89504e47"), "image/jpeg": magic.startsWith("ffd8ff"), "image/webp": content.subarray(0, 4).toString() === "RIFF" && content.subarray(8, 12).toString() === "WEBP", "image/gif": content.subarray(0, 3).toString() === "GIF" }[input.mime];
+    if (!looksLike) throw new HttpError(400, "That file is not the kind of image it claims to be");
+    const key = `${uuidv7()}.${MEDIA_EXT[input.mime]}`;
+    return ctx.inOrg(req, async (client) => {
+      const site = await siteOf(req, client);
+      await ctx.deps.storage.put(`tenants/${req.orgId}/sites/${site.id}/media/${key}`, content);
+      await audit(client, { tenantId: req.orgId!, actorUser: req.userId, action: "site.media_uploaded", entityType: "site", entityId: site.id, metadata: { key, filename: input.filename, bytes: content.length } });
+      const previewBase = siteUrls(site as never).preview_url?.replace(/\/$/, "") ?? null;
+      return reply.status(201).send({ key, url: previewBase ? `${previewBase}/media/${key}` : null });
+    });
+  });
+
   // ---- pages -------------------------------------------------------------------
   app.patch(`${base}/pages/:slug`, async (req) => {
     ctx.requireRole(req, "member");
@@ -472,7 +497,7 @@ export function registerWebsiteStudioRoutes(app: FastifyInstance, ctx: AppContex
   app.get("/v1/admin/site-domains", async (req) => {
     ctx.requirePlatformAdmin(req);
     const { rows } = await ctx.deps.adminPool.query(
-      `SELECT d.id, d.domain, d.status, d.dns, d.last_checked_at, d.last_error, d.created_at, s.slug, s.name AS site_name, o.name AS org_name
+      `SELECT d.id, d.tenant_id, d.domain, d.status, d.dns, d.last_checked_at, d.last_error, d.created_at, s.slug, s.name AS site_name, o.name AS org_name
          FROM site_domains d JOIN sites s ON s.id = d.site_id JOIN organizations o ON o.id = d.tenant_id ORDER BY d.created_at DESC`);
     return { domains: rows, service: process.env.SITES_SERVICE_NAME ?? "deedwell-sites", region: process.env.GCP_REGION ?? "us-central1" };
   });

@@ -132,14 +132,26 @@ describe("website studio", () => {
 
   it("blog and events are served dynamically without a rebuild, and donations/domains are managed", async () => {
     const versions = (await api(env.app, "GET", `/v1/orgs/${s.orgId}/sites/${s.siteId}/versions`, { token: s.token })).body.versions.length;
-    const post = await api(env.app, "POST", `/v1/orgs/${s.orgId}/sites/${s.siteId}/posts`, { token: s.token, body: { title: "New wells in Turkana", excerpt: "Three villages now have clean water.", content: "## Progress\n\nWe finished **three** wells.\n\n- Lodwar\n- Kakuma", status: "published", author: "Grace" } });
+    // A featured image is uploaded once and served by the site itself.
+    const png = Buffer.from("89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d49444154789c6360f8cfc00000030101009f9c11ff0000000049454e44ae426082", "hex").toString("base64");
+    const media = await api(env.app, "POST", `/v1/orgs/${s.orgId}/sites/${s.siteId}/media`, { token: s.token, body: { filename: "well.png", mime: "image/png", contentBase64: png } });
+    expect(media.status).toBe(201);
+    expect(media.body.key).toMatch(/\.png$/);
+    const fake = await api(env.app, "POST", `/v1/orgs/${s.orgId}/sites/${s.siteId}/media`, { token: s.token, body: { filename: "well.jpg", mime: "image/jpeg", contentBase64: png } });
+    expect(fake.status, "content sniffed, not trusted").toBe(400);
+    const post = await api(env.app, "POST", `/v1/orgs/${s.orgId}/sites/${s.siteId}/posts`, { token: s.token, body: { title: "New wells in Turkana", excerpt: "Three villages now have clean water.", content: "## Progress\n\nWe finished **three** wells.\n\n- Lodwar\n- Kakuma", status: "published", author: "Grace", featuredImageKey: media.body.key } });
     expect(post.status).toBe(201);
+    const served = await router.inject({ method: "GET", url: `/generosity-global/media/${media.body.key}` });
+    expect(served.statusCode).toBe(200);
+    expect(served.headers["content-type"]).toBe("image/png");
+    expect((await router.inject({ method: "GET", url: "/generosity-global/media/nope.png" })).statusCode).toBe(404);
     const event = await api(env.app, "POST", `/v1/orgs/${s.orgId}/sites/${s.siteId}/events`, { token: s.token, body: { title: "Water for Africa Dinner", description: "Join us for an evening of impact.", startsAt: new Date(Date.now() + 86400000 * 30).toISOString(), location: "Nairobi", registrationUrl: "https://tickets.example/dinner", status: "published" } });
     expect(event.status).toBe(201);
     expect((await api(env.app, "GET", `/v1/orgs/${s.orgId}/sites/${s.siteId}/versions`, { token: s.token })).body.versions.length, "no rebuild").toBe(versions);
     const list = await router.inject({ method: "GET", url: "/generosity-global/blog/" });
     expect(list.statusCode).toBe(200);
     expect(list.body).toContain("New wells in Turkana");
+    expect(list.body).toContain(`/media/${media.body.key}`);
     const detail = await router.inject({ method: "GET", url: "/generosity-global/blog/new-wells-in-turkana/" });
     expect(detail.body).toContain("<strong>three</strong>");
     expect(detail.body).toContain("<li>Lodwar</li>");

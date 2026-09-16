@@ -177,3 +177,10 @@ export const SiteDomainInput = z.object({
 });
 
 export const SitePageStatusInput = z.object({ status: z.enum(["published", "hidden"]) });
+
+/** A featured image for a post or event; the site router serves it at /media/<key>. */
+export const SiteMediaInput = z.object({
+  filename: z.string().min(1).max(255),
+  mime: z.enum(["image/png", "image/jpeg", "image/webp", "image/gif"]),
+  contentBase64: z.string().min(1).max(11_000_000),
+});

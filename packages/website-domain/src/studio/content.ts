@@ -73,7 +73,10 @@ ${shell.script}
 </html>`;
 }
 
-const imageTag = (key: string | null, alt: string, cls = "") => (key ? `<figure class="media ${cls}"><img src="/images/${esc(key)}.png" alt="${esc(alt)}" loading="lazy" decoding="async"></figure>` : "");
+// Uploaded media carries its extension ("01…abc.jpg", served at /media/);
+// a bare key is one of the site's generated images.
+const imageSrc = (key: string) => (key.includes(".") ? `/media/${esc(key)}` : `/images/${esc(key)}.png`);
+const imageTag = (key: string | null, alt: string, cls = "") => (key ? `<figure class="media ${cls}"><img src="${imageSrc(key)}" alt="${esc(alt)}" loading="lazy" decoding="async"></figure>` : "");
 
 export function renderPostList(shell: Shell, posts: SitePostRow[]): string {
   const items = posts.map((p) => `<article class="card">${imageTag(p.featured_image_key, p.title)}<div class="card__body"><p class="eyebrow">${esc(fmtDate(p.published_at))}${p.author ? ` · ${esc(p.author)}` : ""}</p><h2 class="t-h3"><a href="/blog/${esc(p.slug)}/">${esc(p.title)}</a></h2>${p.excerpt ? `<p>${esc(p.excerpt)}</p>` : ""}</div></article>`).join("");
