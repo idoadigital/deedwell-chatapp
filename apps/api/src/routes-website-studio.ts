@@ -5,7 +5,7 @@ import {
   SiteBlock, SiteDomainInput, SiteDonationsInput, SiteEditorMessageInput, SiteEventInput, SiteMediaInput, SitePage, SitePageStatusInput, SitePostInput, SiteQaStartInput,
 } from "@deedwell/schemas";
 import {
-  WEBSITE_EDIT_WORKFLOW, WEBSITE_QA_WORKFLOW, assembleRelease, createJob, instructionsFor, loadJob, loadSiteLogoFrom, loadWorkingState, newVerificationToken, nextStatus, normalizeComposition, observeDns, probeHttps, publishRelease, restoreRelease, saveWorkingState, siteUrls,
+  WEBSITE_EDIT_WORKFLOW, WEBSITE_QA_WORKFLOW, assembleRelease, createJob, instructionsFor, loadJob, loadSiteLogoFrom, loadWorkingState, newVerificationToken, nextStatus, normalizeComposition, observeDns, patchDesignedCopy, probeHttps, publishRelease, restoreRelease, saveWorkingState, siteUrls,
 } from "@deedwell/website-domain";
 import { HttpError, type AppContext } from "./app.js";
 import { requireTokens } from "./billing-gate.js";
@@ -315,14 +315,19 @@ export function registerWebsiteStudioRoutes(app: FastifyInstance, ctx: AppContex
       const wp = state.pages.find((p) => p.page.slug === slug);
       const current = wp?.page.blocks[at];
       if (!wp || !current) throw new HttpError(404, "Block not found");
-      if (wp.designedHtml) throw new HttpError(409, "This page keeps its designed layout; change its wording with the AI editor.");
       const parsed = SiteBlock.safeParse(body.block);
       if (!parsed.success) throw new HttpError(400, `Invalid content: ${parsed.error.issues[0]?.path.join(".")} ${parsed.error.issues[0]?.message}`);
       if (parsed.data.kind !== current.kind) throw new HttpError(400, "A section's type cannot change here.");
+      if (wp.designedHtml) {
+        // The design is kept: the wording is changed inside the page itself.
+        const patched = patchDesignedCopy(wp.designedHtml, current, parsed.data);
+        if ("error" in patched) throw new HttpError(409, patched.error);
+        wp.designedHtml = patched.html;
+      }
       wp.page.blocks[at] = parsed.data;
       const page = SitePage.safeParse(wp.page);
       if (!page.success) throw new HttpError(400, `Invalid page: ${page.error.issues[0]?.message}`);
-      wp.composition = normalizeComposition(wp.composition, { page: wp.page, images: state.images, donateUrl: state.donateUrl, language: state.language });
+      if (!wp.designedHtml) wp.composition = normalizeComposition(wp.composition, { page: wp.page, images: state.images, donateUrl: state.donateUrl, language: state.language });
       await saveWorkingState(client, state, [slug]);
       const logo = await loadSiteLogoFrom(client, ctx.deps.storage);
       const label = body.label ?? `${wp.page.title}: ${current.kind} content updated`;

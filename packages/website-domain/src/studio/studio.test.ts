@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { cleanDeclarations, cleanSelector, injectOverrides, mergeOverride, overridesCss } from "./overrides.js";
 import { instructionsFor } from "./domains.js";
 import { fillFeeds, hasFeeds } from "./content.js";
+import { patchDesignedCopy } from "./state.js";
 
 describe("overrides layer", () => {
   it("keeps allowed properties with safe values and drops the rest", () => {
@@ -120,5 +121,27 @@ describe("content feeds", () => {
     expect(fillFeeds(src, { posts: [], events: [] }, now)).toBe(src);
     expect(hasFeeds(src)).toBe(true);
     expect(hasFeeds("<p>plain</p>")).toBe(false);
+  });
+});
+
+describe("designed pages: wording edits", () => {
+  const html = '<html><body><section id="s0"><h2 class="t">What we do</h2><ul><li><h3>Wells &amp; pumps</h3><p>Clean water.</p></li><li><h3>Schools</h3><p>Books for all.</p></li></ul><a title="Schools" href="/schools/">Schools</a></section></body></html>';
+  const before = { kind: "programs" as const, heading: "What we do", items: [{ name: "Wells & pumps", description: "Clean water." }, { name: "Schools", description: "Books for all." }] };
+  it("replaces changed text in the markup, escaped, and leaves attributes alone", () => {
+    const r = patchDesignedCopy(html, before, { ...before, heading: "Our programs", items: [{ name: "Wells & solar pumps", description: "Clean water." }, { name: "Schools", description: "Books for all." }] });
+    expect("error" in r).toBe(false);
+    if ("error" in r) return;
+    expect(r.html).toContain("<h2 class=\"t\">Our programs</h2>");
+    expect(r.html).toContain("<h3>Wells &amp; solar pumps</h3>");
+    expect(r.html).toContain('title="Schools"');
+    expect(r.changed).toEqual(["heading", "items.0.name"]);
+  });
+  it("refuses a change whose current text is not on the page, and any change of shape", () => {
+    const missing = patchDesignedCopy(html, { ...before, items: [{ name: "Paraphrased", description: "x" }, before.items[1]!] }, { ...before, items: [{ name: "New", description: "x" }, before.items[1]!] });
+    expect("error" in missing).toBe(true);
+    const added = patchDesignedCopy(html, before, { ...before, items: [...before.items, { name: "Third", description: "y" }] });
+    expect("error" in added && /add or remove/.test(added.error)).toBe(true);
+    const same = patchDesignedCopy(html, before, before);
+    expect(same).toEqual({ html, changed: [] });
   });
 });

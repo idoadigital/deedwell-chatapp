@@ -274,6 +274,53 @@ export function applyOperations(input: WorkingState, ops: SiteEditOp[]): ApplyRe
   return { state, changed, notes, rejected };
 }
 
+// ---- designed pages: wording edits --------------------------------------------
+
+const escHtml = (v: string) => v.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]!));
+const escRe = (v: string) => v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** Every string leaf of a block, by dot path. */
+function textLeaves(value: unknown, path: string[] = [], out: Array<[string, string]> = []): Array<[string, string]> {
+  if (typeof value === "string") out.push([path.join("."), value]);
+  else if (Array.isArray(value)) value.forEach((v, i) => textLeaves(v, [...path, String(i)], out));
+  else if (value && typeof value === "object") for (const [k, v] of Object.entries(value)) textLeaves(v, [...path, k], out);
+  return out;
+}
+
+export interface DesignedPatch { html: string; changed: string[] }
+
+/**
+ * A page that keeps designed markup cannot be re-rendered from its blocks
+ * without losing the design, so a wording change is made to the markup
+ * itself: each changed text is found in the page (as the designer escaped
+ * it) and replaced. The shape must stay the same — entries are not added or
+ * removed here — and every changed text must be present on the page, or
+ * the whole edit is refused with the field that could not be found.
+ */
+export function patchDesignedCopy(html: string, before: SiteBlock, after: SiteBlock): DesignedPatch | { error: string } {
+  const prev = new Map(textLeaves(before));
+  const next = textLeaves(after);
+  if (next.length !== prev.size || next.some(([k]) => !prev.has(k))) return { error: "On a designed page you can change the wording, but not add or remove entries. Ask the AI editor for that." };
+  let out = html;
+  const changed: string[] = [];
+  for (const [field, value] of next) {
+    const old = prev.get(field)!;
+    if (old === value) continue;
+    const from = old.trim();
+    if (from.length < 2) return { error: `"${field}" is too short to find on the page.` };
+    const variants = [escHtml(from), from];
+    const hit = variants.find((v) => out.includes(v));
+    if (!hit) return { error: `The current text of "${field}" ("${from.slice(0, 60)}${from.length > 60 ? "…" : ""}") is not on the designed page as written, so it cannot be replaced here. Change it in the AI editor instead.` };
+    // Only text between tags is replaced — never an attribute or a tag.
+    const re = new RegExp(`(>[^<]*?)${escRe(hit)}(?=[^<]*<)`, "g");
+    const replaced = out.replace(re, (_m, lead: string) => `${lead}${escHtml(value.trim())}`);
+    if (replaced === out) return { error: `"${field}" appears on the page only inside markup, so it cannot be replaced here. Change it in the AI editor instead.` };
+    out = replaced;
+    changed.push(field);
+  }
+  return { html: out, changed };
+}
+
 // ---- persistence -------------------------------------------------------------
 
 /** Writes the working state back. Pages that changed get their new

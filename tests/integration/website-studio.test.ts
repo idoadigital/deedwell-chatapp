@@ -218,9 +218,30 @@ describe("website studio", () => {
     const swap = await api(env.app, "PUT", `${base}/pages/${programs!.page.slug}/blocks/${programs!.index}`, { token: s.token, body: { block: { kind: "text", heading: null, body: "x" } } });
     expect(swap.status).toBe(400);
 
+    // A page that keeps designed markup: wording is patched into the design
+    // itself (the design survives), while adding entries is refused.
+    const about = pages.find((p) => p.slug === "about")!;
+    await env.deps.adminPool.query("UPDATE site_pages SET rendered_html = replace(rendered_html, '<main id=\"main\">', '<main id=\"main\" data-designed=\"yes\">'), rendered_hash = split_part(rendered_hash, ':', 1) || ':designed' WHERE site_id = $1 AND slug = 'about'", [s.siteId]);
+    const aboutNow = (await api(env.app, "GET", `${base}/content`, { token: s.token })).body.pages.find((p: any) => p.slug === "about");
+    expect(aboutNow.designed).toBe(true);
+    const textIdx = aboutNow.blocks.findIndex((b: any) => b.kind === "text" && b.heading);
+    const textBlock = aboutNow.blocks[textIdx];
+    const reworded = await api(env.app, "PUT", `${base}/pages/about/blocks/${textIdx}`, { token: s.token, body: { block: { ...textBlock, heading: "Why we exist" } } });
+    expect(reworded.status, JSON.stringify(reworded.body)).toBe(200);
+    const aboutHtml = (await router.inject({ method: "GET", url: "/preview/generosity-global/about/" })).body;
+    expect(aboutHtml).toContain("Why we exist");
+    expect(aboutHtml, "the designed markup is kept").toContain('data-designed="yes"');
+    // When the designer paraphrased the copy, the current text is not on the
+    // page — the edit is refused rather than silently dropped.
+    await env.deps.adminPool.query("UPDATE site_pages SET rendered_html = replace(rendered_html, 'Why we exist', 'Our reason for being') WHERE site_id = $1 AND slug = 'about'", [s.siteId]);
+    const gone = await api(env.app, "PUT", `${base}/pages/about/blocks/${textIdx}`, { token: s.token, body: { block: { ...textBlock, heading: "Something else" } } });
+    expect(gone.status, JSON.stringify(gone.body)).toBe(409);
+    await env.deps.adminPool.query("UPDATE site_pages SET rendered_hash = split_part(rendered_hash, ':', 1) || ':pipeline' WHERE site_id = $1 AND slug = 'about'", [s.siteId]);
+
     // A feed section is a window onto the CMS: the event published earlier
     // appears in it on the served page, and the record stays the source.
     const home = pages.find((p) => p.slug === "home")!;
+    const versionsBeforeFeed = (await api(env.app, "GET", `${base}/versions`, { token: s.token })).body.versions.length;
     await env.deps.adminPool.query("UPDATE site_pages SET blocks = blocks || $2::jsonb WHERE site_id = $1 AND slug = 'home'",
       [s.siteId, JSON.stringify([{ kind: "feed", source: "events", heading: "Join us", intro: null, limit: 3, slug: "water-for-africa-dinner", ctaText: null }])]);
     const feedSaved = await api(env.app, "PUT", `${base}/pages/home/blocks/${home.blocks.length}`, { token: s.token, body: { block: { kind: "feed", source: "events", heading: "Join us this year", intro: null, limit: 3, slug: "water-for-africa-dinner", ctaText: null } } });
@@ -236,7 +257,7 @@ describe("website studio", () => {
     expect(renamed.status).toBe(200);
     const versionsAfter = (await api(env.app, "GET", `${base}/versions`, { token: s.token })).body.versions.length;
     expect((await router.inject({ method: "GET", url: "/preview/generosity-global/" })).body).toContain("Water for Africa Gala");
-    expect(versionsAfter, "no rebuild for a CMS change").toBe(versions.length + 1);
+    expect(versionsAfter, "no rebuild for a CMS change").toBe(versionsBeforeFeed + 1);
     // An unpublished event never leaks into the feed.
     await api(env.app, "PATCH", `${base}/events/${ev.id}`, { token: s.token, body: { status: "draft" } });
     expect((await router.inject({ method: "GET", url: "/preview/generosity-global/" })).body).not.toContain("Water for Africa Gala");
