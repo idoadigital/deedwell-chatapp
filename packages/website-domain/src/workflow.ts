@@ -3,6 +3,8 @@ import { audit, enqueueWebhookEvent, loadMissionProfile, missionProfileBlock, uu
 import { runAgentTask, type ModelProvider } from "@deedwell/agent-runtime";
 import type { ToolGateway } from "@deedwell/tools";
 import type { StepContext, StepResult, WorkflowDefinition } from "@deedwell/workflows";
+import type { PoolClient } from "pg";
+import type { StudioServices } from "./studio/jobs.js";
 import {
   SitePage,
   SiteTheme,
@@ -46,6 +48,8 @@ export interface WebsiteServices {
   designer?: ModelProvider;
   /** Image generation for site photography; absent → sites have no images. */
   images?: () => Promise<import("@deedwell/content-domain").ImageGenerator>;
+  /** Live job timelines for the editor and QA; absent → progress is only in the run. */
+  studio?: StudioServices;
 }
 
 type Ctx = StepContext<WebsiteServices>;
@@ -461,7 +465,7 @@ async function designNextPage(ctx: Ctx, siteId: string, after: string): Promise<
 // Shared steps: build a release from the CMS working copy, then gate publish.
 // ---------------------------------------------------------------------------
 
-async function buildRelease(ctx: Ctx, siteId: string): Promise<StepResult> {
+async function buildRelease(ctx: Ctx, siteId: string, opts: { next?: string } = {}): Promise<StepResult> {
   const site = await getSite(ctx, siteId);
   const pages = await loadPages(ctx, siteId);
   if (!pages.length) throw new Error("Site has no pages to build");
@@ -609,33 +613,67 @@ async function buildRelease(ctx: Ctx, siteId: string): Promise<StepResult> {
     };
   }
 
+  if (opts.next) {
+    // Post-generation QA runs before anyone is asked to publish.
+    return { state: { ...ctx.state, releaseId, version, failedChecks: failures.length, testReportArtifactId: reportId, warnings: failures.map(describe) }, next: opts.next };
+  }
+  return requestPublish(ctx, { siteId, siteSlug: site.slug, siteName: site.name, releaseId, version, warnings: failures.map(describe), reportId });
+}
+
+/** Raises the publish approval for a built preview and tells the admins. */
+async function requestPublish(ctx: Ctx, r: { siteId: string; siteSlug: string; siteName: string; releaseId: string; version: number; warnings: string[]; reportId: string | null }): Promise<StepResult> {
   const approvalId = uuidv7();
   await ctx.client.query(
     `INSERT INTO approvals (id, tenant_id, run_id, kind, payload) VALUES ($1,$2,$3,'publish_site',$4)`,
     [approvalId, ctx.tenantId, ctx.runId, JSON.stringify({
-      siteId, releaseId, version,
-      previewPath: `/preview/${site.slug}/`,
-      warnings: failures.map(describe),
-      testReportArtifactId: reportId,
+      siteId: r.siteId, releaseId: r.releaseId, version: r.version,
+      previewPath: `/preview/${r.siteSlug}/`,
+      warnings: r.warnings,
+      testReportArtifactId: r.reportId,
     })]
   );
   await audit(ctx.client, {
     tenantId: ctx.tenantId, actorAgent: "website.qa_deployment",
-    action: "site.release_built", entityType: "site_release", entityId: releaseId,
-    metadata: { version, failedChecks: failures.length },
+    action: "site.release_built", entityType: "site_release", entityId: r.releaseId,
+    metadata: { version: r.version, failedChecks: r.warnings.length },
   });
-  await recordReleaseEvent(ctx, site.slug, version, failures.length, 0);
+  await recordReleaseEvent(ctx, r.siteSlug, r.version, r.warnings.length, 0);
   // A build takes minutes and the person who asked is usually gone by now:
   // the approval request goes out by email as well as in the dashboard.
   await emailOrgAdmins(ctx.client, ctx.tenantId, "site_preview_ready", {
-    orgName: await orgNameOf(ctx.client, ctx.tenantId), siteName: site.name, version,
-    previewUrl: siteUrls({ slug: site.slug, preview_version: version }).preview_url,
-    warnings: failures.map(describe),
-  }, { dedupe: `site_preview_ready:${releaseId}` });
+    orgName: await orgNameOf(ctx.client, ctx.tenantId), siteName: r.siteName, version: r.version,
+    previewUrl: siteUrls({ slug: r.siteSlug, preview_version: r.version }).preview_url,
+    warnings: r.warnings,
+  }, { dedupe: `site_preview_ready:${r.releaseId}` });
   return {
-    state: { ...ctx.state, releaseId, version, failedChecks: failures.length, testReportArtifactId: reportId },
+    state: { ...ctx.state, releaseId: r.releaseId, version: r.version, failedChecks: r.warnings.length, testReportArtifactId: r.reportId },
     wait: { kind: "approval", payload: { approvalId, kind: "publish_site" }, resumeStep: "publish_gate" },
   };
+}
+
+/** Automatic QA after generation: inspect, repair, verify — then the publish
+ *  gate sees the repaired version. A QA failure never fails the build. */
+async function postGenerationQa(ctx: Ctx, siteId: string): Promise<StepResult> {
+  if ((process.env.SITE_POST_QA ?? "on") === "off") return { state: ctx.state, next: "request_publish" };
+  const { createJob, JobProgress } = await import("./studio/jobs.js");
+  const { runQaPass } = await import("./studio/qa.js");
+  const { summarizeQa } = await import("./studio/qa-workflow.js");
+  // The job row lives outside this step's transaction so its timeline is
+  // visible while the QA runs (and so the progress writer never waits on us).
+  const jobs = ctx.services.studio?.pool ?? ctx.client;
+  const jobId = await createJob(jobs, { tenantId: ctx.tenantId, siteId, kind: "qa", instruction: null, context: { trigger: "generation", runId: ctx.runId }, createdBy: ctx.createdBy, releaseBefore: (ctx.state.releaseId as string) ?? null });
+  await ctx.client.query("UPDATE sites SET qa_status = 'running', qa_job_id = $2 WHERE id = $1", [siteId, jobId]);
+  const progress = ctx.services.studio ? new JobProgress(ctx.services.studio, { id: jobId, tenantId: ctx.tenantId, siteId, kind: "qa" }, [], "testing") : null;
+  try {
+    const outcome = await runQaPass({ client: ctx.client, storage: ctx.services.storage, tenantId: ctx.tenantId, siteId, jobId, runId: ctx.runId, progress, provider: ctx.services.provider, critic: ctx.services.designer, createdBy: ctx.createdBy });
+    await progress?.complete({ status: outcome.status === "failed" ? "failed" : "complete", summary: summarizeQa(outcome), result: { outcome }, releaseAfter: outcome.releaseId });
+    const latest = (await ctx.client.query("SELECT r.id, r.version FROM sites s JOIN site_releases r ON r.id = s.preview_release_id WHERE s.id = $1", [siteId])).rows[0];
+    return { state: { ...ctx.state, qa: outcome, qaJobId: jobId, releaseId: latest?.id ?? ctx.state.releaseId, version: latest?.version ?? ctx.state.version }, next: "request_publish" };
+  } catch (err) {
+    await progress?.complete({ status: "failed", error: String((err as Error).message ?? err).slice(0, 300) });
+    await ctx.client.query("UPDATE sites SET qa_status = 'failed' WHERE id = $1", [siteId]);
+    return { state: { ...ctx.state, qa: { status: "failed", error: String((err as Error).message ?? err).slice(0, 200) }, qaJobId: jobId }, next: "request_publish" };
+  }
 }
 
 async function publishGate(ctx: Ctx, siteId: string): Promise<StepResult> {
@@ -655,7 +693,11 @@ async function publishGate(ctx: Ctx, siteId: string): Promise<StepResult> {
     // Site stays in preview; the user iterates via conversational updates.
     return { state: { ...ctx.state, published: false }, complete: true };
   }
-  const releaseId = z.string().uuid().parse(ctx.state.releaseId);
+  // The preview may have moved on since the gate was raised (edits and QA
+  // repairs in the studio build new versions); publishing means the preview
+  // the nonprofit is looking at, never a stale one.
+  const current = (await ctx.client.query("SELECT preview_release_id FROM sites WHERE id = $1", [siteId])).rows[0]?.preview_release_id as string | null;
+  const releaseId = current ?? z.string().uuid().parse(ctx.state.releaseId);
   await ctx.client.query(
     `UPDATE site_releases SET status = 'superseded'
      WHERE site_id = $1 AND status = 'published' AND id <> $2`,
@@ -680,7 +722,8 @@ async function publishGate(ctx: Ctx, siteId: string): Promise<StepResult> {
   // shape. Subscriptions are platform-wide, so orgId travels in the payload.
   await enqueueWebhookEvent(ctx.client, "website.published", { orgId: ctx.tenantId, siteId, releaseId });
   {
-    const live = (await ctx.client.query("SELECT slug, name, live_version FROM sites WHERE id = $1", [siteId])).rows[0];
+    const live = (await ctx.client.query(
+      "SELECT s.slug, s.name, (SELECT version FROM site_releases r WHERE r.id = s.active_release_id) AS live_version FROM sites s WHERE s.id = $1", [siteId])).rows[0];
     if (live) {
       await emailOrgAdmins(ctx.client, ctx.tenantId, "site_published", {
         orgName: await orgNameOf(ctx.client, ctx.tenantId), siteName: live.name,
@@ -696,7 +739,7 @@ async function publishGate(ctx: Ctx, siteId: string): Promise<StepResult> {
 export function buildWebsiteBuildWorkflow(): WorkflowDefinition<WebsiteServices> {
   return {
     name: WEBSITE_BUILD_WORKFLOW,
-    version: 3,
+    version: 4,
     // Budget accounts for the conversational intake and per-page generation:
     // discovery may re-enter up to 4 times, each gate costs a step per
     // re-entry, and generate_content now runs once per page. steps_used
@@ -923,7 +966,16 @@ export function buildWebsiteBuildWorkflow(): WorkflowDefinition<WebsiteServices>
       },
 
       async build_release(ctx): Promise<StepResult> {
-        return buildRelease(ctx, BuildInput.parse(ctx.state.input).siteId);
+        return buildRelease(ctx, BuildInput.parse(ctx.state.input).siteId, { next: "post_qa" });
+      },
+      /** Generation Complete → Automatic QA → Testing → Repairing → Verifying → Ready. */
+      async post_qa(ctx): Promise<StepResult> {
+        return postGenerationQa(ctx, BuildInput.parse(ctx.state.input).siteId);
+      },
+      async request_publish(ctx): Promise<StepResult> {
+        const siteId = BuildInput.parse(ctx.state.input).siteId;
+        const site = await getSite(ctx, siteId);
+        return requestPublish(ctx, { siteId, siteSlug: site.slug, siteName: site.name, releaseId: z.string().uuid().parse(ctx.state.releaseId), version: Number(ctx.state.version), warnings: (ctx.state.warnings as string[]) ?? [], reportId: (ctx.state.testReportArtifactId as string) ?? null });
       },
       async publish_gate(ctx): Promise<StepResult> {
         return publishGate(ctx, BuildInput.parse(ctx.state.input).siteId);
@@ -1035,15 +1087,19 @@ export function buildWebsiteUpdateWorkflow(): WorkflowDefinition<WebsiteServices
  *  the extension the site will serve it under. Null when there is none or
  *  it is not a raster the sanitizer accepts. */
 async function loadSiteLogo(ctx: Ctx): Promise<{ bytes: Buffer; ext: string; mime: string } | null> {
-  const fact = await ctx.client.query("SELECT value FROM org_facts WHERE fact_key = 'brand_logo_file_id' LIMIT 1");
+  return loadSiteLogoFrom(ctx.client, ctx.services.storage);
+}
+
+export async function loadSiteLogoFrom(client: PoolClient, storage: StorageAdapter): Promise<{ bytes: Buffer; ext: string; mime: string } | null> {
+  const fact = await client.query("SELECT value FROM org_facts WHERE fact_key = 'brand_logo_file_id' LIMIT 1");
   const fileId = String(fact.rows[0]?.value ?? "").trim().replace(/^"|"$/g, "");
   if (!/^[0-9a-f-]{36}$/.test(fileId)) return null;
-  const file = await ctx.client.query("SELECT mime, storage_key FROM files WHERE id = $1", [fileId]);
+  const file = await client.query("SELECT mime, storage_key FROM files WHERE id = $1", [fileId]);
   const row = file.rows[0];
   const ext = row?.mime === "image/png" ? "png" : row?.mime === "image/jpeg" ? "jpg" : row?.mime === "image/webp" ? "webp" : null;
   if (!row || !ext) return null;
   try {
-    const bytes = await ctx.services.storage.get(row.storage_key);
+    const bytes = await storage.get(row.storage_key);
     return { bytes, ext, mime: row.mime };
   } catch {
     return null;

@@ -15,6 +15,7 @@ import { registerCoreRoutes } from "./routes-core.js";
 import { registerGrantRoutes } from "./routes-grant.js";
 import { registerGrantFullRoutes } from "./routes-grants-full.js";
 import { registerWebsiteRoutes } from "./routes-website.js";
+import { registerWebsiteStudioRoutes } from "./routes-website-studio.js";
 import { registerContentRoutes, registerContentPublishingRoutes, registerDesignShareRoutes } from "./routes-content.js";
 import { registerConnectorRoutes } from "./routes-connectors.js";
 import { registerAdminIntegrationRoutes } from "./routes-admin-integrations.js";
@@ -242,6 +243,7 @@ export function buildApp(deps: Deps): FastifyInstance {
   registerGrantRoutes(app, ctx);
   registerGrantFullRoutes(app, ctx);
   registerWebsiteRoutes(app, ctx);
+  registerWebsiteStudioRoutes(app, ctx);
   registerContentRoutes(app, ctx);
   registerContentPublishingRoutes(app, ctx);
   registerDesignShareRoutes(app, ctx);

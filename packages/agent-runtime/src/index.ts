@@ -1,5 +1,7 @@
 import { z } from "zod";
 import {
+  SiteEditPlan,
+  SiteQaReview,
   AdGrantsCampaignPlanOutput,
   ContentStrategyOutput,
   BudgetOutput,
@@ -73,6 +75,8 @@ export interface ModelRequest {
     | "design_tokens"
     | "page_composition"
     | "design_critique"
+    | "site_edit_plan"
+    | "site_qa_review"
     | "logo_brief"
     | "logo_concepts"
     | "proactive_message"
@@ -142,6 +146,8 @@ const OUTPUT_SCHEMAS: Record<ModelRequest["outputSchemaRef"], z.ZodTypeAny> = {
   design_tokens: DesignTokens,
   page_composition: PageComposition,
   design_critique: CriticReport,
+  site_edit_plan: SiteEditPlan,
+  site_qa_review: SiteQaReview,
   requirements_extraction: RequirementsExtractionOutput,
   fact_extraction: FactExtractionOutput,
   section_draft: SectionDraftOutput,

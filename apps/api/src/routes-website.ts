@@ -187,7 +187,9 @@ export function registerWebsiteRoutes(app: FastifyInstance, ctx: AppContext): vo
     const { rows } = await ctx.inOrg(req, (client) =>
       client.query(
         `SELECT s.id, s.project_id, p.name AS project_name, s.slug, s.name, s.status,
-                s.source, s.external_build_url, s.theme, s.created_at,
+                s.source, s.external_build_url, s.theme, s.created_at, s.updated_at, s.qa_status, s.last_qa_at, s.archived_at,
+                (SELECT max(r.created_at) FROM site_releases r WHERE r.site_id = s.id) AS last_release_at,
+                (SELECT count(*)::int FROM site_domains d WHERE d.site_id = s.id AND d.status = 'connected') AS connected_domains,
                 (SELECT version FROM site_releases r WHERE r.id = s.preview_release_id) AS preview_version,
                 (SELECT version FROM site_releases r WHERE r.id = s.active_release_id) AS live_version,
                 (SELECT COUNT(*)::int FROM form_submissions fs WHERE fs.site_id = s.id) AS submissions

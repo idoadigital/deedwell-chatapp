@@ -142,7 +142,7 @@ export async function buildSite(args: BuildSiteArgs): Promise<{ language: Design
 
 /** Sanitize (belt and braces), enforce the nav and status rules, then add
  *  our motion script — the one script a generated site may carry. */
-function finalize(html: string, args: BuildSiteArgs, nav: Array<{ title: string; href: string }>, tokens: DesignTokens): string {
+export function finalize(html: string, args: Pick<BuildSiteArgs, "site" | "organization">, nav: Array<{ title: string; href: string }>, tokens: DesignTokens): string {
   const urls = [...nav.map((n) => n.href), "/thanks/"];
   const cleaned = sanitizePage(html, { slug: args.site.slug, pageUrls: urls, nav });
   const safe = ensureFooterStatus(

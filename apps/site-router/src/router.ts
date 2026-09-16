@@ -3,7 +3,7 @@ import formbody from "@fastify/formbody";
 import type { Pool } from "pg";
 import { uuidv7, type StorageAdapter } from "@deedwell/database";
 import { summarize } from "@deedwell/observability";
-import { MOTION_SCRIPT_HASH } from "@deedwell/website-domain";
+import { MOTION_SCRIPT_HASH, extractShell, injectContentLinks, renderEvent, renderEventList, renderPost, renderPostList } from "@deedwell/website-domain";
 import { emailOrgAdmins, orgNameOf } from "@deedwell/email";
 
 /**
@@ -89,11 +89,20 @@ export function buildSiteRouter(deps: SiteRouterDeps): FastifyInstance {
        FROM sites s
        LEFT JOIN site_releases r
          ON r.id = CASE WHEN $2 = 'preview' THEN s.preview_release_id ELSE s.active_release_id END
-       WHERE s.slug = $1`,
+       WHERE s.slug = $1 AND (s.archived_at IS NULL OR $2 = 'preview')`,
       [slug, mode]
     );
     if (!rows[0]) return null;
     return { siteId: rows[0].id, tenantId: rows[0].tenant_id, releasePrefix: rows[0].storage_prefix };
+  }
+
+  /** A customer's own hostname, once its DNS is verified and pointed here. */
+  async function customDomainTarget(host: string): Promise<{ slug: string; mode: "live" } | null> {
+    const bare = host.split(":")[0]?.toLowerCase() ?? "";
+    if (!bare || bare.endsWith(`.${baseDomain}`) || bare === baseDomain) return null;
+    const { rows } = await deps.adminPool.query(
+      `SELECT s.slug FROM site_domains d JOIN sites s ON s.id = d.site_id WHERE d.domain = $1 AND d.status IN ('ssl_provisioning','connected') AND s.archived_at IS NULL`, [bare]);
+    return rows[0] ? { slug: rows[0].slug, mode: "live" } : null;
   }
 
   function hostToTarget(host: string): { slug: string; mode: "preview" | "live" } | null {
@@ -152,11 +161,19 @@ export function buildSiteRouter(deps: SiteRouterDeps): FastifyInstance {
       return reply.status(404).header("cache-control", "no-store").type("text/html; charset=utf-8").send(NOT_FOUND_PAGE);
     }
     const clean = rest.replace(/^\/+|\/+$/g, "");
+    // Blog and events are living content: rendered now, inside the release's
+    // own shell, from what the nonprofit published in the dashboard.
+    const dynamic = /^(blog|events)(?:\/([a-z0-9-]+))?$/.exec(clean);
+    if (dynamic) {
+      const html = await renderContent(site, dynamic[1] as "blog" | "events", dynamic[2] ?? null);
+      if (html) return reply.type("text/html; charset=utf-8").header("cache-control", mode === "live" ? "public, max-age=60" : "no-store").send(rewriteForPrefix(html, prefix));
+      // fall through to the site's 404
+    }
     const path = clean === "" ? "index.html" : /\.[a-z0-9]+$/i.test(clean) ? clean : `${clean}/index.html`;
     try {
       const content = await deps.storage.get(`${site.releasePrefix}/${path}`);
       const ext = path.split(".").pop() ?? "html";
-      const body = ext === "html" ? rewriteForPrefix(content.toString("utf8"), prefix) : content;
+      const body = ext === "html" ? rewriteForPrefix(await withContentLinks(site, content.toString("utf8")), prefix) : content;
       return reply
         .type(CONTENT_TYPES[ext] ?? "application/octet-stream")
         .header("cache-control", mode === "live" ? "public, max-age=60" : "no-store")
@@ -170,6 +187,46 @@ export function buildSiteRouter(deps: SiteRouterDeps): FastifyInstance {
         return reply.status(404).header("cache-control", "no-store").type("text/html; charset=utf-8").send(NOT_FOUND_PAGE);
       }
     }
+  }
+
+  /** Published posts/events for a site, newest first. */
+  async function contentOf(siteId: string): Promise<{ posts: number; events: number }> {
+    const { rows } = await deps.adminPool.query(
+      `SELECT (SELECT count(*)::int FROM site_posts WHERE site_id = $1 AND status = 'published' AND (published_at IS NULL OR published_at <= now())) AS posts,
+              (SELECT count(*)::int FROM site_events WHERE site_id = $1 AND status IN ('published','cancelled')) AS events`, [siteId]);
+    return { posts: rows[0]?.posts ?? 0, events: rows[0]?.events ?? 0 };
+  }
+
+  /** The footer links to Blog / Events once the site has that content. */
+  async function withContentLinks(site: ResolvedSite, html: string): Promise<string> {
+    try {
+      const c = await contentOf(site.siteId);
+      const links: Array<{ href: string; title: string }> = [];
+      if (c.posts) links.push({ href: "/blog/", title: "Blog" });
+      if (c.events) links.push({ href: "/events/", title: "Events" });
+      return links.length ? injectContentLinks(html, links) : html;
+    } catch { return html; }
+  }
+
+  async function renderContent(site: ResolvedSite, kind: "blog" | "events", slug: string | null): Promise<string | null> {
+    let shellHtml: string;
+    try { shellHtml = (await deps.storage.get(`${site.releasePrefix}/index.html`)).toString("utf8"); } catch { return null; }
+    const named = (await deps.adminPool.query("SELECT name FROM sites WHERE id = $1", [site.siteId])).rows[0];
+    const shell = extractShell(shellHtml, named?.name ?? "");
+    if (kind === "blog") {
+      if (slug) {
+        const { rows } = await deps.adminPool.query("SELECT * FROM site_posts WHERE site_id = $1 AND slug = $2 AND status = 'published' AND (published_at IS NULL OR published_at <= now())", [site.siteId, slug]);
+        return rows[0] ? renderPost(shell, rows[0]) : null;
+      }
+      const { rows } = await deps.adminPool.query("SELECT * FROM site_posts WHERE site_id = $1 AND status = 'published' AND (published_at IS NULL OR published_at <= now()) ORDER BY published_at DESC NULLS LAST LIMIT 100", [site.siteId]);
+      return renderPostList(shell, rows);
+    }
+    if (slug) {
+      const { rows } = await deps.adminPool.query("SELECT * FROM site_events WHERE site_id = $1 AND slug = $2 AND status IN ('published','cancelled')", [site.siteId, slug]);
+      return rows[0] ? renderEvent(shell, rows[0]) : null;
+    }
+    const { rows } = await deps.adminPool.query("SELECT * FROM site_events WHERE site_id = $1 AND status IN ('published','cancelled') ORDER BY starts_at DESC LIMIT 200", [site.siteId]);
+    return renderEventList(shell, rows);
   }
 
   app.get("/healthz", async () => ({ ok: true }));
@@ -267,7 +324,8 @@ export function buildSiteRouter(deps: SiteRouterDeps): FastifyInstance {
   // otherwise the bare path form /<slug>/* serving the published release.
   app.get("/*", async (req, reply) => {
     const rest = ((req.params as { "*": string })["*"] ?? "").replace(/^\/+/, "");
-    const target = hostToTarget(visitorHost(headersOf(req)));
+    const host = visitorHost(headersOf(req));
+    const target = hostToTarget(host) ?? await customDomainTarget(host);
     if (target) return serve(reply, target.slug, target.mode, rest);
     const [slug, ...restParts] = rest.split("/");
     if (!slug || RESERVED_ROOT_SEGMENTS.has(slug)) {

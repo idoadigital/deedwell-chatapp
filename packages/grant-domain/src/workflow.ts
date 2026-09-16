@@ -82,6 +82,9 @@ export interface GrantServices {
   designer?: ModelProvider;
   /** Image generation for site photography; absent → sites have no images. */
   images?: () => Promise<import("@deedwell/content-domain").ImageGenerator>;
+  /** Live job timelines for the website editor and QA (structural twin of
+   *  website-domain's StudioServices so this package stays independent). */
+  studio?: { pool: { query: (text: string, params?: unknown[]) => Promise<unknown> }; emit: (event: Record<string, unknown>) => void };
 }
 
 export const GRANT_SLICE_WORKFLOW = "grant-application-slice";

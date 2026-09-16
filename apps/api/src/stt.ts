@@ -168,3 +168,25 @@ async function openGoogle(events: SttEvents, env: NodeJS.ProcessEnv): Promise<St
     },
   };
 }
+
+// ---- one-shot clips (the website editor's microphone) ------------------------
+// A short recording from the browser (MediaRecorder: webm/opus or ogg/opus)
+// transcribed in one request. Uses the same Google client as the huddle
+// streams; when the provider is off or not Google, the caller says so and
+// the dashboard falls back to the browser's own recogniser.
+export async function transcribeClip(bytes: Buffer, mime: string): Promise<{ available: boolean; text: string; reason?: string }> {
+  if (sttProvider() !== "google") return { available: false, text: "", reason: "Speech-to-text is not configured on this server." };
+  if (!bytes.length) return { available: true, text: "" };
+  const encoding = /ogg/i.test(mime) ? "OGG_OPUS" : /webm/i.test(mime) ? "WEBM_OPUS" : /wav|x-wav|pcm/i.test(mime) ? "LINEAR16" : "WEBM_OPUS";
+  try {
+    const client = await googleSpeech();
+    const [res] = await client.recognize({
+      config: { encoding: encoding as never, sampleRateHertz: encoding === "LINEAR16" ? 16000 : 48000, languageCode: "en-US", enableAutomaticPunctuation: true, model: "latest_short" },
+      audio: { content: bytes.toString("base64") },
+    });
+    const text = (res.results ?? []).map((r) => r.alternatives?.[0]?.transcript ?? "").join(" ").replace(/\s+/g, " ").trim();
+    return { available: true, text };
+  } catch (err) {
+    return { available: false, text: "", reason: `Speech-to-text failed: ${String((err as Error).message ?? err).slice(0, 120)}` };
+  }
+}

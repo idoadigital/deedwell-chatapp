@@ -40,6 +40,7 @@ export function websiteBrief(request: ModelRequest): WebsiteBriefOutput {
     { slug: "about", title: "About Us", purpose: "Credibility: who we are and our track record" },
     { slug: "programs", title: "Programs", purpose: "What we do and who benefits" },
     { slug: "contact", title: "Contact", purpose: "Reach us and get involved" },
+    { slug: "privacy-policy", title: "Privacy Policy", purpose: "How visitor information is handled" },
   ];
   return {
     objectives: [
@@ -133,7 +134,15 @@ export function siteContent(request: ModelRequest): SiteContentOutput {
       },
     ],
   };
-  return { pages: [home, about, programs, contact], placeholders };
+  // Every generated site's footer links to a privacy policy; the deterministic
+  // shell counts on it existing, as the real strategist's required sections do.
+  const privacy: SitePage = {
+    slug: "privacy-policy",
+    title: "Privacy Policy",
+    seoDescription: `How ${name} handles your information.`.slice(0, 300),
+    blocks: [{ kind: "text", heading: "Privacy policy", body: `${name} collects only what you send us through this website and never sells your information.` }],
+  };
+  return { pages: [home, about, programs, contact, privacy], placeholders };
 }
 
 export function sitePatch(request: ModelRequest): SitePatchOutput {
@@ -368,7 +377,7 @@ export function pageComposition(request: ModelRequest) {
   return {
     slug: page.slug ?? "home",
     objective: `Present ${page.title ?? "the page"} clearly`,
-    primaryCta: { label: "Donate", href: "/donate/" },
+    primaryCta: (() => { const site = jsonBlock<{ donateUrl?: string | null }>(request, "site", {}); return site.donateUrl ? { label: "Donate", href: site.donateUrl } : { label: "Get in touch", href: "/contact/" }; })(),
     secondaryCta: null,
     sections: blocks.map((b, i) => ({
       id: `s${i}`, purpose: `${b.kind} block`, component: COMPONENT_FOR_BLOCK[b.kind] ?? "ProseSection",
@@ -381,4 +390,96 @@ export function pageComposition(request: ModelRequest) {
 export function designCritique(_request: ModelRequest) {
   const nine = { visualHierarchy: 9, typography: 9, spacing: 9, alignment: 9, consistency: 9, readability: 9, imageComposition: 8, ctaClarity: 9, brandConsistency: 9, animationQuality: 8, responsiveQuality: 9, accessibility: 9, overallPolish: 9 };
   return { scores: nine, issues: [] };
+}
+
+// ---- website studio: editor plan + QA review --------------------------------
+
+interface MockPageMap {
+  slug?: string;
+  sections?: Array<{ id: string; component?: string; heading?: { selector: string; text?: string; fontSize?: number } | null; elements?: Array<{ selector: string; role?: string; text?: string }> }>;
+}
+
+/** Deterministic stand-in for the website editor: reads the request and the
+ *  inspected page map and answers with the smallest scoped change, the way
+ *  the real planner is asked to. Covers the phrasings the product tests. */
+export function siteEditPlan(request: ModelRequest) {
+  const instruction = (request.dataBlocks.find((b) => b.label === "instruction")?.content ?? "").trim();
+  const ctx = jsonBlock<{ page?: string; viewport?: string; selection?: { selector?: string; sectionId?: string | null; label?: string } | null }>(request, "context", {});
+  const map = jsonBlock<MockPageMap>(request, "page_map", {});
+  const page = ctx.page ?? map.slug ?? "home";
+  const width = ctx.viewport === "mobile" ? 390 : ctx.viewport === "tablet" ? 768 : 1440;
+  const vp = (ctx.viewport === "mobile" ? "mobile" : ctx.viewport === "tablet" ? "tablet" : "all") as "mobile" | "tablet" | "all";
+  const hero = map.sections?.[0];
+  const heroSel = hero ? `#${hero.id}` : ".hero";
+  const headingSel = ctx.selection?.selector ?? hero?.heading?.selector ?? `${heroSel} h1`;
+  const lower = instruction.toLowerCase();
+  const ops: Array<Record<string, unknown>> = [];
+  const expectations: Array<Record<string, unknown>> = [];
+  const parts: string[] = [];
+
+  const smaller = /\b(smaller|too (big|large)|reduce|shrink)\b/.test(lower) && /\b(heading|headline|title|h1|this)\b/.test(lower);
+  const larger = /\b(bigger|larger|too small|increase)\b/.test(lower) && /\b(heading|headline|title|h1|this)\b/.test(lower);
+  if (smaller || larger) {
+    const slight = /\b(slightly|a (little|bit|touch)|bit)\b/.test(lower);
+    const factor = larger ? (slight ? 1.08 : 1.2) : slight ? 0.92 : 0.8;
+    const current = hero?.heading?.fontSize ?? (width < 700 ? 40 : 56);
+    const size = `${Math.max(20, Math.round(current * factor))}px`;
+    ops.push({ kind: "style", page, selector: headingSel, viewport: vp, declarations: { "font-size": size, "line-height": "1.1" }, note: `${larger ? "larger" : "smaller"} heading${vp !== "all" ? ` on ${vp}` : ""}` });
+    expectations.push({ selector: headingSel, viewport: width, property: "fontSize", direction: larger ? "increase" : "decrease" });
+    if (vp === "mobile") expectations.push({ selector: headingSel, viewport: 1440, property: "fontSize", direction: "equal" });
+    parts.push(`${larger ? "enlarged" : "reduced"} the heading${vp !== "all" ? ` at ${width}px` : ""}`);
+  }
+  if (/\b(too much|less|reduce|tighten|remove).*(space|spacing|gap|room|padding)\b/.test(lower) || /\b(space|spacing|gap).*(too much|too big|large)\b/.test(lower)) {
+    const btn = hero?.elements?.find((e) => e.role === "button")?.selector ?? `${heroSel} .actions`;
+    ops.push({ kind: "style", page, selector: `${heroSel} .hero__copy h1, ${heroSel} .lead`, viewport: vp, declarations: { "margin-bottom": "12px" }, note: "tighter spacing above the actions" });
+    expectations.push({ selector: btn, viewport: width, property: "top", direction: "decrease" });
+    parts.push("tightened the space before the button");
+  }
+  const colour = lower.match(/\b(button|cta)\b.*\b(blue|green|red|orange|purple|black|white)\b/);
+  if (colour) {
+    const hex = { blue: "#1d4ed8", green: "#15803d", red: "#b91c1c", orange: "#c2410c", purple: "#6d28d9", black: "#111111", white: "#ffffff" }[colour[2]!] ?? "#1d4ed8";
+    ops.push({ kind: "style", page: "*", selector: ".btn--primary", viewport: "all", declarations: { "background-color": hex, "border-color": hex, color: colour[2] === "white" ? "#111111" : "#ffffff" }, note: `${colour[2]} primary button` });
+    expectations.push({ selector: ".btn--primary", viewport: width, property: "backgroundColor", direction: "change" });
+    parts.push(`made the primary button ${colour[2]}`);
+  }
+  if (/\bmove (this|the .*section) (higher|up)\b/.test(lower) && (ctx.selection?.sectionId || hero)) {
+    const id = ctx.selection?.sectionId ?? hero!.id;
+    const idx = map.sections?.findIndex((s) => s.id === id) ?? -1;
+    if (idx > 0) { ops.push({ kind: "section-move", page, sectionId: id, position: idx - 1 }); parts.push("moved the section up"); }
+  }
+  const add = lower.match(/\badd (an? )?(impact|story|quote|volunteer|newsletter|donat)\w* section\b/);
+  if (add) {
+    const component = { impact: "ImpactMetrics", story: "SplitStorySection", quote: "QuoteSection", volunteer: "VolunteerCTA", newsletter: "NewsletterCTA", donat: "DonateCTA" }[add[2]!.slice(0, 5) === "donat" ? "donat" : add[2]!] ?? "EditorialTextSection";
+    const after = map.sections?.find((s) => /program/i.test(s.component ?? ""))?.id ?? map.sections?.[Math.min(1, (map.sections?.length ?? 1) - 1)]?.id ?? null;
+    ops.push({ kind: "section-add", page, afterSectionId: after, component: component === "ImpactMetrics" ? "EditorialTextSection" : component, block: { kind: "text", heading: "Our impact", body: "Every gift goes further than you think. Here is what your support makes possible." }, purpose: instruction.slice(0, 120) });
+    parts.push("added the section");
+  }
+  if (/\b(too much|excessive)\b.*\b(space|blank)\b.*\b(under|below|after)\b/.test(lower) && ctx.selection?.sectionId) {
+    ops.push({ kind: "section", page, sectionId: ctx.selection.sectionId, set: { density: "dense" } });
+    parts.push("tightened that section");
+  }
+  const understood = ops.length > 0;
+  return {
+    understood,
+    clarification: understood ? null : "I could not map that request to a change on this page. Could you say which section and what should change?",
+    title: understood ? parts[0]!.replace(/^./, (c) => c.toUpperCase()).slice(0, 60) : "No change",
+    summary: understood ? `I will ${parts.join(" and ")}.` : "Nothing to change.",
+    reply: understood ? `Done. I ${parts.join(" and ")}${vp === "mobile" ? " and verified it at 390px; desktop styling was left unchanged" : " and verified the page"}.` : "I did not change anything.",
+    affectedPages: [page],
+    viewports: vp === "mobile" ? [390, 1440] : [width],
+    operations: ops,
+    expectations,
+  };
+}
+
+/** Deterministic QA reviewer: flags placeholder markers and empty copy. */
+export function siteQaReview(request: ModelRequest) {
+  const pages = jsonBlock<Array<{ slug: string; text: string }>>(request, "pages_text", []);
+  const issues: Array<Record<string, unknown>> = [];
+  for (const p of pages) {
+    if (/\[placeholder|lorem ipsum|\bTBD\b/i.test(p.text)) {
+      issues.push({ page: p.slug, category: "content", severity: "high", title: "Placeholder text", description: "The page still carries placeholder copy.", quote: (p.text.match(/\[placeholder[^\]]*\]|lorem ipsum/i) ?? [null])[0], replacement: null });
+    }
+  }
+  return { missionClear: true, summary: issues.length ? `${issues.length} content issue(s) found.` : "Copy reads clearly and matches the organization.", issues };
 }

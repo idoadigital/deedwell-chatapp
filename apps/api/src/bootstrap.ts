@@ -27,6 +27,8 @@ import {
 import {
   buildWebsiteBuildWorkflow,
   buildWebsiteUpdateWorkflow,
+  buildWebsiteEditWorkflow,
+  buildWebsiteQaWorkflow,
   WEBSITE_AGENTS,
 } from "@deedwell/website-domain";
 import { ALL_AD_GRANTS_AGENTS, buildAdGrantsWorkflow } from "@deedwell/adgrants-domain";
@@ -113,6 +115,9 @@ export async function createDeps(overrides: Partial<{
     // Site photography uses the image model behind Content Studio, with the
     // key Platform Admin keeps; "mock" in tests.
     images: async () => createImageGenerator({ apiKey: await readProviderKey(appPool, "openai") }),
+    // Website editor / QA job timelines: written outside the step
+    // transaction and mirrored onto the org event stream.
+    studio: { pool: adminPool, emit: (event) => progressBus.emit(event) },
   };
   registerBuiltInTaskHandlers();
   const engine = new PgWorkflowEngine<GrantServices>(
@@ -126,6 +131,8 @@ export async function createDeps(overrides: Partial<{
   engine.register(buildGrantFullWorkflow());
   engine.register(buildWebsiteBuildWorkflow());
   engine.register(buildWebsiteUpdateWorkflow());
+  engine.register(buildWebsiteEditWorkflow());
+  engine.register(buildWebsiteQaWorkflow());
   engine.register(buildAdGrantsWorkflow());
   progressBus.emit = (event) => engine.events.emit("event", event as never);
 

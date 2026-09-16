@@ -1,5 +1,7 @@
 import type { ModelProvider, ModelRequest, ModelResponse } from "./index.js";
-import { designCritique, designLanguage, designTokens, pageComposition, siteContent, siteHtml, sitePage, sitePatch, websiteBrief } from "./mock-website.js";
+import {
+  siteEditPlan,
+  siteQaReview, designCritique, designLanguage, designTokens, pageComposition, siteContent, siteHtml, sitePage, sitePatch, websiteBrief } from "./mock-website.js";
 import { mockIntent } from "./mock-intent.js";
 import type {
   AdGrantsCampaignPlanOutput,
@@ -50,6 +52,8 @@ export class MockModelProvider implements ModelProvider {
       design_tokens: designTokens,
       page_composition: pageComposition,
       design_critique: designCritique,
+      site_edit_plan: siteEditPlan,
+      site_qa_review: siteQaReview,
       logo_brief: logoBrief,
       logo_concepts: logoConcepts,
       proactive_message: proactiveMessage,

@@ -3,6 +3,8 @@ export {
   websiteCopywriter,
   websiteDesigner,
   websiteDeveloper,
+  websiteEditor,
+  websiteQaReviewer,
   seoReviewer,
   qaDeployer,
   WEBSITE_AGENTS,
@@ -43,3 +45,5 @@ export { planSiteImages, generateSiteImages, siteImageStorageKey, type SiteImage
 export { designSystem, designPageMain, assemblePage, pageContentHash, type SiteDesignSystem, type Organization } from "./design.js";
 export * from "./builder/index.js";
 export { siteUrls, type SiteUrlInput } from "./site-urls.js";
+export * from "./studio/index.js";
+export { loadSiteLogoFrom } from "./workflow.js";

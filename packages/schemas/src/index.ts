@@ -269,6 +269,8 @@ export const AgentDefinition = z.object({
     "design_tokens",
     "page_composition",
     "design_critique",
+    "site_edit_plan",
+    "site_qa_review",
     // "none" marks agents whose work is deterministic system logic (e.g. the
     // eligibility engine) — listed in the directory, never sent to a model.
     "none",
@@ -952,3 +954,4 @@ export * from "./logo.js";
 export * from "./tasks.js";
 export * from "./proactive.js";
 export * from "./google-ads.js";
+export * from "./website-studio.js";
