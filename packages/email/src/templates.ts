@@ -41,6 +41,8 @@ export interface EmailPayloads {
   ad_grants_live: { orgName: string; campaignId: string | null };
   google_ads_connected: { orgName: string; accountName: string; customerId: string };
   google_ads_published: { orgName: string; campaignName: string; adCount: number; paused: boolean };
+  google_ads_request_received: { orgName: string; title: string; number: number; goal: string };
+  google_ads_request_update: { orgName: string; title: string; number: number; status: string; statusLabel: string; message: string | null; questions: string[] };
   ad_grants_email: { orgName: string; from: string; subject: string; verdict: string; excerpt: string };
   task_approval_requested: { orgName: string; taskTitle: string; agentName: string };
   task_completed: { orgName: string; taskTitle: string; agentName: string; summary: string; deliverables: string[]; runNumber: number | null; nextRunAt: string | null };
@@ -61,7 +63,7 @@ export const EMAIL_CATEGORY: Record<EmailKind, EmailCategory> = {
   site_preview_ready: "activity", site_build_failed: "activity", site_published: "activity", run_failed: "activity",
   approval_needed: "activity", info_needed: "activity", grant_package_ready: "activity", content_campaign_finished: "activity",
   post_failed: "activity", connector_attention: "activity", form_submission: "activity", ad_grants_review: "activity",
-  ad_grants_reconnect: "activity", ad_grants_live: "activity", google_ads_connected: "activity", google_ads_published: "activity", ad_grants_email: "activity", task_approval_requested: "activity", task_completed: "activity",
+  ad_grants_reconnect: "activity", ad_grants_live: "activity", google_ads_connected: "activity", google_ads_published: "activity", google_ads_request_received: "activity", google_ads_request_update: "activity", ad_grants_email: "activity", task_approval_requested: "activity", task_completed: "activity",
   task_failed: "activity", task_needs_input: "activity", teammate_message: "activity", unread_digest: "activity",
   ops_alert: "ops",
 };
@@ -465,6 +467,29 @@ const templates: { [K in EmailKind]: Renderer<K> } = {
       p(x.paused ? "It was created paused, so nothing spends until Deedwell enables it after a final check." : "It is enabled and serving."),
     ],
     cta: { label: "See the campaign", url: L.googleAds },
+  }),
+  google_ads_request_received: (x, L) => ({
+    subject: `We received your campaign request: ${x.title}`,
+    preheader: "Deedwell's team is reviewing it and will keep you posted.",
+    eyebrow: "Google Ads",
+    heading: `Request #${x.number} received.`,
+    blocks: [
+      p(`Thanks — **${x.orgName}**'s campaign request **${x.title}** (${x.goal}) reached the Deedwell team.`),
+      p("A Deedwell account manager reviews every request for Ad Grants policy and mission fit, then plans the campaign. You can follow its status, answer any questions and see the campaign once it is live from your Google Ads page."),
+    ],
+    cta: { label: "Track the request", url: `${L.googleAds}/campaigns/requests` },
+  }),
+  google_ads_request_update: (x, L) => ({
+    subject: x.status === "needs_info" ? `A question about your campaign request: ${x.title}` : `Campaign request update: ${x.title} — ${x.statusLabel}`,
+    preheader: x.status === "needs_info" ? "Deedwell needs a couple of details to continue." : `Request #${x.number} is now ${x.statusLabel.toLowerCase()}.`,
+    eyebrow: "Google Ads",
+    heading: x.status === "needs_info" ? "Deedwell needs your input." : `${x.title}: ${x.statusLabel}.`,
+    blocks: [
+      p(`Request **#${x.number} — ${x.title}** for **${x.orgName}** is now **${x.statusLabel}**.`),
+      ...(x.message ? [callout(x.message, x.status === "declined" ? "warn" : x.status === "live" ? "ok" : "info")] : []),
+      ...(x.questions.length ? [p("To continue, please answer:"), list(x.questions)] : []),
+    ],
+    cta: { label: x.questions.length ? "Answer the questions" : "Open the request", url: `${L.googleAds}/campaigns/requests` },
   }),
   ad_grants_live: (x, L) => ({
     subject: `Your first Google Ads campaign is live`,

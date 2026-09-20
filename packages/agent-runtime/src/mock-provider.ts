@@ -47,6 +47,7 @@ export class MockModelProvider implements ModelProvider {
       ad_grants_campaign_plan: draftAdGrantsCampaign,
       google_ads_strategy: googleAdsStrategy,
       google_ads_campaign_draft: googleAdsCampaignDraft,
+      google_ads_request_plan: googleAdsRequestPlan,
       site_html: siteHtml,
       design_language: designLanguage,
       design_tokens: designTokens,
@@ -573,6 +574,54 @@ function googleAdsStrategy(request: ModelRequest): unknown {
     budget: { monthlyUsd: 3000, rationale: "Conservative start; scale with performance." },
     opportunities: ["No conversion tracking is recorded yet — set it up before scaling."],
     adGrantsNotes: ["Keep keywords mission-related and avoid single-word keywords."],
+  };
+}
+
+/** The account manager's answer to a campaign request. A brief that says
+ *  "[needs info]" gets questions back; anything else gets a plan. */
+function googleAdsRequestPlan(request: ModelRequest): unknown {
+  const brief = request.dataBlocks.find((b) => b.label === "campaign_request")?.content ?? "";
+  const needsInfo = /\[needs info\]/i.test(brief);
+  const name = googleAdsOrgName(request);
+  const landing = googleAdsLanding(request);
+  const base = {
+    assessment: {
+      missionRelevance: `The requested campaign promotes a program ${name} describes in its Mission Profile.`,
+      eligibility: ["Ad Grants enrollment status: UNKNOWN until verified against the Google for Nonprofits record."],
+      policyChecks: [
+        { rule: "mission_relevance", status: "pass", evidence: "Keywords and landing page match the named program." },
+        { rule: "conversion_tracking", status: "unknown", evidence: "No conversion action is recorded in the synced data yet." },
+        { rule: "single_word_keywords", status: "pass", evidence: "No single-word keywords proposed." },
+      ],
+      landingPage: { url: landing, ready: true, findings: ["State who is eligible above the fold."] },
+      risks: ["Conversion measurement must be validated before scaling."],
+    },
+    measurement: [{ name: "Program enquiry", meaning: "A completed contact or application form", source: "Website form thank-you page", role: "primary", notes: "PROPOSED until validated." }],
+    utilization: { suggestedDailyBudgetUsd: 50, bindingConstraint: "Measurement: no conversion action recorded yet.", notes: ["Grant capacity is a ceiling, not a guarantee."] },
+    nextSteps: ["Validate the conversion action.", "Review and approve the plan.", "Build and review the campaign draft."],
+  };
+  if (needsInfo) {
+    return {
+      decision: "needs_info",
+      customerSummary: `Thanks — before Deedwell can plan the campaign for ${name}, a couple of details are needed.`,
+      adminSummary: "The brief lacks inputs that affect targeting and measurement; questions sent to the customer.",
+      ...base,
+      questions: [
+        { question: "Which page on your website should the ad send people to?", why: "Ads need an approved, working landing page." },
+        { question: "Who is eligible for the program (age, location, income)?", why: "Eligibility shapes keywords and ad copy." },
+      ],
+      plan: null,
+      declineReason: null,
+    };
+  }
+  return {
+    decision: "proceed",
+    customerSummary: `Deedwell has reviewed your request and drafted a campaign plan for ${name}. A Deedwell administrator now reviews it before anything is built.`,
+    adminSummary: "The request is mission-relevant and policy checks pass on available data; plan drafted for approval.",
+    ...base,
+    questions: [],
+    plan: googleAdsStrategy(request),
+    declineReason: null,
   };
 }
 

@@ -264,6 +264,7 @@ export const AgentDefinition = z.object({
     "ad_grants_campaign_plan",
     "google_ads_strategy",
     "google_ads_campaign_draft",
+    "google_ads_request_plan",
     "site_html",
     "design_language",
     "design_tokens",

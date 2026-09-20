@@ -16,6 +16,7 @@ import type { PoolClient } from "pg";
 import type { Deps } from "../bootstrap.js";
 import { accessFor } from "./access.js";
 import { assetContent, jobView, loadDraft } from "./drafts.js";
+import { onDraftPublished } from "./requests.js";
 import { emitOrgEvent, loadAccountById, logActivity, type AccountRow } from "./store.js";
 
 export async function publishPreview(client: PoolClient, account: AccountRow, draftId: string, orgName: string) {
@@ -192,6 +193,7 @@ export async function runPublishJob(deps: Deps, job: Record<string, any>, opts: 
       await client.query(`UPDATE google_ads_publish_jobs SET status = 'completed', result = $2, finished_at = now(), error = NULL WHERE id = $1`, [job.id, JSON.stringify(result)]);
       await logActivity(client, { tenantId, accountId: account.id, customerId: account.customer_id, actorUserId: job.requested_by, actorKind: "admin", action: "campaign_published", entityType: "campaign", entityId: campaignId, previousState: "publishing", newState: enable ? "ENABLED" : "PAUSED", summary: draft.name, metadata: result });
       await emailOrgAdmins(client, tenantId, "google_ads_published", { orgName: await orgNameOf(client, tenantId), campaignName: draft.name, adCount: adIndex.length, paused: !enable }, { dedupe: `google_ads_published:${job.id}` }).catch(() => 0);
+      await onDraftPublished(deps, client, draft, campaignId, !enable, job.requested_by).catch((err) => opts.log?.error({ at: "google_ads.request_live_failed", err }));
       emitOrgEvent(deps, tenantId, "google_ads:published", { jobId: job.id, draftId: job.draft_id, campaignId });
       opts.log?.info({ at: "google_ads.published", jobId: job.id, campaignId, ads: adIndex.length });
     } catch (err) {

@@ -141,7 +141,7 @@ export function strategyView(r: Record<string, any>) {
   return {
     id: r.id, version: r.version, status: r.status, title: r.title, content: r.content ?? {},
     createdBy: r.created_by_name ?? null, approvedBy: r.approved_by_name ?? null, approvedAt: r.approved_at, archivedAt: r.archived_at,
-    createdAt: r.created_at, updatedAt: r.updated_at, model: r.model_meta?.provider ?? null,
+    createdAt: r.created_at, updatedAt: r.updated_at, model: r.model_meta?.provider ?? null, requestId: r.request_id ?? null,
   };
 }
 

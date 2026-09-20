@@ -1,4 +1,5 @@
 import { AgentDefinition } from "@deedwell/schemas";
+import { AD_GRANTS_MANAGER_OPERATING_ADDENDUM, AD_GRANTS_MANAGER_PROMPT } from "./grants-manager-prompt.js";
 
 /** Drafts the advertising strategy. Read-only: it proposes, people decide. */
 export const adsStrategist: AgentDefinition = AgentDefinition.parse({
@@ -48,4 +49,20 @@ human review before anything is published.`,
   maxOutputRetries: 2,
 });
 
-export const ALL_GOOGLE_ADS_AGENTS = [adsStrategist, adsCampaignBuilder];
+/** The Ad Grants account manager: takes a customer's campaign request
+ *  end-to-end in audit-and-draft mode — eligibility and policy assessment,
+ *  the questions that block a launch, the conversion registry, the
+ *  utilization view and the plan. People approve; the pipeline builds. */
+export const adsGrantsManager: AgentDefinition = AgentDefinition.parse({
+  agentKey: "google_ads.grants_manager",
+  version: 1,
+  displayName: "Priya — Ad Grants Account Manager",
+  team: "ad_grants",
+  role: "Google Ad Grants account manager, nonprofit search strategist, conversion measurement specialist and compliance operator",
+  instructions: `${AD_GRANTS_MANAGER_PROMPT}\n\n${AD_GRANTS_MANAGER_OPERATING_ADDENDUM}`,
+  allowedTools: [],
+  outputSchemaRef: "google_ads_request_plan",
+  maxOutputRetries: 2,
+});
+
+export const ALL_GOOGLE_ADS_AGENTS = [adsStrategist, adsCampaignBuilder, adsGrantsManager];

@@ -4,13 +4,14 @@
  * connection itself and "Sync now" — customers never edit campaigns here.
  */
 import type { FastifyInstance, FastifyRequest } from "fastify";
-import { GoogleAdsApiError } from "@deedwell/google-ads-domain";
-import { GoogleAdsSelectAccountInput } from "@deedwell/schemas";
+import { GoogleAdsApiError, REQUEST_GOALS } from "@deedwell/google-ads-domain";
+import { GoogleAdsCampaignRequestInput, GoogleAdsRequestAnswerInput, GoogleAdsRequestCancelInput, GoogleAdsSelectAccountInput } from "@deedwell/schemas";
 import { HttpError, type AppContext } from "./app.js";
 import { GoogleAdsAccessError } from "./google-ads/access.js";
 import { complianceReport } from "./google-ads/compliance.js";
 import { connectionStatus, disconnectAccount, discoverAccounts, ensureManagerLink, selectAccount } from "./google-ads/connection.js";
 import { campaignDetail, campaignsWithMetrics, deedwellAds, overview, resolveRange } from "./google-ads/reports.js";
+import { RequestError, answerRequest, cancelRequest, createRequest, customerRequestView, listRequests, loadRequest, loadRequestCampaign, loadRequestEvents } from "./google-ads/requests.js";
 import { accountView, activityQueryOf, listActivity, loadAccount } from "./google-ads/store.js";
 import { syncAccount } from "./google-ads/sync.js";
 
@@ -19,6 +20,7 @@ const MIN_MANUAL_SYNC_MS = Number(process.env.GOOGLE_ADS_MANUAL_SYNC_MS ?? 5 * 6
 /** Turns the module's typed failures into HTTP responses. */
 export function translateAdsError(err: unknown): never {
   if (err instanceof HttpError) throw err;
+  if (err instanceof RequestError) throw new HttpError(err.status, err.message);
   if (err instanceof GoogleAdsAccessError) {
     const status = err.code === "not_configured" ? 503 : err.code === "unavailable" ? 503 : 409;
     throw new HttpError(status, err.message, { code: err.code });
@@ -135,6 +137,63 @@ export function registerGoogleAdsRoutes(app: FastifyInstance, ctx: AppContext): 
   app.get(`${base}/activity`, async (req) => {
     ctx.requireRole(req, "viewer");
     return ctx.inOrg(req, (client) => listActivity(client, req.orgId!, activityQueryOf((req.query ?? {}) as Record<string, string | undefined>, 100)));
+  });
+
+  // ---- campaign requests --------------------------------------------------
+
+  /** The goal catalogue and the organization's own pages, for the request flow. */
+  app.get(`${base}/requests/meta`, async (req) => {
+    ctx.requireRole(req, "viewer");
+    const pages = await ctx.inOrg(req, async (client) => {
+      const { rows } = await client.query(
+        `SELECT s.slug AS site_slug, s.status AS site_status, p.slug, p.title FROM sites s JOIN site_pages p ON p.site_id = s.id
+          WHERE s.tenant_id = $1 AND s.status IN ('published','preview') ORDER BY s.status = 'published' DESC, p.order_idx LIMIT 40`, [req.orgId]);
+      const { rows: facts } = await client.query(`SELECT value FROM org_facts WHERE tenant_id = $1 AND fact_key = 'website_url' AND status <> 'rejected' LIMIT 1`, [req.orgId]);
+      const websiteUrl = facts[0]?.value ? String(facts[0].value).replace(/\/+$/, "") : null;
+      return rows.map((p) => ({ title: p.title, url: `${websiteUrl ?? `https://${p.site_slug}.${process.env.SITES_BASE_DOMAIN ?? "deedwell.org"}`}${p.slug === "home" || p.slug === "index" || p.slug === "" ? "/" : `/${p.slug}`}` }));
+    });
+    return { goals: Object.entries(REQUEST_GOALS).map(([key, g]) => ({ key, ...g })), pages };
+  });
+
+  app.get(`${base}/requests`, async (req) => {
+    ctx.requireRole(req, "viewer");
+    const requests = await ctx.inOrg(req, (client) => listRequests(client, req.orgId!));
+    return { requests: requests.map((r) => customerRequestView(r)) };
+  });
+
+  app.post(`${base}/requests`, async (req, reply) => {
+    ctx.requireRole(req, "member");
+    const input = GoogleAdsCampaignRequestInput.parse(req.body);
+    const row = await withAccount(req, (client) => createRequest(ctx.deps, client, req.orgId!, req.userId!, input)).catch(translateAdsError);
+    return reply.status(201).send({ request: customerRequestView(row) });
+  });
+
+  const customerDetail = async (req: FastifyRequest, id: string) => ctx.inOrg(req, async (client) => {
+    const row = await loadRequest(client, req.orgId!, id);
+    if (!row) throw new HttpError(404, "Request not found");
+    return customerRequestView(row, { events: await loadRequestEvents(client, id), campaign: await loadRequestCampaign(client, row) });
+  });
+
+  app.get(`${base}/requests/:requestId`, async (req) => {
+    ctx.requireRole(req, "viewer");
+    const { requestId } = req.params as { requestId: string };
+    return { request: await customerDetail(req, requestId) };
+  });
+
+  app.post(`${base}/requests/:requestId/answer`, async (req) => {
+    ctx.requireRole(req, "member");
+    const { requestId } = req.params as { requestId: string };
+    const input = GoogleAdsRequestAnswerInput.parse(req.body);
+    await ctx.inOrg(req, (client) => answerRequest(ctx.deps, client, req.orgId!, req.userId!, requestId, input.answers)).catch(translateAdsError);
+    return { request: await customerDetail(req, requestId) };
+  });
+
+  app.post(`${base}/requests/:requestId/cancel`, async (req) => {
+    ctx.requireRole(req, "member");
+    const { requestId } = req.params as { requestId: string };
+    const input = GoogleAdsRequestCancelInput.parse(req.body ?? {});
+    await ctx.inOrg(req, (client) => cancelRequest(ctx.deps, client, req.orgId!, req.userId!, requestId, input.reason ?? null)).catch(translateAdsError);
+    return { request: await customerDetail(req, requestId) };
   });
 
   app.get(`${base}/compliance`, async (req) => {

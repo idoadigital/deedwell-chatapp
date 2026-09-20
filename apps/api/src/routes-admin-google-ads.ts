@@ -13,6 +13,7 @@ import { RSA_LIMITS } from "@deedwell/google-ads-domain";
 import {
   GoogleAdsBudgetInput, GoogleAdsCampaignStatusInput, GoogleAdsComplianceRulePatchInput, GoogleAdsDraftAdPatchInput, GoogleAdsDraftAssetPatchInput,
   GoogleAdsDraftPatchInput, GoogleAdsPlatformSettingsInput, GoogleAdsPublishInput, GoogleAdsStrategyPatchInput,
+  GoogleAdsRequestAskInput, GoogleAdsRequestDecisionInput, GoogleAdsRequestHandoffInput, GoogleAdsRequestNotesInput,
 } from "@deedwell/schemas";
 import type { PoolClient } from "pg";
 import { HttpError, type AppContext } from "./app.js";
@@ -24,6 +25,7 @@ import { ensureManagerLink } from "./google-ads/connection.js";
 import { decideDraft, decideDraftAd, decideDraftAsset, jobView, listDrafts, loadDraft, patchDraft, patchDraftAd, patchDraftAsset } from "./google-ads/drafts.js";
 import { publishPreview, requestPublish, setCampaignBudget, setCampaignStatus } from "./google-ads/publish.js";
 import { accountsAcrossTenants, campaignDetail, campaignsWithMetrics, deedwellAds, overview, resolveRange } from "./google-ads/reports.js";
+import { adminRequestDetail, adminRequestView, askCustomer, decideRequest, handoffRequest, listRequests, noteRequest, onStrategyApproved, requestsAcrossTenants } from "./google-ads/requests.js";
 import { clearManagerConnection, managerOAuthClient, readGoogleAdsSettings, saveGoogleAdsSettings, saveManagerConnection, settingsView } from "./google-ads/settings.js";
 import { accountView, activityQueryOf, listActivity, loadAccount, logActivity } from "./google-ads/store.js";
 import { syncAccount } from "./google-ads/sync.js";
@@ -290,6 +292,7 @@ export function registerAdminGoogleAdsRoutes(app: FastifyInstance, ctx: AppConte
         // build per recommendation, run by the worker, reviewed in the workspace.
         await requireTokensFor(ctx, client, orgId);
         builds = await enqueueBuilds(client, account as never, { ...current, status: "approved" }, req.userId!);
+        await onStrategyApproved(deps, client, current, req.userId!);
       } else {
         await client.query(`UPDATE google_ads_strategies SET status = 'archived', archived_at = now() WHERE id = $1`, [strategyId]);
       }
@@ -312,6 +315,57 @@ export function registerAdminGoogleAdsRoutes(app: FastifyInstance, ctx: AppConte
       return job;
     });
     return reply.status(202).send({ build });
+  });
+
+  // ---- campaign requests --------------------------------------------------
+
+  /** Every organization's requests; ?open=1 keeps only the ones still moving. */
+  app.get(`${base}/requests`, async (req) => {
+    ctx.requirePlatformAdmin(req);
+    const q = (req.query ?? {}) as { open?: string; limit?: string };
+    return { requests: await requestsAcrossTenants(deps.adminPool, { open: q.open === "1" || q.open === "true", limit: Number(q.limit) || undefined }) };
+  });
+
+  app.get(`${base}/orgs/:orgId/requests`, async (req) => inTenant(req, async (client, orgId) => ({ requests: (await listRequests(client, orgId)).map((r) => adminRequestView(r)) })));
+
+  const requestDetail = (req: FastifyRequest, requestId: string) => inTenant(req, async (client, orgId) => {
+    const request = await adminRequestDetail(client, orgId, requestId, await orgName(orgId));
+    if (!request) throw new HttpError(404, "Request not found");
+    return { request };
+  });
+
+  app.get(`${base}/orgs/:orgId/requests/:requestId`, async (req) => requestDetail(req, (req.params as { requestId: string }).requestId));
+
+  /** Hands the request to the Ad Grants account manager (or re-runs it with guidance). 202: the worker does the work. */
+  app.post(`${base}/orgs/:orgId/requests/:requestId/handoff`, async (req, reply) => {
+    const { requestId } = req.params as { requestId: string };
+    const input = GoogleAdsRequestHandoffInput.parse(req.body ?? {});
+    const { run } = await inTenant(req, async (client, orgId) => {
+      await requireTokensFor(ctx, client, orgId);
+      return handoffRequest(deps, client, orgId, req.userId!, requestId, input.instructions ?? null);
+    });
+    return reply.status(202).send({ ...(await requestDetail(req, requestId)), run: { id: run.id, status: run.status } });
+  });
+
+  app.post(`${base}/orgs/:orgId/requests/:requestId/ask`, async (req) => {
+    const { requestId } = req.params as { requestId: string };
+    const input = GoogleAdsRequestAskInput.parse(req.body);
+    await inTenant(req, (client, orgId) => askCustomer(deps, client, orgId, req.userId!, requestId, input.questions, input.message ?? null));
+    return requestDetail(req, requestId);
+  });
+
+  app.post(`${base}/orgs/:orgId/requests/:requestId/decide`, async (req) => {
+    const { requestId } = req.params as { requestId: string };
+    const input = GoogleAdsRequestDecisionInput.parse(req.body);
+    await inTenant(req, (client, orgId) => decideRequest(deps, client, orgId, req.userId!, requestId, input.status, input.message ?? null, input.reason ?? null));
+    return requestDetail(req, requestId);
+  });
+
+  app.patch(`${base}/orgs/:orgId/requests/:requestId`, async (req) => {
+    const { requestId } = req.params as { requestId: string };
+    const input = GoogleAdsRequestNotesInput.parse(req.body);
+    await inTenant(req, (client, orgId) => noteRequest(client, orgId, req.userId!, requestId, input));
+    return requestDetail(req, requestId);
   });
 
   // ---- drafts (the review workspace) --------------------------------------

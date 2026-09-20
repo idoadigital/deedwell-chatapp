@@ -9,6 +9,7 @@ import type { Deps } from "../bootstrap.js";
 import { runBuildJob } from "./build.js";
 import { ensureManagerLink } from "./connection.js";
 import { runPublishJob } from "./publish.js";
+import { runRequestRun } from "./requests.js";
 import { loadAccountById } from "./store.js";
 import { syncAccount } from "./sync.js";
 
@@ -16,10 +17,10 @@ export const SYNC_INTERVAL_MS = Number(process.env.GOOGLE_ADS_SYNC_MS ?? 6 * 60 
 const LINK_RETRY_MS = Number(process.env.GOOGLE_ADS_LINK_RETRY_MS ?? 15 * 60_000);
 const STALE_JOB_MINUTES = 20;
 
-export interface TickStats { jobs: number; builds: number; synced: number; links: number }
+export interface TickStats { jobs: number; builds: number; requests: number; synced: number; links: number }
 
 export async function runGoogleAdsTick(deps: Deps, opts: { log?: { info(o: unknown, m?: string): void; error(o: unknown, m?: string): void }; now?: Date } = {}): Promise<TickStats> {
-  const stats: TickStats = { jobs: 0, builds: 0, synced: 0, links: 0 };
+  const stats: TickStats = { jobs: 0, builds: 0, requests: 0, synced: 0, links: 0 };
   const workerId = `google-ads-${process.pid}`;
 
   const { rows: jobs } = await deps.adminPool.query(
@@ -46,6 +47,20 @@ export async function runGoogleAdsTick(deps: Deps, opts: { log?: { info(o: unkno
   for (const job of builds) {
     stats.builds++;
     await runBuildJob(deps, job, { log: opts.log });
+  }
+
+  // Campaign requests handed to the account manager: one assessment per
+  // tick keeps the (long) prompt from crowding out publishing.
+  const { rows: runs } = await deps.adminPool.query(
+    `UPDATE google_ads_request_runs SET claimed_by = $1, claimed_at = now()
+      WHERE id IN (SELECT id FROM google_ads_request_runs
+                    WHERE (status = 'queued' OR (status = 'running' AND claimed_at < now() - make_interval(mins => $2)))
+                      AND attempts < 3
+                    ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED)
+      RETURNING *`, [workerId, STALE_JOB_MINUTES]);
+  for (const job of runs) {
+    stats.requests++;
+    await runRequestRun(deps, job, { log: opts.log });
   }
 
   const { rows: due } = await deps.adminPool.query(
@@ -83,7 +98,7 @@ export function startGoogleAdsWorker(deps: Deps, opts: { intervalMs?: number; lo
     if (stopped) return;
     try {
       const stats = await runGoogleAdsTick(deps, { log: opts.log });
-      if (stats.jobs || stats.builds || stats.synced || stats.links) opts.log?.info({ at: "google_ads.tick", ...stats });
+      if (stats.jobs || stats.builds || stats.requests || stats.synced || stats.links) opts.log?.info({ at: "google_ads.tick", ...stats });
     } catch (err) {
       opts.log?.error({ at: "google_ads.tick_failed", err });
     } finally {
