@@ -480,16 +480,16 @@ const templates: { [K in EmailKind]: Renderer<K> } = {
     cta: { label: "Track the request", url: `${L.googleAds}/campaigns/requests` },
   }),
   google_ads_request_update: (x, L) => ({
-    subject: x.status === "needs_info" ? `A question about your campaign request: ${x.title}` : `Campaign request update: ${x.title} — ${x.statusLabel}`,
-    preheader: x.status === "needs_info" ? "Deedwell needs a couple of details to continue." : `Request #${x.number} is now ${x.statusLabel.toLowerCase()}.`,
+    subject: x.status === "needs_info" ? `A question about your campaign request: ${x.title}` : x.status === "awaiting_approval" ? `Your campaign is ready to approve: ${x.title}` : `Campaign request update: ${x.title} — ${x.statusLabel}`,
+    preheader: x.status === "needs_info" ? "Deedwell needs a couple of details to continue." : x.status === "awaiting_approval" ? "The ads, keywords and images are built — one approval and it goes live." : `Request #${x.number} is now ${x.statusLabel.toLowerCase()}.`,
     eyebrow: "Google Ads",
-    heading: x.status === "needs_info" ? "Deedwell needs your input." : `${x.title}: ${x.statusLabel}.`,
+    heading: x.status === "needs_info" ? "Deedwell needs your input." : x.status === "awaiting_approval" ? "Your campaign is built — approve it to go live." : `${x.title}: ${x.statusLabel}.`,
     blocks: [
       p(`Request **#${x.number} — ${x.title}** for **${x.orgName}** is now **${x.statusLabel}**.`),
       ...(x.message ? [callout(x.message, x.status === "declined" ? "warn" : x.status === "live" ? "ok" : "info")] : []),
       ...(x.questions.length ? [p("To continue, please answer:"), list(x.questions)] : []),
     ],
-    cta: { label: x.questions.length ? "Answer the questions" : "Open the request", url: `${L.googleAds}/campaigns/requests` },
+    cta: { label: x.questions.length ? "Answer the questions" : x.status === "awaiting_approval" ? "Review and approve" : "Open the request", url: `${L.googleAds}/campaigns/requests` },
   }),
   ad_grants_live: (x, L) => ({
     subject: `Your first Google Ads campaign is live`,

@@ -582,6 +582,7 @@ function googleAdsStrategy(request: ModelRequest): unknown {
 function googleAdsRequestPlan(request: ModelRequest): unknown {
   const brief = request.dataBlocks.find((b) => b.label === "campaign_request")?.content ?? "";
   const needsInfo = /\[needs info\]/i.test(brief);
+  const needsAdmin = /\[needs admin\]/i.test(brief);
   const name = googleAdsOrgName(request);
   const landing = googleAdsLanding(request);
   const base = {
@@ -600,6 +601,17 @@ function googleAdsRequestPlan(request: ModelRequest): unknown {
     utilization: { suggestedDailyBudgetUsd: 50, bindingConstraint: "Measurement: no conversion action recorded yet.", notes: ["Grant capacity is a ceiling, not a guarantee."] },
     nextSteps: ["Validate the conversion action.", "Review and approve the plan.", "Build and review the campaign draft."],
   };
+  if (needsAdmin) {
+    return {
+      decision: "needs_info",
+      customerSummary: `Deedwell's account manager is checking one detail with the Deedwell team before planning the campaign for ${name}.`,
+      adminSummary: "The brief asks for paid spend beyond the grant; the administrator must authorize it before planning continues.",
+      ...base,
+      questions: [{ question: "Is paid spend beyond the Ad Grant authorized for this organization?", why: "Grant-only limits do not allow it without explicit authorization.", audience: "admin" }],
+      plan: null,
+      declineReason: null,
+    };
+  }
   if (needsInfo) {
     return {
       decision: "needs_info",
@@ -607,8 +619,8 @@ function googleAdsRequestPlan(request: ModelRequest): unknown {
       adminSummary: "The brief lacks inputs that affect targeting and measurement; questions sent to the customer.",
       ...base,
       questions: [
-        { question: "Which page on your website should the ad send people to?", why: "Ads need an approved, working landing page." },
-        { question: "Who is eligible for the program (age, location, income)?", why: "Eligibility shapes keywords and ad copy." },
+        { question: "Which page on your website should the ad send people to?", why: "Ads need an approved, working landing page.", audience: "customer" },
+        { question: "Who is eligible for the program (age, location, income)?", why: "Eligibility shapes keywords and ad copy.", audience: "customer" },
       ],
       plan: null,
       declineReason: null,
@@ -616,8 +628,8 @@ function googleAdsRequestPlan(request: ModelRequest): unknown {
   }
   return {
     decision: "proceed",
-    customerSummary: `Deedwell has reviewed your request and drafted a campaign plan for ${name}. A Deedwell administrator now reviews it before anything is built.`,
-    adminSummary: "The request is mission-relevant and policy checks pass on available data; plan drafted for approval.",
+    customerSummary: `Deedwell has reviewed your request and planned the campaign for ${name}. The ads and images are being built next; you approve the finished campaign before it goes live.`,
+    adminSummary: "The request is mission-relevant and policy checks pass on available data; plan written, campaign build queued.",
     ...base,
     questions: [],
     plan: googleAdsStrategy(request),

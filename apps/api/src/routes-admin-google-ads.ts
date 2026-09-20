@@ -13,7 +13,7 @@ import { RSA_LIMITS } from "@deedwell/google-ads-domain";
 import {
   GoogleAdsBudgetInput, GoogleAdsCampaignStatusInput, GoogleAdsComplianceRulePatchInput, GoogleAdsDraftAdPatchInput, GoogleAdsDraftAssetPatchInput,
   GoogleAdsDraftPatchInput, GoogleAdsPlatformSettingsInput, GoogleAdsPublishInput, GoogleAdsStrategyPatchInput,
-  GoogleAdsRequestAskInput, GoogleAdsRequestDecisionInput, GoogleAdsRequestHandoffInput, GoogleAdsRequestNotesInput,
+  GoogleAdsRequestAnswerInput, GoogleAdsRequestApproveInput, GoogleAdsRequestAskInput, GoogleAdsRequestDecisionInput, GoogleAdsRequestHandoffInput, GoogleAdsRequestNotesInput,
 } from "@deedwell/schemas";
 import type { PoolClient } from "pg";
 import { HttpError, type AppContext } from "./app.js";
@@ -25,7 +25,8 @@ import { ensureManagerLink } from "./google-ads/connection.js";
 import { decideDraft, decideDraftAd, decideDraftAsset, jobView, listDrafts, loadDraft, patchDraft, patchDraftAd, patchDraftAsset } from "./google-ads/drafts.js";
 import { publishPreview, requestPublish, setCampaignBudget, setCampaignStatus } from "./google-ads/publish.js";
 import { accountsAcrossTenants, campaignDetail, campaignsWithMetrics, deedwellAds, overview, resolveRange } from "./google-ads/reports.js";
-import { adminRequestDetail, adminRequestView, askCustomer, decideRequest, handoffRequest, listRequests, noteRequest, onStrategyApproved, requestsAcrossTenants } from "./google-ads/requests.js";
+import { approveRequest } from "./google-ads/request-pipeline.js";
+import { adminRequestDetail, adminRequestView, answerRequest, askCustomer, decideRequest, handoffRequest, listRequests, noteRequest, onStrategyApproved, requestsAcrossTenants } from "./google-ads/requests.js";
 import { clearManagerConnection, managerOAuthClient, readGoogleAdsSettings, saveGoogleAdsSettings, saveManagerConnection, settingsView } from "./google-ads/settings.js";
 import { accountView, activityQueryOf, listActivity, loadAccount, logActivity } from "./google-ads/store.js";
 import { syncAccount } from "./google-ads/sync.js";
@@ -358,6 +359,25 @@ export function registerAdminGoogleAdsRoutes(app: FastifyInstance, ctx: AppConte
     const { requestId } = req.params as { requestId: string };
     const input = GoogleAdsRequestDecisionInput.parse(req.body);
     await inTenant(req, (client, orgId) => decideRequest(deps, client, orgId, req.userId!, requestId, input.status, input.message ?? null, input.reason ?? null));
+    return requestDetail(req, requestId);
+  });
+
+  /** Deedwell answers the account manager's questions to the administrator; the agent resumes. */
+  app.post(`${base}/orgs/:orgId/requests/:requestId/answer`, async (req) => {
+    const { requestId } = req.params as { requestId: string };
+    const input = GoogleAdsRequestAnswerInput.parse(req.body);
+    await inTenant(req, async (client, orgId) => {
+      await requireTokensFor(ctx, client, orgId);
+      return answerRequest(deps, client, orgId, req.userId!, requestId, input.answers, "admin");
+    });
+    return requestDetail(req, requestId);
+  });
+
+  /** The final approval from Deedwell's side: approves the built drafts and queues the publish. */
+  app.post(`${base}/orgs/:orgId/requests/:requestId/approve`, async (req) => {
+    const { requestId } = req.params as { requestId: string };
+    const input = GoogleAdsRequestApproveInput.parse(req.body ?? {});
+    await inTenant(req, (client, orgId) => approveRequest(deps, client, orgId, req.userId!, requestId, { as: "admin", enableOnPublish: input.enableOnPublish, message: input.message ?? null }));
     return requestDetail(req, requestId);
   });
 

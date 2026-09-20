@@ -5,13 +5,14 @@
  */
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { GoogleAdsApiError, REQUEST_GOALS } from "@deedwell/google-ads-domain";
-import { GoogleAdsCampaignRequestInput, GoogleAdsRequestAnswerInput, GoogleAdsRequestCancelInput, GoogleAdsSelectAccountInput } from "@deedwell/schemas";
+import { GoogleAdsCampaignRequestInput, GoogleAdsRequestAnswerInput, GoogleAdsRequestApproveInput, GoogleAdsRequestCancelInput, GoogleAdsRequestChangesInput, GoogleAdsSelectAccountInput } from "@deedwell/schemas";
 import { HttpError, type AppContext } from "./app.js";
 import { GoogleAdsAccessError } from "./google-ads/access.js";
 import { complianceReport } from "./google-ads/compliance.js";
 import { connectionStatus, disconnectAccount, discoverAccounts, ensureManagerLink, selectAccount } from "./google-ads/connection.js";
 import { campaignDetail, campaignsWithMetrics, deedwellAds, overview, resolveRange } from "./google-ads/reports.js";
-import { RequestError, answerRequest, cancelRequest, createRequest, customerRequestView, listRequests, loadRequest, loadRequestCampaign, loadRequestEvents } from "./google-ads/requests.js";
+import { approveRequest, requestChanges } from "./google-ads/request-pipeline.js";
+import { RequestError, answerRequest, cancelRequest, createRequest, customerRequestDetail, customerRequestView, listRequests } from "./google-ads/requests.js";
 import { accountView, activityQueryOf, listActivity, loadAccount } from "./google-ads/store.js";
 import { syncAccount } from "./google-ads/sync.js";
 
@@ -169,9 +170,9 @@ export function registerGoogleAdsRoutes(app: FastifyInstance, ctx: AppContext): 
   });
 
   const customerDetail = async (req: FastifyRequest, id: string) => ctx.inOrg(req, async (client) => {
-    const row = await loadRequest(client, req.orgId!, id);
-    if (!row) throw new HttpError(404, "Request not found");
-    return customerRequestView(row, { events: await loadRequestEvents(client, id), campaign: await loadRequestCampaign(client, row) });
+    const view = await customerRequestDetail(client, req.orgId!, id);
+    if (!view) throw new HttpError(404, "Request not found");
+    return view;
   });
 
   app.get(`${base}/requests/:requestId`, async (req) => {
@@ -186,6 +187,39 @@ export function registerGoogleAdsRoutes(app: FastifyInstance, ctx: AppContext): 
     const input = GoogleAdsRequestAnswerInput.parse(req.body);
     await ctx.inOrg(req, (client) => answerRequest(ctx.deps, client, req.orgId!, req.userId!, requestId, input.answers)).catch(translateAdsError);
     return { request: await customerDetail(req, requestId) };
+  });
+
+  /** The last step: the organization approves the built campaign; Deedwell publishes it. */
+  app.post(`${base}/requests/:requestId/approve`, async (req) => {
+    ctx.requireRole(req, "member");
+    const { requestId } = req.params as { requestId: string };
+    const input = GoogleAdsRequestApproveInput.parse(req.body ?? {});
+    await ctx.inOrg(req, (client) => approveRequest(ctx.deps, client, req.orgId!, req.userId!, requestId, { as: "customer", enableOnPublish: input.enableOnPublish, message: input.message ?? null })).catch(translateAdsError);
+    return { request: await customerDetail(req, requestId) };
+  });
+
+  /** …or sends it back with what to change. */
+  app.post(`${base}/requests/:requestId/request-changes`, async (req) => {
+    ctx.requireRole(req, "member");
+    const { requestId } = req.params as { requestId: string };
+    const input = GoogleAdsRequestChangesInput.parse(req.body);
+    await ctx.inOrg(req, (client) => requestChanges(ctx.deps, client, req.orgId!, req.userId!, requestId, input.message)).catch(translateAdsError);
+    return { request: await customerDetail(req, requestId) };
+  });
+
+  /** A generated image of the request's campaign, for the approval preview. */
+  app.get(`${base}/requests/:requestId/creatives/:assetId/content`, async (req, reply) => {
+    ctx.requireRole(req, "viewer");
+    const { requestId, assetId } = req.params as { requestId: string; assetId: string };
+    const row = await ctx.inOrg(req, async (client) => {
+      const { rows } = await client.query(
+        `SELECT x.storage_key, x.mime FROM google_ads_draft_assets x JOIN google_ads_drafts d ON d.id = x.draft_id JOIN google_ads_strategies s ON s.id = d.strategy_id
+          WHERE x.id = $1 AND s.request_id = $2 AND x.tenant_id = $3 AND x.kind = 'image'`, [assetId, requestId, req.orgId]);
+      return rows[0] ?? null;
+    });
+    if (!row?.storage_key) throw new HttpError(404, "No image rendered for this creative");
+    const bytes = await ctx.deps.storage.get(row.storage_key);
+    return reply.header("content-type", row.mime ?? "image/png").header("cache-control", "private, max-age=300").send(bytes);
   });
 
   app.post(`${base}/requests/:requestId/cancel`, async (req) => {

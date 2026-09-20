@@ -16,7 +16,7 @@ import type { PoolClient } from "pg";
 import type { Deps } from "../bootstrap.js";
 import { accessFor } from "./access.js";
 import { assetContent, jobView, loadDraft } from "./drafts.js";
-import { onDraftPublished } from "./requests.js";
+import { onDraftPublished, onPublishFailed } from "./requests.js";
 import { emitOrgEvent, loadAccountById, logActivity, type AccountRow } from "./store.js";
 
 export async function publishPreview(client: PoolClient, account: AccountRow, draftId: string, orgName: string) {
@@ -95,6 +95,7 @@ export async function runPublishJob(deps: Deps, job: Record<string, any>, opts: 
       await client.query(`UPDATE google_ads_draft_ads SET status = 'failed' WHERE draft_id = $1 AND status = 'publishing'`, [job.draft_id]);
       await client.query(`UPDATE google_ads_draft_assets SET status = 'failed' WHERE draft_id = $1 AND status = 'publishing'`, [job.draft_id]);
       await logActivity(client, { tenantId, accountId: job.account_id, customerId: job.summary?.customerIdRaw ?? null, actorUserId: job.requested_by, actorKind: "system", action: "publish_failed", entityType: "publish_job", entityId: job.id, previousState: "publishing", newState: "failed", summary: message });
+      await onPublishFailed(deps, client, job.draft_id, message).catch((err) => opts.log?.error({ at: "google_ads.request_publish_failed_hook", err }));
       emitOrgEvent(deps, tenantId, "google_ads:publish_failed", { jobId: job.id, draftId: job.draft_id });
       opts.log?.error({ at: "google_ads.publish_failed", jobId: job.id, message, detail });
     };

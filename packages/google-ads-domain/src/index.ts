@@ -17,4 +17,7 @@ export { adsStrategist, adsCampaignBuilder, ALL_GOOGLE_ADS_AGENTS } from "./agen
 export { AD_GRANTS_MANAGER_PROMPT, AD_GRANTS_MANAGER_OPERATING_ADDENDUM, AD_GRANTS_MANAGER_PROMPT_VERSION } from "./grants-manager-prompt.js";
 export { adsGrantsManager } from "./agents.js";
 export { utilizationForecast, AD_GRANTS_MONTHLY_LIMIT_USD, AD_GRANTS_DAILY_CAP_USD, type UtilizationForecast, type UtilizationInput } from "./utilization.js";
-export { REQUEST_GOALS, OPEN_REQUEST_STATUSES, CLOSED_REQUEST_STATUSES, CANCELLABLE_REQUEST_STATUSES, isOpenRequest, type RequestGoal, type RequestStatus } from "./requests.js";
+export {
+  REQUEST_GOALS, OPEN_REQUEST_STATUSES, CLOSED_REQUEST_STATUSES, CANCELLABLE_REQUEST_STATUSES, REQUEST_STEPS, isOpenRequest,
+  type RequestGoal, type RequestStatus, type QuestionAudience, type RequestStep, type RequestStepActivity, type RequestStepKey, type RequestStepState,
+} from "./requests.js";

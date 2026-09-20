@@ -429,42 +429,82 @@ describe("Google Ads management", () => {
     expect((await api(env.app, "POST", `/v1/admin/google-ads/orgs/${orgId}/requests/${requestId}/handoff`, { token, body: {} })).status).toBe(409); // already running
     const tick = await runGoogleAdsTick(env.deps);
     expect(tick.requests).toBe(1);
+    // The plan is in; the pipeline approved the strategy and queued the build on its own.
     const planned = await api(env.app, "GET", `/v1/admin/google-ads/orgs/${orgId}/requests/${requestId}`, { token });
-    expect(planned.body.request.status).toBe("planned");
+    expect(planned.body.request.status).toBe("building");
     expect(planned.body.request.latestRun).toMatchObject({ status: "completed", decision: "proceed" });
     expect(planned.body.request.latestRun.result.assessment.policyChecks.length).toBeGreaterThan(0);
     expect(planned.body.request.latestRun.result.utilizationForecast.month).toMatch(/^\d{4}-\d{2}$/);
-    expect(planned.body.request.strategy).toMatchObject({ status: "draft", requestId });
+    expect(planned.body.request.strategy).toMatchObject({ status: "approved", requestId });
     const usage = await env.adminPool.query(`SELECT metadata FROM usage_ledger WHERE tenant_id = $1 AND metadata->>'purpose' = 'campaign_request'`, [orgId]);
     expect(usage.rows.length).toBe(1);
-    // The customer sees the plain-language summary and only customer-visible events.
+    // The progress checklist narrates what the account manager did.
+    const stepsAfterPlan = Object.fromEntries(planned.body.request.progress.map((s: any) => [s.key, s]));
+    expect(stepsAfterPlan.submitted.state).toBe("done");
+    expect(stepsAfterPlan.handoff.state).toBe("done");
+    expect(stepsAfterPlan.assess).toMatchObject({ state: "done", detail: "Plan written" });
+    expect(stepsAfterPlan.assess.activity.map((a: any) => a.message)).toEqual(expect.arrayContaining([expect.stringMatching(/Reading the brief/), expect.stringMatching(/compliance/), expect.stringMatching(/Campaign plan written/)]));
+    expect(stepsAfterPlan.questions.state).toBe("skipped");
+    expect(stepsAfterPlan.plan.state).toBe("done");
+    expect(stepsAfterPlan.build.state).toBe("active");
+    expect(stepsAfterPlan.approval.state).toBe("todo");
+    // The customer sees the plain-language summary, only customer-visible events, and the same checklist.
     const customerView = await api(env.app, "GET", `/v1/orgs/${orgId}/google-ads/requests/${requestId}`, { token });
-    expect(customerView.body.request.status).toBe("planned");
+    expect(customerView.body.request.status).toBe("building");
     expect(customerView.body.request.customerMessage).toBeTruthy();
     expect(customerView.body.request.events.every((e: any) => e.customerVisible)).toBe(true);
     expect(customerView.body.request.events.some((e: any) => e.kind === "run_completed")).toBe(false);
+    expect(customerView.body.request.progress.map((s: any) => s.key)).toEqual(["submitted", "handoff", "assess", "questions", "plan", "build", "images", "approval", "publish", "live"]);
+    expect(customerView.body.request.canApprove).toBe(false);
+    expect((await api(env.app, "POST", `/v1/orgs/${orgId}/google-ads/requests/${requestId}/approve`, { token, body: {} })).status).toBe(409);
 
-    // Approving the plan builds the campaign; publishing it makes the request live.
-    const reqStrategyId = planned.body.request.strategy.id;
-    const approveStrategy = await api(env.app, "POST", `/v1/admin/google-ads/orgs/${orgId}/strategies/${reqStrategyId}/approve`, { token });
-    expect(approveStrategy.body.strategy.status).toBe("approved");
-    expect(approveStrategy.body.builds.length).toBeGreaterThan(0);
-    expect((await api(env.app, "GET", `/v1/orgs/${orgId}/google-ads/requests/${requestId}`, { token })).body.request.status).toBe("building");
-    let built = 0;
-    for (let i = 0; i < 4 && built < approveStrategy.body.builds.length; i++) built += (await runGoogleAdsTick(env.deps)).builds;
-    const after = await api(env.app, "GET", `/v1/admin/google-ads/orgs/${orgId}/requests/${requestId}`, { token });
-    const reqDraftId = after.body.request.drafts[0].id;
-    await api(env.app, "POST", `/v1/admin/google-ads/orgs/${orgId}/drafts/${reqDraftId}/approve`, { token });
-    const preview = await api(env.app, "GET", `/v1/admin/google-ads/orgs/${orgId}/drafts/${reqDraftId}/publish-preview`, { token });
-    expect(preview.body.preview.blockers).toEqual([]);
-    const publish = await api(env.app, "POST", `/v1/admin/google-ads/orgs/${orgId}/drafts/${reqDraftId}/publish`, { token, body: { confirmName: preview.body.preview.campaign.name } });
-    expect(publish.status).toBe(202);
-    await runGoogleAdsTick(env.deps);
+    // The worker builds the campaign (copy, then images); the request then waits for the final approval.
+    for (let i = 0; i < 4; i++) {
+      const t = await runGoogleAdsTick(env.deps);
+      if (!t.builds) break;
+    }
+    const built = await api(env.app, "GET", `/v1/admin/google-ads/orgs/${orgId}/requests/${requestId}`, { token });
+    expect(built.body.request.status).toBe("awaiting_approval");
+    expect(built.body.request.drafts.length).toBeGreaterThan(0);
+    const stepsBuilt = Object.fromEntries(built.body.request.progress.map((s: any) => [s.key, s]));
+    expect(stepsBuilt.build.state).toBe("done");
+    expect(["done", "skipped"]).toContain(stepsBuilt.images.state);
+    expect(stepsBuilt.approval).toMatchObject({ state: "waiting" });
+    expect(stepsBuilt.build.activity.some((a: any) => /written/.test(a.message))).toBe(true);
+    // The preview the approver sees: ads, keywords, extensions, images.
+    const preview = built.body.request.preview;
+    expect(preview.length).toBe(built.body.request.drafts.length);
+    expect(preview[0].ads.length).toBeGreaterThan(0);
+    expect(preview[0].ads[0].headlines.length).toBeGreaterThan(0);
+    expect(preview[0].adGroups.length).toBeGreaterThan(0);
+    if (preview[0].images.length) {
+      const img = await api(env.app, "GET", `/v1/orgs/${orgId}/google-ads/requests/${requestId}/creatives/${preview[0].images[0].id}/content`, { token });
+      expect([200, 404]).toContain(img.status);
+      expect((await api(env.app, "GET", `/v1/orgs/${otherOrgId}/google-ads/requests/${requestId}/creatives/${preview[0].images[0].id}/content`, { token: otherToken })).status).toBe(404);
+    }
+    const ready = await api(env.app, "GET", `/v1/orgs/${orgId}/google-ads/requests/${requestId}`, { token });
+    expect(ready.body.request.canApprove).toBe(true);
+    expect(ready.body.request.events.some((e: any) => e.kind === "ready_for_approval")).toBe(true);
+    expect(ready.body.request.preview[0].ads[0].headlines.length).toBeGreaterThan(0);
+
+    // The customer approves: drafts are approved and queued to publish; the worker makes it live.
+    expect([403, 404]).toContain((await api(env.app, "POST", `/v1/orgs/${orgId}/google-ads/requests/${requestId}/approve`, { token: otherToken, body: {} })).status); // not a member of this org
+    const approved = await api(env.app, "POST", `/v1/orgs/${orgId}/google-ads/requests/${requestId}/approve`, { token, body: { message: "Looks great." } });
+    expect(approved.status).toBe(200);
+    expect(approved.body.request.status).toBe("publishing");
+    expect(approved.body.request.approval).toMatchObject({ as: "customer" });
+    expect(approved.body.request.progress.find((s: any) => s.key === "approval").state).toBe("done");
+    expect(approved.body.request.progress.find((s: any) => s.key === "publish").state).toBe("active");
+    expect((await api(env.app, "POST", `/v1/orgs/${orgId}/google-ads/requests/${requestId}/approve`, { token, body: {} })).status).toBe(409);
+    const jobs = await runGoogleAdsTick(env.deps);
+    expect(jobs.jobs).toBeGreaterThan(0);
     const live = await api(env.app, "GET", `/v1/orgs/${orgId}/google-ads/requests/${requestId}`, { token });
     expect(live.body.request.status).toBe("live");
     expect(live.body.request.liveCampaignId).toBeTruthy();
     expect(live.body.request.campaign?.name).toBeTruthy();
+    expect(live.body.request.campaign?.status).toBe("ENABLED");
     expect(live.body.request.canCancel).toBe(false);
+    expect(live.body.request.progress.every((s: any) => ["done", "skipped"].includes(s.state))).toBe(true);
     expect((await api(env.app, "POST", `/v1/orgs/${orgId}/google-ads/requests/${requestId}/cancel`, { token, body: {} })).status).toBe(409);
     const done = await api(env.app, "POST", `/v1/admin/google-ads/orgs/${orgId}/requests/${requestId}/decide`, { token, body: { status: "completed", message: "Running well." } });
     expect(done.body.request.status).toBe("completed");
@@ -502,6 +542,54 @@ describe("Google Ads management", () => {
     expect(notes.body.request.events.some((e: any) => e.kind === "note" && !e.customerVisible)).toBe(true);
     const openOnly = await api(env.app, "GET", `/v1/admin/google-ads/requests?open=1`, { token });
     expect(openOnly.body.requests.map((r: any) => r.id)).not.toContain(third.body.request.id);
+  });
+
+  it("campaign requests: questions pause the pipeline for the right person — Deedwell for the account manager's admin questions, the customer for the rest — and changes send a built campaign back", async () => {
+    const brief = {
+      title: "Winter coat drive [needs admin]", goal: "donations", priority: "urgent",
+      program: "Collecting winter coats for families across the county; we want paid ads on top of the grant.",
+      audience: "Donors in the county.", desiredAction: "Donate a coat or give online", landingPage: "https://riverbend.org/coats", geography: "Riverbend county",
+    };
+    const created = await api(env.app, "POST", `/v1/orgs/${orgId}/google-ads/requests`, { token, body: brief });
+    const requestId = created.body.request.id;
+    await api(env.app, "POST", `/v1/admin/google-ads/orgs/${orgId}/requests/${requestId}/handoff`, { token, body: {} });
+    await runGoogleAdsTick(env.deps);
+    // The mock asks Deedwell (not the customer) about paid spend.
+    const asked = await api(env.app, "GET", `/v1/admin/google-ads/orgs/${orgId}/requests/${requestId}`, { token });
+    expect(asked.body.request.status).toBe("needs_admin");
+    expect(asked.body.request.adminQuestions.length).toBe(1);
+    expect(asked.body.request.progress.find((s: any) => s.key === "questions")).toMatchObject({ state: "waiting", waitingOn: "admin" });
+    const customerSide = await api(env.app, "GET", `/v1/orgs/${orgId}/google-ads/requests/${requestId}`, { token });
+    expect(customerSide.body.request.pendingQuestions).toEqual([]);
+    expect(customerSide.body.request.statusLabel).toBe("Waiting on Deedwell");
+    // The customer cannot answer an admin question; the administrator can, and the agent resumes.
+    expect((await api(env.app, "POST", `/v1/orgs/${orgId}/google-ads/requests/${requestId}/answer`, { token, body: { answers: [{ question: asked.body.request.adminQuestions[0].question, answer: "yes" }] } })).status).toBe(409);
+    const answered = await api(env.app, "POST", `/v1/admin/google-ads/orgs/${orgId}/requests/${requestId}/answer`, { token, body: { answers: [{ question: asked.body.request.adminQuestions[0].question, answer: "No — grant only." }] } });
+    expect(answered.status).toBe(200);
+    expect(answered.body.request.status).toBe("in_progress");
+    expect(answered.body.request.answers[0]).toMatchObject({ answeredBy: "admin" });
+    // The mock keys off the title; drop the tag so the second run plans.
+    await env.adminPool.query(`UPDATE google_ads_campaign_requests SET title = 'Winter coat drive' WHERE id = $1`, [requestId]);
+    await runGoogleAdsTick(env.deps);
+    const planned = await api(env.app, "GET", `/v1/admin/google-ads/orgs/${orgId}/requests/${requestId}`, { token });
+    expect(planned.body.request.status).toBe("building");
+    expect(planned.body.request.progress.find((s: any) => s.key === "questions")).toMatchObject({ state: "done" });
+    for (let i = 0; i < 4; i++) { const t = await runGoogleAdsTick(env.deps); if (!t.builds) break; }
+    expect((await api(env.app, "GET", `/v1/orgs/${orgId}/google-ads/requests/${requestId}`, { token })).body.request.status).toBe("awaiting_approval");
+    // The customer asks for changes: back with the team; the administrator can then approve and publish paused.
+    const changes = await api(env.app, "POST", `/v1/orgs/${orgId}/google-ads/requests/${requestId}/request-changes`, { token, body: { message: "Please mention the Saturday drop-off." } });
+    expect(changes.status).toBe(200);
+    expect(changes.body.request.status).toBe("in_review");
+    expect(changes.body.request.progress.find((s: any) => s.key === "approval")).toMatchObject({ state: "waiting", waitingOn: "admin" });
+    expect((await api(env.app, "POST", `/v1/orgs/${orgId}/google-ads/requests/${requestId}/approve`, { token, body: {} })).status).toBe(409);
+    const adminApproved = await api(env.app, "POST", `/v1/admin/google-ads/orgs/${orgId}/requests/${requestId}/approve`, { token, body: { enableOnPublish: false } });
+    expect(adminApproved.status).toBe(200);
+    expect(adminApproved.body.request.status).toBe("publishing");
+    expect(adminApproved.body.request.approval).toMatchObject({ as: "admin" });
+    await runGoogleAdsTick(env.deps);
+    const live = await api(env.app, "GET", `/v1/orgs/${orgId}/google-ads/requests/${requestId}`, { token });
+    expect(live.body.request.status).toBe("live");
+    expect(live.body.request.campaign?.status).toBe("PAUSED");
   });
 
   it("admin cannot act on an organization that has no account, and drafts never cross tenants", async () => {

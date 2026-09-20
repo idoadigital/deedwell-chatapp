@@ -20,6 +20,16 @@ import { emitOrgEvent, loadAccountById, logActivity, type AccountRow } from "./s
 
 type Log = { info(o: unknown, m?: string): void; error(o: unknown, m?: string): void };
 
+/** Narration points for whoever queued the build (campaign requests use
+ *  them for the live progress checklist). Every hook is best-effort. */
+export interface BuildHooks {
+  started?(job: Record<string, any>): Promise<void>;
+  campaignWritten?(job: Record<string, any>, draft: { id: string; name: string; ads: number; keywords: number; sitelinks: number; callouts: number; images: number }): Promise<void>;
+  imageRendered?(job: Record<string, any>, info: { draftId: string; index: number; total: number; ok: boolean; title: string | null; error: string | null }): Promise<void>;
+  finished?(job: Record<string, any>, info: { status: "completed" | "failed"; draftId: string | null; error: string | null; images: { total: number; rendered: number; failed: number } }): Promise<void>;
+}
+const quiet = (p: Promise<void> | undefined) => (p ?? Promise.resolve()).catch(() => undefined);
+
 export function buildJobView(j: Record<string, any>) {
   return {
     id: j.id, strategyId: j.strategy_id, campaignIndex: j.campaign_index, campaignName: j.campaign_name, status: j.status, stage: j.stage,
@@ -69,19 +79,23 @@ export async function enqueueBuilds(
 
 /** Executes one build. Stage 1 drafts the campaign in the tenant's own
  *  transaction; stage 2 renders creatives asset by asset. */
-export async function runBuildJob(deps: Deps, job: Record<string, any>, opts: { log?: Log } = {}): Promise<void> {
+export async function runBuildJob(deps: Deps, job: Record<string, any>, opts: { log?: Log; hooks?: BuildHooks } = {}): Promise<void> {
   const tenantId: string = job.tenant_id;
+  const hooks = opts.hooks ?? {};
+  let draftId: string | null = job.draft_id ?? null;
   const fail = async (message: string) => {
     await deps.adminPool.query(`UPDATE google_ads_build_jobs SET status = 'failed', error = $2, finished_at = now() WHERE id = $1`, [job.id, message.slice(0, 1000)]);
     await withContext(deps.appPool, { tenantId, userId: job.requested_by }, (client) =>
       logActivity(client, { tenantId, accountId: job.account_id, customerId: null, actorUserId: job.requested_by, actorKind: "system", action: "campaign_build_failed", entityType: "build_job", entityId: job.id, previousState: "running", newState: "failed", summary: message.slice(0, 200) })).catch(() => undefined);
     emitOrgEvent(deps, tenantId, "google_ads:build_changed", { jobId: job.id, status: "failed" });
     opts.log?.error({ at: "google_ads.build_failed", jobId: job.id, message });
+    await quiet(hooks.finished?.(job, { status: "failed", draftId, error: message, images: { total: 0, rendered: 0, failed: 0 } }));
   };
   try {
-    let draftId: string | null = job.draft_id ?? null;
     if (!draftId) {
       await deps.adminPool.query(`UPDATE google_ads_build_jobs SET status = 'running', stage = 'campaign', started_at = COALESCE(started_at, now()), attempts = attempts + 1 WHERE id = $1`, [job.id]);
+      emitOrgEvent(deps, tenantId, "google_ads:build_changed", { jobId: job.id, status: "running", stage: "campaign" });
+      await quiet(hooks.started?.(job));
       draftId = await withContext(deps.appPool, { tenantId, userId: job.requested_by }, async (client) => {
         const account = await loadAccountById(client, tenantId, job.account_id);
         if (!account) throw new Error("The Google Ads account is gone.");
@@ -91,22 +105,44 @@ export async function runBuildJob(deps: Deps, job: Record<string, any>, opts: { 
       await deps.adminPool.query(`UPDATE google_ads_build_jobs SET stage = 'creatives', draft_id = $2 WHERE id = $1`, [job.id, draftId]);
       emitOrgEvent(deps, tenantId, "google_ads:build_changed", { jobId: job.id, status: "running", stage: "creatives", draftId });
       emitOrgEvent(deps, tenantId, "google_ads:draft_changed", { draftId });
+      if (hooks.campaignWritten) await quiet(draftCounts(deps, draftId).then((c) => hooks.campaignWritten!(job, c)));
     } else {
       await deps.adminPool.query(`UPDATE google_ads_build_jobs SET status = 'running', stage = 'creatives', attempts = attempts + 1 WHERE id = $1`, [job.id]);
     }
-    const rendered = await renderDraftCreatives(deps, tenantId, job.account_id, draftId, job.requested_by, opts.log);
+    const id = draftId;
+    const rendered = await renderDraftCreatives(deps, tenantId, job.account_id, id, job.requested_by, opts.log, {
+      onImage: hooks.imageRendered ? (info) => quiet(hooks.imageRendered!(job, { draftId: id, ...info })) : undefined,
+    });
     await deps.adminPool.query(`UPDATE google_ads_build_jobs SET status = 'completed', stage = NULL, error = $2, finished_at = now() WHERE id = $1`,
       [job.id, rendered.failed ? `${rendered.failed} of ${rendered.total} images could not be rendered` : null]);
     emitOrgEvent(deps, tenantId, "google_ads:build_changed", { jobId: job.id, status: "completed", draftId });
     opts.log?.info({ at: "google_ads.build_completed", jobId: job.id, draftId, images: rendered });
+    await quiet(hooks.finished?.(job, { status: "completed", draftId, error: null, images: rendered }));
   } catch (err) {
     await fail((err as Error).message ?? String(err));
   }
 }
 
+/** What a freshly written draft contains, for the narration. */
+async function draftCounts(deps: Deps, draftId: string) {
+  const { rows } = await deps.adminPool.query(
+    `SELECT d.name, d.content,
+            (SELECT COUNT(*) FROM google_ads_draft_ads a WHERE a.draft_id = d.id) AS ads,
+            (SELECT COUNT(*) FROM google_ads_draft_assets x WHERE x.draft_id = d.id AND x.kind = 'sitelink') AS sitelinks,
+            (SELECT COUNT(*) FROM google_ads_draft_assets x WHERE x.draft_id = d.id AND x.kind = 'callout') AS callouts,
+            (SELECT COUNT(*) FROM google_ads_draft_assets x WHERE x.draft_id = d.id AND x.kind = 'image') AS images
+       FROM google_ads_drafts d WHERE d.id = $1`, [draftId]);
+  const d = rows[0] ?? {};
+  const keywords = ((d.content?.adGroups ?? []) as Array<{ keywords?: unknown[] }>).reduce((n, g) => n + (g.keywords?.length ?? 0), 0);
+  return { id: draftId, name: String(d.name ?? ""), ads: Number(d.ads ?? 0), keywords, sitelinks: Number(d.sitelinks ?? 0), callouts: Number(d.callouts ?? 0), images: Number(d.images ?? 0) };
+}
+
 /** Renders every image asset of a draft that is still a brief. Each render
  *  is its own short write, so partial progress shows in the workspace. */
-export async function renderDraftCreatives(deps: Deps, tenantId: string, accountId: string, draftId: string, actorUserId: string | null, log?: Log, opts: { assetId?: string } = {}) {
+export async function renderDraftCreatives(
+  deps: Deps, tenantId: string, accountId: string, draftId: string, actorUserId: string | null, log?: Log,
+  opts: { assetId?: string; onImage?: (info: { index: number; total: number; ok: boolean; title: string | null; error: string | null }) => Promise<void> } = {},
+) {
   const { rows: pending } = await deps.adminPool.query(
     `SELECT id, aspect, title, content FROM google_ads_draft_assets WHERE draft_id = $1 AND kind = 'image' AND tenant_id = $2 ${opts.assetId ? "AND id = $3" : "AND status = 'draft'"} ORDER BY position`,
     opts.assetId ? [draftId, tenantId, opts.assetId] : [draftId, tenantId]);
@@ -114,7 +150,8 @@ export async function renderDraftCreatives(deps: Deps, tenantId: string, account
   if (!pending.length) return stats;
   const brand = await withContext(deps.appPool, { tenantId, userId: actorUserId }, (client) => brandNotes(deps, client, tenantId));
   let generator: ImageGenerator | null = null;
-  for (const asset of pending) {
+  for (const [i, asset] of pending.entries()) {
+    let error: string | null = null;
     try {
       generator ??= createImageGenerator({ apiKey: await readProviderKey(deps.appPool, "openai").catch(() => null) });
       const aspect = (asset.aspect ?? "landscape") as ImageAspect;
@@ -131,9 +168,11 @@ export async function renderDraftCreatives(deps: Deps, tenantId: string, account
       const message = String((err as Error)?.message ?? err).slice(0, 400);
       await deps.adminPool.query(`UPDATE google_ads_draft_assets SET status = 'failed', error = $2 WHERE id = $1`, [asset.id, message]);
       stats.failed++;
+      error = message;
       log?.error({ at: "google_ads.creative_failed", assetId: asset.id, message });
     }
     emitOrgEvent(deps, tenantId, "google_ads:draft_changed", { draftId, assetId: asset.id });
+    if (opts.onImage) await opts.onImage({ index: i + 1, total: pending.length, ok: !error, title: asset.title ?? null, error }).catch(() => undefined);
   }
   await withContext(deps.appPool, { tenantId, userId: actorUserId }, (client) =>
     logActivity(client, { tenantId, accountId, customerId: null, actorUserId, actorKind: "ai", action: "creatives_rendered", entityType: "draft", entityId: draftId, newState: "awaiting_approval", summary: `${stats.rendered} of ${stats.total} images rendered`, metadata: stats })).catch(() => undefined);

@@ -13,13 +13,61 @@ export const REQUEST_GOALS = {
 } as const;
 export type RequestGoal = keyof typeof REQUEST_GOALS;
 
-export type RequestStatus = "submitted" | "in_review" | "needs_info" | "in_progress" | "planned" | "building" | "live" | "completed" | "declined" | "cancelled";
+export type RequestStatus =
+  | "submitted" | "in_review" | "needs_info" | "needs_admin" | "in_progress" | "planned" | "building" | "awaiting_approval" | "publishing" | "live"
+  | "completed" | "declined" | "cancelled";
 
-export const OPEN_REQUEST_STATUSES: RequestStatus[] = ["submitted", "in_review", "needs_info", "in_progress", "planned", "building", "live"];
+export const OPEN_REQUEST_STATUSES: RequestStatus[] = ["submitted", "in_review", "needs_info", "needs_admin", "in_progress", "planned", "building", "awaiting_approval", "publishing", "live"];
 export const CLOSED_REQUEST_STATUSES: RequestStatus[] = ["completed", "declined", "cancelled"];
 
-/** Statuses a customer may cancel from; once a campaign is live the
+/** Statuses a customer may cancel from; once publishing starts the
  *  administrator closes the request. */
-export const CANCELLABLE_REQUEST_STATUSES: RequestStatus[] = ["submitted", "in_review", "needs_info", "in_progress", "planned"];
+export const CANCELLABLE_REQUEST_STATUSES: RequestStatus[] = ["submitted", "in_review", "needs_info", "needs_admin", "in_progress", "planned", "awaiting_approval"];
 
 export const isOpenRequest = (status: string): boolean => (OPEN_REQUEST_STATUSES as string[]).includes(status);
+
+/** Who a question from the account manager is for. */
+export type QuestionAudience = "customer" | "admin";
+
+/**
+ * The project checklist both dashboards show for a request, in order. The
+ * API computes each step's state from the request, its runs, builds and
+ * drafts; the dashboards only render it.
+ *
+ *   done      finished (check mark)
+ *   active    the pipeline is working on it right now (spinner)
+ *   waiting   paused until somebody answers or approves (who says whom)
+ *   failed    stopped with an error the administrator has to look at
+ *   skipped   not needed for this request (no questions, no images)
+ *   stopped   the request was declined or cancelled here
+ *   todo      not reached yet
+ */
+export const REQUEST_STEPS = [
+  { key: "submitted", label: "Request submitted" },
+  { key: "handoff", label: "Handed to the account manager" },
+  { key: "assess", label: "Account manager reviews the request" },
+  { key: "questions", label: "Questions answered" },
+  { key: "plan", label: "Campaign plan written" },
+  { key: "build", label: "Ads, keywords and extensions written" },
+  { key: "images", label: "Images generated" },
+  { key: "approval", label: "Final approval" },
+  { key: "publish", label: "Published to Google Ads" },
+  { key: "live", label: "Campaign live" },
+] as const;
+export type RequestStepKey = (typeof REQUEST_STEPS)[number]["key"];
+export type RequestStepState = "done" | "active" | "waiting" | "failed" | "skipped" | "stopped" | "todo";
+
+export interface RequestStepActivity { message: string; at: string; customerVisible: boolean }
+export interface RequestStep {
+  key: RequestStepKey;
+  label: string;
+  state: RequestStepState;
+  /** One line under the label: an error, "3 of 4 images", who we wait on. */
+  detail: string | null;
+  /** Who a `waiting` step waits on. */
+  waitingOn: QuestionAudience | null;
+  /** When the step finished (or last moved). */
+  at: string | null;
+  /** The live narration for the step, oldest first. */
+  activity: RequestStepActivity[];
+}

@@ -9,7 +9,8 @@ import type { Deps } from "../bootstrap.js";
 import { runBuildJob } from "./build.js";
 import { ensureManagerLink } from "./connection.js";
 import { runPublishJob } from "./publish.js";
-import { runRequestRun } from "./requests.js";
+import { requestBuildHooks } from "./request-pipeline.js";
+import { runRequestRun } from "./request-run.js";
 import { loadAccountById } from "./store.js";
 import { syncAccount } from "./sync.js";
 
@@ -44,9 +45,10 @@ export async function runGoogleAdsTick(deps: Deps, opts: { log?: { info(o: unkno
                       AND attempts < 3
                     ORDER BY created_at LIMIT 2 FOR UPDATE SKIP LOCKED)
       RETURNING *`, [workerId, STALE_JOB_MINUTES]);
+  const hooks = requestBuildHooks(deps);
   for (const job of builds) {
     stats.builds++;
-    await runBuildJob(deps, job, { log: opts.log });
+    await runBuildJob(deps, job, { log: opts.log, hooks });
   }
 
   // Campaign requests handed to the account manager: one assessment per

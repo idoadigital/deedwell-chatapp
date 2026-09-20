@@ -222,6 +222,16 @@ export const GoogleAdsRequestAskInput = z.object({
   message: optionalText(1000),
 });
 
+/** The final approval of a built campaign (customer or administrator). */
+export const GoogleAdsRequestApproveInput = z.object({
+  /** Publish enabled (default) or paused for a manual switch-on later. */
+  enableOnPublish: z.boolean().default(true),
+  message: optionalText(1000),
+});
+
+/** The customer sends the built campaign back with what to change. */
+export const GoogleAdsRequestChangesInput = z.object({ message: z.string().trim().min(3).max(2000) });
+
 export const GoogleAdsRequestDecisionInput = z.object({
   status: z.enum(["in_review", "in_progress", "completed", "declined"]),
   message: optionalText(1000),
@@ -255,7 +265,11 @@ export const GoogleAdsRequestPlanOutput = z.object({
     risks: z.array(z.string().max(300)).max(10),
   }),
   /** Only the inputs that block eligibility, targeting, measurement, claims or authorization. */
-  questions: z.array(z.object({ question: z.string().min(1).max(300), why: z.string().max(300) })).max(8),
+  questions: z.array(z.object({
+    question: z.string().min(1).max(300), why: z.string().max(300),
+    /** Who has to answer: the nonprofit, or the Deedwell administrator (budget authorization, account matters, policy judgement). */
+    audience: z.enum(["customer", "admin"]).default("customer"),
+  })).max(8),
   /** Conversion registry proposals; PROPOSED until validated. */
   measurement: z.array(z.object({
     name: z.string().min(1).max(120), meaning: z.string().max(300), source: z.string().max(200),
