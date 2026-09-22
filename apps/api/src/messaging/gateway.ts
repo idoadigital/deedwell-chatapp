@@ -131,6 +131,14 @@ async function ingestOne(deps: Deps, adapter: MessagingChannelAdapter, m: Inboun
     const pair = m.text ? WHATSAPP_PAIR_RE.exec(m.text) : null;
     if (onPlatformNumber && pair) { await pairWhatsApp(deps, adapter, m, identity, pair[1]!, log); return "handled"; }
     if (onPlatformNumber) {
+      // "Text me" pairing: a logged-in user asked Deedwell to message this exact
+      // phone; their first reply from it completes the pairing (no code needed).
+      if (!identity.active_connection_id) {
+        const phone = m.externalUserId.replace(/\D/g, "");
+        const pending = await deps.adminPool.query(
+          "SELECT state_hash FROM connector_oauth_states WHERE provider = 'whatsapp' AND redirect_to = $1 AND consumed_at IS NULL AND expires_at > now() ORDER BY created_at DESC LIMIT 1", [phone]);
+        if (pending.rows[0]) { await pairWhatsApp(deps, adapter, m, identity, null, log, pending.rows[0].state_hash); return "handled"; }
+      }
       // Deedwell's own number: the sender's phone is the identity, like a Telegram chat.
       if (!identity.active_connection_id || !identity.user_id) {
         await sendSystem(deps, adapter, null, m.externalChatId, `Hi! I'm Deedwell. This number isn't connected to your Deedwell workspace yet.\n\nOpen ${APP_ORIGIN}/dashboard/connectors, choose WhatsApp → Connect, and scan the code (or tap the button) — it opens this chat with a message that links your phone.`, {});
@@ -203,13 +211,38 @@ async function applyStatus(deps: Deps, s: InboundStatus): Promise<void> {
 export const hashToken = (token: string) => createHash("sha256").update(token).digest("hex");
 
 /** Mints the single-use token the Connect dialog embeds in the deep link / QR. */
-export async function mintPairing(client: PoolClient, channel: MessagingChannel, tenantId: string, userId: string): Promise<{ token: string; expiresAt: string }> {
+export async function mintPairing(client: PoolClient, channel: MessagingChannel, tenantId: string, userId: string, boundPhone: string | null = null): Promise<{ token: string; expiresAt: string }> {
   const token = `${randomBytes(18).toString("base64url")}`;
   const expiresAt = new Date(Date.now() + 15 * 60_000);
   await client.query(
-    `INSERT INTO connector_oauth_states (id, tenant_id, provider, state_hash, created_by, expires_at) VALUES ($1,$2,$3,$4,$5,$6)`,
-    [uuidv7(), tenantId, channel, hashToken(token), userId, expiresAt]);
+    `INSERT INTO connector_oauth_states (id, tenant_id, provider, state_hash, created_by, expires_at, redirect_to) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+    [uuidv7(), tenantId, channel, hashToken(token), userId, expiresAt, boundPhone]);
   return { token, expiresAt: expiresAt.toISOString() };
+}
+
+/**
+ * "Text me": Deedwell's number opens the conversation with the pairing
+ * template, so the person only has to reply. The template is the one
+ * business-initiated message the platform sends (WHATSAPP_PAIRING_TEMPLATE,
+ * default Meta's pre-approved hello_world; a custom approved template for
+ * production numbers). Recorded and metered like any outbound message.
+ */
+export async function inviteWhatsApp(deps: Deps, tenantId: string, userId: string, phone: string): Promise<{ externalMessageId: string | null }> {
+  const ps = await platformSender(deps.appPool);
+  if (!ps) throw new Error("Deedwell's WhatsApp number is not configured");
+  const wa = await adapterFor(deps.appPool, "whatsapp") as import("@deedwell/connectors").WhatsAppCloudAdapter;
+  const target = { channel: "whatsapp" as const, chatId: phone, accountId: ps.phoneNumberId, accessToken: ps.token };
+  const name = process.env.WHATSAPP_PAIRING_TEMPLATE ?? "hello_world";
+  const lang = process.env.WHATSAPP_PAIRING_TEMPLATE_LANG ?? "en_US";
+  let externalId: string | null = null; let error: string | null = null;
+  try { externalId = (await wa.sendTemplate(target, name, lang)).externalMessageId; } catch (err) { error = (err as Error).message; }
+  await deps.adminPool.query(
+    `INSERT INTO messaging_events (id, tenant_id, connection_id, channel, direction, kind, external_message_id, external_chat_id, user_id, status, payload, error, sent_at)
+     VALUES ($1,$2,NULL,'whatsapp','out','template',$3,$4,$5,$6,$7,$8, CASE WHEN $8::text IS NULL THEN now() ELSE NULL END)`,
+    [uuidv7(), tenantId, externalId, phone, userId, error ? "failed" : "sent", JSON.stringify({ template: name, reason: "pairing_invite" }), error]).catch(() => undefined);
+  await meter(deps.adminPool, tenantId, "whatsapp", "out", null).catch(() => undefined);
+  if (error) throw new Error(error);
+  return { externalMessageId: externalId };
 }
 export const mintTelegramPairing = (client: PoolClient, tenantId: string, userId: string) => mintPairing(client, "telegram", tenantId, userId);
 
@@ -219,12 +252,12 @@ export function whatsappPairingLink(displayOrDigits: string, token: string): str
   return `https://wa.me/${digits}?text=${encodeURIComponent(`Connect Deedwell DW-${token}`)}`;
 }
 
-async function pairWhatsApp(deps: Deps, adapter: MessagingChannelAdapter, m: InboundMessage, identity: Identity, token: string, log: Log): Promise<boolean> {
+async function pairWhatsApp(deps: Deps, adapter: MessagingChannelAdapter, m: InboundMessage, identity: Identity, token: string | null, log: Log, stateHash?: string): Promise<boolean> {
   const { rows } = await deps.adminPool.query(
     `UPDATE connector_oauth_states SET consumed_at = now()
       WHERE state_hash = $1 AND provider = 'whatsapp' AND consumed_at IS NULL AND expires_at > now()
       RETURNING tenant_id, created_by`,
-    [hashToken(token)]);
+    [stateHash ?? hashToken(token ?? "")]);
   const st = rows[0];
   if (!st) {
     await sendSystem(deps, adapter, null, m.externalChatId, "That connection code has expired or was already used. Open Deedwell → Connectors → WhatsApp and press Connect again for a fresh one.", {});

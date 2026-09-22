@@ -270,6 +270,33 @@ describe("WhatsApp", () => {
     await post({ metadata: { phone_number_id: "PN-DW" }, contacts: [{ wa_id: "15550001234", profile: { name: "Nobody" } }], messages: [{ id: `wamid.in.${++n}`, from: "15550001234", timestamp: "1", type: "text", text: { body: pairing.message } }] });
     expect(dwSent().at(-1)).toMatch(/expired or was already used/);
   });
+  it("text-me: Deedwell messages a phone first and the reply completes a phone-bound pairing", async () => {
+    // The scanned phone from the previous test is released so it can pair again.
+    const mine = (await api(env.app, "GET", `/v1/orgs/${orgId}/messaging`, { token })).body.connections.filter((c: any) => c.channel === "whatsapp" && c.platform);
+    for (const c of mine) await api(env.app, "DELETE", `/v1/orgs/${orgId}/messaging/connections/${c.id}`, { token });
+    // Test numbers are not on wa.me, so the catalogue says scanning won't work and offers the invite path.
+    const cat = (await api(env.app, "GET", `/v1/orgs/${orgId}/messaging`, { token })).body;
+    expect(cat.catalogue.find((c: any) => c.channel === "whatsapp").scan.scanWorks).toBe(false);
+    const before = wa.calls.length;
+    const pairing = (await api(env.app, "POST", `/v1/orgs/${orgId}/messaging/whatsapp/pairing`, { token, body: { phone: "+1 (469) 514-1427" } })).body;
+    expect(pairing).toMatchObject({ invited: true, phone: "14695141427", scanWorks: false });
+    // Exactly one business-initiated template went to that phone from Deedwell's number.
+    const templates = wa.calls.slice(before).filter((c) => c.path === "PN-DW/messages" && c.body.type === "template");
+    expect(templates).toHaveLength(1); expect(templates[0].body).toMatchObject({ to: "14695141427", template: { name: "hello_world" } });
+    // A different phone replying does not consume the invite.
+    const dwSent = () => wa.calls.filter((c) => c.path === "PN-DW/messages" && c.body.type).map((c) => c.body.text?.body ?? `[${c.body.type}]`);
+    await post({ metadata: { phone_number_id: "PN-DW" }, contacts: [{ wa_id: "15550001234", profile: { name: "Nobody" } }], messages: [{ id: `wamid.in.${++n}`, from: "15550001234", timestamp: "1", type: "text", text: { body: "hi" } }] });
+    expect(dwSent().at(-1)).toMatch(/isn't connected to your Deedwell workspace/);
+    expect((await api(env.app, "GET", `/v1/orgs/${orgId}/messaging/whatsapp/pairing/${pairing.tokenHash}`, { token })).body.consumed).toBe(false);
+    // The invited phone replies with anything — no token needed — and is linked.
+    await post({ metadata: { phone_number_id: "PN-DW" }, contacts: [{ wa_id: "14695141427", profile: { name: "Steven" } }], messages: [{ id: `wamid.in.${++n}`, from: "14695141427", timestamp: "1", type: "text", text: { body: "hi" } }] });
+    expect(dwSent().at(-1)).toMatch(/Connected to Org phone-org/);
+    const status = (await api(env.app, "GET", `/v1/orgs/${orgId}/messaging/whatsapp/pairing/${pairing.tokenHash}`, { token })).body;
+    expect(status.consumed).toBe(true); expect(status.connection).toMatchObject({ platform: true, status: "connected", accountHandle: "+14695141427" });
+    // Never the token, never the phone's invite in an API response beyond what the UI needs.
+    expect(JSON.stringify(pairing)).not.toMatch(/BIZ-TOKEN/);
+  });
+
   it("shows the platform admin an overview without message bodies", async () => {
     const ov = (await api(env.app, "GET", "/v1/admin/messaging/overview", { token })).body;
     expect(ov.connections.some((c: any) => c.channel === "whatsapp" && c.status === "connected")).toBe(true);

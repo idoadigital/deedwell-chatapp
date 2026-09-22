@@ -6,7 +6,7 @@ import { telegramAdapter, whatsappAdapter, webhookUrl, APP_ORIGIN, platformSende
 import {
   connectionView, ensureLinkedChannel, loadConnection, prefsOf, sealed, setConnectionStatus, type ConnectionRow,
 } from "./connections.js";
-import { flushOutbound, healthOf, hashToken, ingestWebhook, mintPairing, mintTelegramPairing, testConnection, whatsappPairingLink } from "./gateway.js";
+import { flushOutbound, healthOf, hashToken, ingestWebhook, inviteWhatsApp, mintPairing, mintTelegramPairing, testConnection, whatsappPairingLink } from "./gateway.js";
 
 /**
  * /v1/integrations/{telegram,whatsapp}/webhook  provider-facing, no session
@@ -76,7 +76,7 @@ export function registerMessagingRoutes(app: FastifyInstance, ctx: AppContext): 
     return {
       catalogue: [
         { channel: "telegram", available: tg.isConfigured(), botUsername: tgMe?.username ?? null },
-        { channel: "whatsapp", available: wa.isConfigured(), scan: wa.isConfigured() && sender ? { displayPhone: sender.displayPhone, verifiedName: sender.verifiedName } : null, embeddedSignup: wa.isConfigured() && wa.embeddedSignupConfigId ? { appId: wa.appId, configId: wa.embeddedSignupConfigId } : null },
+        { channel: "whatsapp", available: wa.isConfigured(), scan: wa.isConfigured() && sender ? { displayPhone: sender.displayPhone, verifiedName: sender.verifiedName, scanWorks: !/^1555/.test((sender.displayPhone ?? "").replace(/\D/g, "")) } : null, embeddedSignup: wa.isConfigured() && wa.embeddedSignupConfigId ? { appId: wa.appId, configId: wa.embeddedSignupConfigId } : null },
       ],
       connections: rows.map(viewWithHealth),
       me: req.userId,
@@ -102,8 +102,23 @@ export function registerMessagingRoutes(app: FastifyInstance, ctx: AppContext): 
     if (!wa.isConfigured() || !sender) throw new HttpError(503, "WhatsApp isn't set up on this Deedwell yet. A platform administrator adds Deedwell's WhatsApp number under Platform Admin → Integrations → WhatsApp.");
     const digits = (sender.displayPhone ?? "").replace(/\D/g, "");
     if (!digits) throw new HttpError(503, "Deedwell's WhatsApp number has no display number on file yet — validate it in Platform Admin.");
-    const { token, expiresAt } = await ctx.inOrg(req, (client) => mintPairing(client, "whatsapp", req.orgId!, req.userId!));
-    return { token, link: whatsappPairingLink(digits, token), number: sender.displayPhone, message: `Connect Deedwell DW-${token}`, expiresAt, tokenHash: hashToken(token) };
+    const body = z.object({ phone: z.string().min(6).optional().nullable() }).parse(req.body ?? {});
+    const phone = body.phone ? body.phone.replace(/\D/g, "") : null;
+    if (body.phone && (!phone || phone.length < 8)) throw new HttpError(400, "Enter your WhatsApp number in international format, e.g. +1 469 514 1427.");
+    const { token, expiresAt } = await ctx.inOrg(req, (client) => mintPairing(client, "whatsapp", req.orgId!, req.userId!, phone));
+    let invited = false;
+    if (phone) {
+      try { await inviteWhatsApp(deps, req.orgId!, req.userId!, phone); invited = true; }
+      catch (err) {
+        const msg = (err as Error).message;
+        throw new HttpError(400, /131030|not in allowed list|recipient/i.test(msg)
+          ? `WhatsApp refused to message ${phone}: while Deedwell is on Meta's test number, only phone numbers added as test recipients in the Meta console can receive messages.`
+          : `Could not message ${phone}: ${msg}`);
+      }
+    }
+    // Meta test numbers (555…) are not real WhatsApp accounts: wa.me cannot open them, so "Text me" is the way in.
+    const scanWorks = !/^1555/.test(digits);
+    return { token, link: whatsappPairingLink(digits, token), number: sender.displayPhone, message: `Connect Deedwell DW-${token}`, expiresAt, tokenHash: hashToken(token), invited, phone, scanWorks };
   });
 
   /** Polled by the Connect dialogs: has the token been used, and by which connection? */

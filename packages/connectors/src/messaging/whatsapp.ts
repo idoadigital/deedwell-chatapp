@@ -174,6 +174,19 @@ export class WhatsAppCloudAdapter implements MessagingChannelAdapter {
     return { externalMessageId: last?.messages?.[0]?.id ?? null };
   }
 
+  /**
+   * A pre-approved template — the one way to open a conversation the person
+   * has not started (outside the 24-hour window). Used only for pairing, at
+   * the person's explicit request from inside Deedwell; never for replies.
+   */
+  async sendTemplate(target: ConnectionTarget, name: string, language = "en_US"): Promise<SendResult> {
+    if (!target.accessToken || !target.accountId) throw new Error("WhatsApp connection is missing its phone number or token");
+    const r = await this.graph<{ messages?: { id: string }[] }>(target.accessToken, `${target.accountId}/messages`, {
+      method: "POST", body: { messaging_product: "whatsapp", to: target.chatId, type: "template", template: { name, language: { code: language } } },
+    });
+    return { externalMessageId: r.messages?.[0]?.id ?? null };
+  }
+
   async markRead(target: ConnectionTarget, externalMessageId: string): Promise<void> {
     if (!target.accessToken || !target.accountId) return;
     await this.graph(target.accessToken, `${target.accountId}/messages`, { method: "POST", body: { messaging_product: "whatsapp", status: "read", message_id: externalMessageId } }).catch(() => undefined);
