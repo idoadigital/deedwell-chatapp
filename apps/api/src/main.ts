@@ -90,6 +90,16 @@ async function main(): Promise<void> {
     for (const signal of ["SIGTERM", "SIGINT"] as const) process.once(signal, () => stopInbox());
   }
 
+  // Custom domains: re-checks pending domains (DNS → Google ownership →
+  // Cloud Run mapping → certificate) so customers end up connected without
+  // pressing "Check". SITE_DOMAINS_WORKER=off disables it.
+  if (process.env.SITE_DOMAINS_WORKER !== "off") {
+    const { startSiteDomainsWorker } = await import("./site-domains.js");
+    const stopDomains = startSiteDomainsWorker(deps, { log: app.log });
+    abort.signal.addEventListener("abort", () => stopDomains());
+    for (const signal of ["SIGTERM", "SIGINT"] as const) process.once(signal, () => stopDomains());
+  }
+
   // Google Ads: publish jobs, snapshot sync, manager-link retries.
   // GOOGLE_ADS_WORKER=off disables it.
   if (process.env.GOOGLE_ADS_WORKER !== "off") {

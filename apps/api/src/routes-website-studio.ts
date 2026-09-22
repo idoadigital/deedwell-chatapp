@@ -5,11 +5,12 @@ import {
   SiteBlock, SiteDomainInput, SiteDonationsInput, SiteEditorMessageInput, SiteEventInput, SiteMediaInput, SitePage, SitePageStatusInput, SitePostInput, SiteQaStartInput,
 } from "@deedwell/schemas";
 import {
-  WEBSITE_EDIT_WORKFLOW, WEBSITE_QA_WORKFLOW, assembleRelease, createJob, designedEditableFields, instructionsFor, loadJob, loadSiteLogoFrom, loadWorkingState, newVerificationToken, nextStatus, normalizeComposition, observeDns, patchDesignedCopy, probeHttps, publishRelease, restoreRelease, saveWorkingState, siteUrls,
+  WEBSITE_EDIT_WORKFLOW, WEBSITE_QA_WORKFLOW, assembleRelease, createJob, designedEditableFields, loadJob, loadSiteLogoFrom, loadWorkingState, newVerificationToken, normalizeComposition, patchDesignedCopy, publishRelease, restoreRelease, saveWorkingState, siteUrls,
 } from "@deedwell/website-domain";
 import { HttpError, type AppContext } from "./app.js";
 import { requireTokens } from "./billing-gate.js";
 import { transcribeClip } from "./transcribe.js";
+import { checkDomain, domainView as siteDomainView, fetchGoogleToken, releaseDomain } from "./site-domains.js";
 
 /**
  * The website studio: the AI editor's conversation and jobs, versions
@@ -527,7 +528,10 @@ export function registerWebsiteStudioRoutes(app: FastifyInstance, ctx: AppContex
   });
 
   // ---- domains ---------------------------------------------------------------------
-  const domainView = (r: Record<string, unknown>) => ({ id: r.id, domain: r.domain, status: r.status, dns: r.dns, lastCheckedAt: r.last_checked_at, lastError: r.last_error, connectedAt: r.connected_at, createdAt: r.created_at, instructions: instructionsFor(String(r.domain), String(r.verification_token)) });
+  // Add → Google's TXT token is fetched at once so the customer's records are
+  // complete; check → DNS, ownership, mapping, certificate (site-domains.ts);
+  // remove → the mapping goes too. The worker re-checks pending domains.
+  const domainView = (r: Record<string, unknown>) => siteDomainView(r as never);
   app.get(`${base}/domains`, async (req) => {
     ctx.requireRole(req, "viewer");
     return ctx.inOrg(req, async (client) => {
@@ -539,12 +543,19 @@ export function registerWebsiteStudioRoutes(app: FastifyInstance, ctx: AppContex
   app.post(`${base}/domains`, async (req, reply) => {
     ctx.requireRole(req, "admin");
     const input = SiteDomainInput.parse(req.body);
+    if (/(^|\.)deedwell\.org$/.test(input.domain)) throw new HttpError(400, "Use your own domain; deedwell.org addresses are assigned automatically.");
+    if (input.domain.split(".").length < 2) throw new HttpError(400, "Enter a full domain such as www.example.org");
+    // Google's token first: if Google cannot prepare one, nothing is saved
+    // and the customer sees why instead of a row that can never connect.
+    let googleToken: string | null = null;
+    try { googleToken = await fetchGoogleToken(input.domain); } catch (err) { throw new HttpError(502, (err as Error).message); }
     const result = await ctx.inOrg(req, async (client) => {
       const site = await siteOf(req, client);
-      if (/deedwell\.org$/.test(input.domain)) throw new HttpError(400, "Use your own domain; deedwell.org addresses are assigned automatically.");
       const id = uuidv7();
       try {
-        const { rows } = await client.query("INSERT INTO site_domains (id, tenant_id, site_id, domain, verification_token, created_by) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *", [id, req.orgId, site.id, input.domain, newVerificationToken(), req.userId]);
+        const { rows } = await client.query(
+          "INSERT INTO site_domains (id, tenant_id, site_id, domain, verification_token, dns, created_by) VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7) RETURNING *",
+          [id, req.orgId, site.id, input.domain, newVerificationToken(), JSON.stringify({ googleToken }), req.userId]);
         await audit(client, { tenantId: req.orgId!, actorUser: req.userId, action: "site.domain_added", entityType: "site", entityId: site.id, metadata: { domain: input.domain } });
         return { domain: domainView(rows[0]) };
       } catch (err) {
@@ -562,14 +573,12 @@ export function registerWebsiteStudioRoutes(app: FastifyInstance, ctx: AppContex
       const { rows } = await client.query("SELECT * FROM site_domains WHERE id = $1 AND site_id = $2", [domainId, site.id]);
       const d = rows[0];
       if (!d) throw new HttpError(404, "Domain not found");
-      const obs = await observeDns(d.domain, d.verification_token);
-      const https = obs.verified && obs.pointed ? await probeHttps(d.domain) : null;
-      const mapped = Boolean((d.dns as { mapped?: boolean })?.mapped);
-      const status = d.status === "connected" && https?.ok !== false ? "connected" : nextStatus(obs, https, mapped);
-      const { rows: upd } = await client.query(
-        "UPDATE site_domains SET status = $2, dns = dns || $3::jsonb, last_checked_at = now(), last_error = $4, connected_at = CASE WHEN $2 = 'connected' AND connected_at IS NULL THEN now() ELSE connected_at END WHERE id = $1 RETURNING *",
-        [d.id, status, JSON.stringify({ observed: obs, https }), obs.error]);
-      await audit(client, { tenantId: req.orgId!, actorUser: req.userId, action: "site.domain_checked", entityType: "site", entityId: site.id, metadata: { domain: d.domain, status } });
+      try { await checkDomain(client, d, app.log); }
+      catch (err) {
+        await client.query("UPDATE site_domains SET last_checked_at = now(), last_error = $2 WHERE id = $1", [d.id, (err as Error).message.slice(0, 300)]);
+      }
+      const { rows: upd } = await client.query("SELECT * FROM site_domains WHERE id = $1", [d.id]);
+      await audit(client, { tenantId: req.orgId!, actorUser: req.userId, action: "site.domain_checked", entityType: "site", entityId: site.id, metadata: { domain: d.domain, status: upd[0].status } });
       return { domain: domainView(upd[0]) };
     });
   });
@@ -578,9 +587,10 @@ export function registerWebsiteStudioRoutes(app: FastifyInstance, ctx: AppContex
     const { domainId } = req.params as { domainId: string };
     return ctx.inOrg(req, async (client) => {
       const site = await siteOf(req, client);
-      const { rowCount } = await client.query("DELETE FROM site_domains WHERE id = $1 AND site_id = $2", [domainId, site.id]);
-      if (!rowCount) throw new HttpError(404, "Domain not found");
-      await audit(client, { tenantId: req.orgId!, actorUser: req.userId, action: "site.domain_removed", entityType: "site", entityId: site.id, metadata: { domainId } });
+      const { rows } = await client.query("DELETE FROM site_domains WHERE id = $1 AND site_id = $2 RETURNING domain, dns", [domainId, site.id]);
+      if (!rows[0]) throw new HttpError(404, "Domain not found");
+      if ((rows[0].dns as { mapping?: { created?: boolean } })?.mapping?.created) void releaseDomain(rows[0].domain);
+      await audit(client, { tenantId: req.orgId!, actorUser: req.userId, action: "site.domain_removed", entityType: "site", entityId: site.id, metadata: { domainId, domain: rows[0].domain } });
       return { ok: true };
     });
   });

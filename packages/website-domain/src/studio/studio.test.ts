@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { cleanDeclarations, cleanSelector, injectOverrides, mergeOverride, overridesCss } from "./overrides.js";
-import { instructionsFor } from "./domains.js";
+import { instructionsFor, isApex, nextStatus, registrableDomain } from "./domains.js";
 import { fillFeeds, hasFeeds } from "./content.js";
 import { designedEditableFields, patchDesignedCopy } from "./state.js";
 
@@ -35,14 +35,35 @@ describe("overrides layer", () => {
 });
 
 describe("custom domain instructions", () => {
-  it("gives zone-relative hosts for a subdomain", () => {
-    const rows = instructionsFor("www.example.org", "deedwell-site-verification=abc");
-    expect(rows.map((r) => [r.type, r.host])).toEqual([["TXT", "_deedwell.www"], ["CNAME", "www"]]);
-    expect(rows[0]!.value).toBe("deedwell-site-verification=abc");
+  it("puts Google's TXT on the root and a CNAME on the subdomain", () => {
+    const rows = instructionsFor("www.example.org", "google-site-verification=abc");
+    expect(rows.map((r) => [r.type, r.host, r.name])).toEqual([["TXT", "@", "example.org"], ["CNAME", "www", "www.example.org"]]);
+    expect(rows[0]!.value).toBe("google-site-verification=abc");
+    expect(rows[1]!.value).toBe("ghs.googlehosted.com");
   });
-  it("uses A records at the apex", () => {
+  it("lists all four A records at the apex", () => {
     const rows = instructionsFor("example.org", "t");
-    expect(rows.map((r) => [r.type, r.host])).toEqual([["TXT", "_deedwell"], ["A", "@"]]);
+    expect(rows.map((r) => [r.type, r.host])).toEqual([["TXT", "@"], ["A", "@"], ["A", "@"], ["A", "@"], ["A", "@"]]);
+    expect(new Set(rows.slice(1).map((r) => r.value)).size).toBe(4);
+  });
+  it("knows two-label public suffixes", () => {
+    expect(registrableDomain("www.charity.org.uk")).toBe("charity.org.uk");
+    expect(registrableDomain("donate.give.example.com")).toBe("example.com");
+    expect(isApex("charity.org.uk")).toBe(true);
+    expect(isApex("www.charity.org.uk")).toBe(false);
+  });
+  it("shows a placeholder until Google's token exists", () => {
+    expect(instructionsFor("www.example.org", null)[0]!.value).toMatch(/preparing/);
+  });
+  it("walks the statuses in order", () => {
+    const obs = { txt: [], cname: null, a: [], verified: false, pointed: false, aFound: [], error: null };
+    expect(nextStatus(obs, null, false, null)).toBe("pending_dns");
+    expect(nextStatus({ ...obs, verified: true, pointed: true }, null, false, null)).toBe("verifying");
+    expect(nextStatus({ ...obs, verified: true, pointed: true }, null, true, null)).toBe("ssl_provisioning");
+    const m = { created: true, ready: false, certificate: false, message: null, checkedAt: "" };
+    expect(nextStatus({ ...obs, verified: true, pointed: true }, null, true, m)).toBe("ssl_provisioning");
+    expect(nextStatus({ ...obs, verified: true, pointed: true }, null, true, { ...m, ready: true })).toBe("connected");
+    expect(nextStatus({ ...obs, verified: true, pointed: true }, { ok: true }, true, m)).toBe("connected");
   });
 });
 
