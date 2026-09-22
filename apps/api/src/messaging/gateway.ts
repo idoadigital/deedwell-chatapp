@@ -148,6 +148,9 @@ async function ingestOne(deps: Deps, adapter: MessagingChannelAdapter, m: Inboun
 }
 
 async function applyStatus(deps: Deps, s: InboundStatus): Promise<void> {
+  // Status callbacks are recorded against the message they belong to; nothing
+  // is acted on yet, but every one is logged so delivery can be traced.
+  console.log(JSON.stringify({ at: "messaging_status", channel: s.channel, externalMessageId: s.externalMessageId, status: s.status, error: s.error, ...s.raw }));
   const rank: Record<string, number> = { pending: 0, sending: 1, sent: 2, delivered: 3, read: 4, failed: 5 };
   const { rows } = await deps.adminPool.query("SELECT id, status FROM messaging_events WHERE channel = $1 AND direction = 'out' AND external_message_id = $2", [s.channel, s.externalMessageId]);
   const row = rows[0];

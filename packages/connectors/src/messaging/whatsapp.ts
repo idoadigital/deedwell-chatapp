@@ -4,7 +4,7 @@ import type {
 } from "./types.js";
 import { WHATSAPP_TEXT_LIMIT, chunkText, clampLabel, toPlainText } from "./render.js";
 
-export const GRAPH_VERSION = process.env.META_GRAPH_VERSION ?? "v21.0";
+export const GRAPH_VERSION = process.env.META_GRAPH_VERSION ?? "v25.0";
 const graph = () => `${process.env.META_GRAPH_BASE ?? "https://graph.facebook.com"}/${GRAPH_VERSION}`;
 
 /**

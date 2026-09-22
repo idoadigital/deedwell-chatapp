@@ -24,6 +24,9 @@ export function registerAdminIntegrationRoutes(app: FastifyInstance, ctx: AppCon
   app.get("/v1/admin/integrations", async (req) => {
     ctx.requirePlatformAdmin(req);
     const environment = envOf(req);
+    // WhatsApp inherits the Meta app's credentials; building the adapter once
+    // here materialises its row so the card and its verify token show up.
+    await whatsappAdapter(deps.appPool).catch(() => undefined);
     return {
       environment,
       // The exact values an administrator must paste into each console.

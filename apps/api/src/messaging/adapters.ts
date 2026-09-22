@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import type { Pool } from "pg";
 import { readPlatformCredentials, updateIntegrationConfiguration, TelegramAdapter, WhatsAppCloudAdapter, type MessagingChannel, type MessagingChannelAdapter } from "@deedwell/connectors";
 
@@ -22,14 +22,48 @@ export const webhookUrl = (channel: MessagingChannel) => `${API_ORIGIN}/v1/integ
 
 export function invalidateAdapters(): void { cache.clear(); }
 
-/** A secret that no longer decrypts (key rotated without re-saving) must not take the page down. */
+/**
+ * Where the platform credentials come from, in order:
+ *   1. the provider's own platform_integrations row (Platform Admin → Integrations);
+ *   2. for WhatsApp, the Meta connector's row — WhatsApp is an additional use
+ *      case on the same Meta app, so its App ID/secret are already on file;
+ *      a `whatsapp` row is created from it once so the admin UI shows it;
+ *   3. environment variables on the service (TELEGRAM_BOT_TOKEN /
+ *      TELEGRAM_BOT_USERNAME, META_APP_ID / META_APP_SECRET), for deployments
+ *      that inject secrets from a secret store rather than the admin UI.
+ * A secret that no longer decrypts (key rotated without re-saving) must not
+ * take the page down: it reads as "not configured" and is logged.
+ */
 async function credentials(pool: Pool, provider: MessagingChannel) {
-  try { return await readPlatformCredentials(pool, provider); }
-  catch (err) {
+  try {
+    const own = await readPlatformCredentials(pool, provider);
+    if (own) return own;
+    if (provider === "whatsapp") {
+      const meta = await readPlatformCredentials(pool, "meta");
+      if (meta) {
+        await pool.query(
+          `INSERT INTO platform_integrations (id, provider, environment, client_id, encrypted_client_secret, secret_iv, secret_tag, key_version, secret_hint, configuration, status, status_detail, validated_at, configured_by)
+           SELECT gen_random_uuid(), 'whatsapp', environment, client_id, encrypted_client_secret, secret_iv, secret_tag, key_version, secret_hint,
+                  '{"source":"meta"}'::jsonb, 'configured', 'Using the Meta app already configured for Facebook & Instagram.', NULL, configured_by
+             FROM platform_integrations WHERE provider = 'meta' AND environment = $1 AND status = 'configured'
+           ON CONFLICT (provider, environment) DO NOTHING`, [meta.environment]).catch(() => undefined);
+        return (await readPlatformCredentials(pool, "whatsapp")) ?? meta;
+      }
+    }
+  } catch (err) {
     console.warn(JSON.stringify({ at: "messaging_platform_credentials_unreadable", provider, error: (err as Error).message }));
-    return null;
   }
+  if (provider === "telegram" && process.env.TELEGRAM_BOT_TOKEN) {
+    return { clientId: process.env.TELEGRAM_BOT_USERNAME ?? "", clientSecret: process.env.TELEGRAM_BOT_TOKEN, environment: "production" as const, configuration: { fromEnv: true } };
+  }
+  if (provider === "whatsapp" && process.env.META_APP_ID && process.env.META_APP_SECRET) {
+    return { clientId: process.env.META_APP_ID, clientSecret: process.env.META_APP_SECRET, environment: "production" as const, configuration: { fromEnv: true } };
+  }
+  return null;
 }
+
+/** A webhook secret that survives restarts even when there is no row to persist it in. */
+const derivedSecret = (seed: string) => createHash("sha256").update(`deedwell-webhook:${seed}`).digest("hex").slice(0, 48);
 
 export async function telegramAdapter(pool: Pool): Promise<TelegramAdapter> {
   const hit = cache.get("telegram");
@@ -38,10 +72,13 @@ export async function telegramAdapter(pool: Pool): Promise<TelegramAdapter> {
   let adapter: TelegramAdapter;
   if (!creds) adapter = new TelegramAdapter(null);
   else {
-    let secret = typeof creds.configuration.webhookSecret === "string" ? creds.configuration.webhookSecret : "";
+    let secret = process.env.TELEGRAM_WEBHOOK_SECRET ?? (typeof creds.configuration.webhookSecret === "string" ? creds.configuration.webhookSecret : "");
     if (!secret) {
-      secret = randomBytes(24).toString("hex");
-      await updateIntegrationConfiguration(pool, "telegram", creds.environment, { webhookSecret: secret }).catch(() => undefined);
+      if (creds.configuration.fromEnv) secret = derivedSecret(creds.clientSecret);
+      else {
+        secret = randomBytes(24).toString("hex");
+        await updateIntegrationConfiguration(pool, "telegram", creds.environment, { webhookSecret: secret }).catch(() => undefined);
+      }
     }
     adapter = new TelegramAdapter({ botToken: creds.clientSecret, botUsername: creds.clientId || null, webhookSecret: secret });
   }
@@ -56,10 +93,13 @@ export async function whatsappAdapter(pool: Pool): Promise<WhatsAppCloudAdapter>
   let adapter: WhatsAppCloudAdapter;
   if (!creds) adapter = new WhatsAppCloudAdapter(null);
   else {
-    let verifyToken = typeof creds.configuration.verifyToken === "string" ? creds.configuration.verifyToken : "";
+    let verifyToken = process.env.WHATSAPP_VERIFY_TOKEN ?? (typeof creds.configuration.verifyToken === "string" ? creds.configuration.verifyToken : "");
     if (!verifyToken) {
-      verifyToken = randomBytes(18).toString("hex");
-      await updateIntegrationConfiguration(pool, "whatsapp", creds.environment, { verifyToken }).catch(() => undefined);
+      if (creds.configuration.fromEnv) verifyToken = derivedSecret(`${creds.clientId}:${creds.clientSecret}`);
+      else {
+        verifyToken = randomBytes(18).toString("hex");
+        await updateIntegrationConfiguration(pool, "whatsapp", creds.environment, { verifyToken }).catch(() => undefined);
+      }
     }
     const cfg = typeof creds.configuration.embeddedSignupConfigId === "string" && creds.configuration.embeddedSignupConfigId.trim() ? creds.configuration.embeddedSignupConfigId.trim() : null;
     adapter = new WhatsAppCloudAdapter({ appId: creds.clientId, appSecret: creds.clientSecret, verifyToken, embeddedSignupConfigId: cfg });
