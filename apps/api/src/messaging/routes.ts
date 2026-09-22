@@ -1,12 +1,12 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { audit, uuidv7 } from "@deedwell/database";
 import { HttpError, type AppContext } from "../app.js";
-import { telegramAdapter, whatsappAdapter, webhookUrl, APP_ORIGIN } from "./adapters.js";
+import { telegramAdapter, whatsappAdapter, webhookUrl, APP_ORIGIN, platformSender, savePlatformSender } from "./adapters.js";
 import {
   connectionView, ensureLinkedChannel, loadConnection, prefsOf, sealed, setConnectionStatus, type ConnectionRow,
 } from "./connections.js";
-import { flushOutbound, healthOf, hashToken, ingestWebhook, mintTelegramPairing, testConnection } from "./gateway.js";
+import { flushOutbound, healthOf, hashToken, ingestWebhook, mintPairing, mintTelegramPairing, testConnection, whatsappPairingLink } from "./gateway.js";
 
 /**
  * /v1/integrations/{telegram,whatsapp}/webhook  provider-facing, no session
@@ -72,10 +72,11 @@ export function registerMessagingRoutes(app: FastifyInstance, ctx: AppContext): 
       return rows as ConnectionRow[];
     });
     const tgMe = tg.isConfigured() ? await tg.getMe().catch(() => null) : null;
+    const sender = await platformSender(deps.appPool);
     return {
       catalogue: [
         { channel: "telegram", available: tg.isConfigured(), botUsername: tgMe?.username ?? null },
-        { channel: "whatsapp", available: wa.isConfigured(), embeddedSignup: wa.isConfigured() && wa.embeddedSignupConfigId ? { appId: wa.appId, configId: wa.embeddedSignupConfigId } : null },
+        { channel: "whatsapp", available: wa.isConfigured(), scan: wa.isConfigured() && sender ? { displayPhone: sender.displayPhone, verifiedName: sender.verifiedName } : null, embeddedSignup: wa.isConfigured() && wa.embeddedSignupConfigId ? { appId: wa.appId, configId: wa.embeddedSignupConfigId } : null },
       ],
       connections: rows.map(viewWithHealth),
       me: req.userId,
@@ -93,20 +94,34 @@ export function registerMessagingRoutes(app: FastifyInstance, ctx: AppContext): 
     return { token, link: `https://t.me/${me.username}?start=${encodeURIComponent(token)}`, botUsername: me.username, expiresAt, tokenHash: hashToken(token) };
   });
 
-  /** Polled by the Connect dialog: has the token been used, and by which connection? */
-  app.get(`${base}/telegram/pairing/:hash`, async (req) => {
+  /** WhatsApp scan-to-connect: a wa.me link (and QR) that opens Deedwell's number with the pairing message. */
+  app.post(`${base}/whatsapp/pairing`, async (req) => {
+    ctx.requireRole(req, "member");
+    const wa = await whatsappAdapter(deps.appPool);
+    const sender = await platformSender(deps.appPool);
+    if (!wa.isConfigured() || !sender) throw new HttpError(503, "WhatsApp isn't set up on this Deedwell yet. A platform administrator adds Deedwell's WhatsApp number under Platform Admin → Integrations → WhatsApp.");
+    const digits = (sender.displayPhone ?? "").replace(/\D/g, "");
+    if (!digits) throw new HttpError(503, "Deedwell's WhatsApp number has no display number on file yet — validate it in Platform Admin.");
+    const { token, expiresAt } = await ctx.inOrg(req, (client) => mintPairing(client, "whatsapp", req.orgId!, req.userId!));
+    return { token, link: whatsappPairingLink(digits, token), number: sender.displayPhone, message: `Connect Deedwell DW-${token}`, expiresAt, tokenHash: hashToken(token) };
+  });
+
+  /** Polled by the Connect dialogs: has the token been used, and by which connection? */
+  const pairingStatus = (channel: "telegram" | "whatsapp") => async (req: FastifyRequest) => {
     ctx.requireRole(req, "member");
     const { hash } = req.params as { hash: string };
     return ctx.inOrg(req, async (client) => {
-      const st = await client.query("SELECT consumed_at, expires_at FROM connector_oauth_states WHERE state_hash = $1 AND provider = 'telegram'", [hash]);
+      const st = await client.query("SELECT consumed_at, expires_at FROM connector_oauth_states WHERE state_hash = $1 AND provider = $2", [hash, channel]);
       if (!st.rows[0]) throw new HttpError(404, "Unknown pairing");
       const consumed = Boolean(st.rows[0].consumed_at);
       const conn = consumed
-        ? (await client.query("SELECT * FROM connector_connections WHERE provider = 'telegram' AND connected_by_user_id = $1 AND status <> 'disconnected' ORDER BY updated_at DESC LIMIT 1", [req.userId])).rows[0] as ConnectionRow | undefined
+        ? (await client.query("SELECT * FROM connector_connections WHERE provider = $2 AND connected_by_user_id = $1 AND status <> 'disconnected' ORDER BY updated_at DESC LIMIT 1", [req.userId, channel])).rows[0] as ConnectionRow | undefined
         : undefined;
       return { consumed, expired: !consumed && new Date(st.rows[0].expires_at) < new Date(), connection: conn ? connectionView(conn) : null };
     });
-  });
+  };
+  app.get(`${base}/telegram/pairing/:hash`, pairingStatus("telegram"));
+  app.get(`${base}/whatsapp/pairing/:hash`, pairingStatus("whatsapp"));
 
   /** WhatsApp: attach a business phone number, from Embedded Signup or pasted credentials. */
   const WhatsAppConnect = z.discriminatedUnion("mode", [
@@ -267,6 +282,22 @@ export function registerMessagingRoutes(app: FastifyInstance, ctx: AppContext): 
       connections, volume, failures, recent, billableWhatsApp30d: (billable[0] as { n?: number } | undefined)?.n ?? 0, identities,
       appOrigin: APP_ORIGIN,
     };
+  });
+
+  /** Admin: Deedwell's own WhatsApp number (what customers scan to connect). Token never read back. */
+  app.get("/v1/admin/messaging/whatsapp/sender", async (req) => {
+    ctx.requirePlatformAdmin(req);
+    const s = await platformSender(deps.appPool);
+    return { configured: Boolean(s), phoneNumberId: s?.phoneNumberId ?? null, wabaId: s?.wabaId ?? null, displayPhone: s?.displayPhone ?? null, verifiedName: s?.verifiedName ?? null, tokenHint: s ? `••••${s.token.slice(-4)}` : null };
+  });
+  app.post("/v1/admin/messaging/whatsapp/sender", async (req) => {
+    ctx.requirePlatformAdmin(req);
+    const input = z.object({ phoneNumberId: z.string().min(3), wabaId: z.string().min(3).optional().nullable(), accessToken: z.string().min(20) }).parse(req.body);
+    try {
+      const s = await savePlatformSender(deps.appPool, { phoneNumberId: input.phoneNumberId.trim(), wabaId: input.wabaId?.trim() || null, token: input.accessToken.trim(), configuredBy: req.userId! });
+      req.log.info({ at: "whatsapp_sender_configured", phoneNumberId: s.phoneNumberId, by: req.userId });
+      return { ok: true, phoneNumberId: s.phoneNumberId, wabaId: s.wabaId, displayPhone: s.displayPhone, verifiedName: s.verifiedName, tokenHint: `••••${s.token.slice(-4)}` };
+    } catch (err) { throw new HttpError(400, (err as Error).message); }
   });
 
   /** Admin: re-drive stuck outbound deliveries after a provider incident. */

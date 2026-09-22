@@ -41,6 +41,12 @@ beforeAll(async () => {
     const json = (o: unknown, status = 200) => { res.statusCode = status; res.setHeader("content-type", "application/json"); res.end(JSON.stringify(o)); };
     if (!(req.headers.authorization ?? "").startsWith("Bearer BIZ-TOKEN")) return json({ error: { message: "Invalid OAuth access token.", code: 190 } }, 401);
     if (path === "PN-1" && url.searchParams.has("fields")) return json({ display_phone_number: "+1 555-000-1111", verified_name: "Hope Forward", quality_rating: "GREEN" });
+    if (path === "PN-DW" && url.searchParams.has("fields")) return json({ display_phone_number: "+1 555-187-2077", verified_name: "Deedwell", quality_rating: "GREEN" });
+    if (path === "WABA-DW/subscribed_apps") return json({ success: true });
+    if (path === "PN-DW/messages") {
+      if (body.status === "read") return json({ success: true });
+      return json({ messages: [{ id: `wamid.dw.${wa.calls.length}` }] });
+    }
     if (path === "PN-1/messages") {
       if (body.status === "read") return json({ success: true });
       if (wa.windowClosed) return json({ error: { message: "Re-engagement message", code: 131047 } }, 400);
@@ -237,6 +243,32 @@ describe("WhatsApp", () => {
     const notice = await env.adminPool.query("SELECT 1 FROM messages WHERE tenant_id = $1 AND metadata->>'windowClosed' = 'true'", [orgId]);
     expect(notice.rowCount).toBe(1);
     wa.windowClosed = false;
+  });
+  it("scan-to-connect: a customer pairs by sending the prefilled message to Deedwell's number", async () => {
+    // Platform admin registers Deedwell's own number (proven against Graph, token never read back).
+    const saved = await api(env.app, "POST", "/v1/admin/messaging/whatsapp/sender", { token, body: { phoneNumberId: "PN-DW", wabaId: "WABA-DW", accessToken: "BIZ-TOKEN-platform-xxxxxxxxxxxx" } });
+    expect(saved.status).toBe(200); expect(saved.body.displayPhone).toBe("+1 555-187-2077"); expect(JSON.stringify(saved.body)).not.toMatch(/BIZ-TOKEN-platform/);
+    const cat = (await api(env.app, "GET", `/v1/orgs/${orgId}/messaging`, { token })).body;
+    expect(cat.catalogue.find((c: any) => c.channel === "whatsapp").scan).toMatchObject({ displayPhone: "+1 555-187-2077" });
+    // Customer: Connect → QR/link.
+    const pairing = (await api(env.app, "POST", `/v1/orgs/${orgId}/messaging/whatsapp/pairing`, { token, body: {} })).body;
+    expect(pairing.link).toMatch(/^https:\/\/wa\.me\/15551872077\?text=Connect%20Deedwell%20DW-/);
+    // A second phone (not on any allow-list) sends exactly the prefilled message to Deedwell's number.
+    const dwSent = () => wa.calls.filter((c) => c.path === "PN-DW/messages" && c.body.type).map((c) => c.body.text?.body ?? `[${c.body.type}]`);
+    await post({ metadata: { phone_number_id: "PN-DW" }, contacts: [{ wa_id: "14695141427", profile: { name: "Steven" } }], messages: [{ id: `wamid.in.${++n}`, from: "14695141427", timestamp: "1", type: "text", text: { body: pairing.message } }] });
+    expect(dwSent().at(-1)).toMatch(/Connected to Org phone-org/);
+    const status = (await api(env.app, "GET", `/v1/orgs/${orgId}/messaging/whatsapp/pairing/${pairing.tokenHash}`, { token })).body;
+    expect(status.consumed).toBe(true); expect(status.connection).toMatchObject({ platform: true, status: "connected", accountHandle: "+14695141427" });
+    // The same phone now talks to the team; replies go out on Deedwell's number.
+    await post({ metadata: { phone_number_id: "PN-DW" }, contacts: [{ wa_id: "14695141427", profile: { name: "Steven" } }], messages: [{ id: `wamid.in.${++n}`, from: "14695141427", timestamp: "1", type: "text", text: { body: "find grants for youth mentoring" } }] });
+    await drain();
+    expect(dwSent().at(-1)).toMatch(/youth mentoring/);
+    // A stranger on Deedwell's number gets the connect instructions, nothing else.
+    await post({ metadata: { phone_number_id: "PN-DW" }, contacts: [{ wa_id: "15550001234", profile: { name: "Nobody" } }], messages: [{ id: `wamid.in.${++n}`, from: "15550001234", timestamp: "1", type: "text", text: { body: "hello" } }] });
+    expect(dwSent().at(-1)).toMatch(/isn't connected to your Deedwell workspace/);
+    // Used token cannot pair a second phone.
+    await post({ metadata: { phone_number_id: "PN-DW" }, contacts: [{ wa_id: "15550001234", profile: { name: "Nobody" } }], messages: [{ id: `wamid.in.${++n}`, from: "15550001234", timestamp: "1", type: "text", text: { body: pairing.message } }] });
+    expect(dwSent().at(-1)).toMatch(/expired or was already used/);
   });
   it("shows the platform admin an overview without message bodies", async () => {
     const ov = (await api(env.app, "GET", "/v1/admin/messaging/overview", { token })).body;

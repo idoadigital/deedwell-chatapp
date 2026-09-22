@@ -5,7 +5,7 @@ import {
   updateIntegrationConfiguration, type IntegrationEnvironment,
 } from "@deedwell/connectors";
 import { HttpError, type AppContext } from "./app.js";
-import { invalidateAdapters, telegramAdapter, webhookUrl, whatsappAdapter } from "./messaging/adapters.js";
+import { invalidateAdapters, platformSender, telegramAdapter, webhookUrl, whatsappAdapter } from "./messaging/adapters.js";
 
 const API_ORIGIN = process.env.API_ORIGIN ?? "https://coworkers.deedwell.org";
 const envOf = (req: unknown): IntegrationEnvironment => {
@@ -41,6 +41,7 @@ export function registerAdminIntegrationRoutes(app: FastifyInstance, ctx: AppCon
       // verify token, which is generated here on first save).
       webhookUrls: { telegram: webhookUrl("telegram"), whatsapp: webhookUrl("whatsapp") },
       whatsappVerifyToken: (await readPlatformCredentials(deps.appPool, "whatsapp", environment))?.configuration.verifyToken ?? null,
+      whatsappSender: await platformSender(deps.appPool).then((s) => (s ? { phoneNumberId: s.phoneNumberId, wabaId: s.wabaId, displayPhone: s.displayPhone, verifiedName: s.verifiedName, tokenHint: `••••${s.token.slice(-4)}` } : null)),
     };
   });
 

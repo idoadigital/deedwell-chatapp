@@ -9,7 +9,7 @@ import { handleUserMessage, insertMessage } from "../assistant.js";
 import { mentionedTeammate } from "../routes-chat.js";
 import { TEAMMATES } from "../teammates.js";
 import { listTasks } from "../tasks/store.js";
-import { adapterFor, APP_ORIGIN } from "./adapters.js";
+import { adapterFor, APP_ORIGIN, platformSender } from "./adapters.js";
 import {
   CHANNEL_LABEL, connectionView, ensureLinkedChannel, loadConnection, connectionForPhoneNumberId, patchConnectionMeta, sealed, setConnectionStatus, targetOf,
   type ConnectionRow,
@@ -18,6 +18,18 @@ import { forgetLink } from "./relay.js";
 
 type Log = { info: (o: unknown, m?: string) => void; warn: (o: unknown, m?: string) => void };
 const noop: Log = { info: () => undefined, warn: () => undefined };
+
+/** targetOf, with Deedwell's own WhatsApp number filled in for scan-to-connect rows. */
+async function targetFor(deps: Deps, conn: ConnectionRow, chatId?: string | null) {
+  if (conn.provider === "whatsapp" && conn.metadata.platform) {
+    const ps = await platformSender(deps.appPool);
+    return targetOf(conn, chatId, ps ? { phoneNumberId: ps.phoneNumberId, token: ps.token } : null);
+  }
+  return targetOf(conn, chatId);
+}
+
+/** The pairing phrase a wa.me link prefills. Tokens are base64url, ≥ 16 chars. */
+export const WHATSAPP_PAIR_RE = /\bDW-([A-Za-z0-9_-]{16,})\b/;
 
 /* =========================================================================
  * Ingest: webhook → identity → queue. Fast, no agent work.
@@ -51,7 +63,12 @@ async function touchIdentity(pool: Pool, m: InboundMessage): Promise<{ identity:
 
 /** Records one message we sent outside a conversation (pairing help, refusals) so it is auditable and metered. */
 async function sendSystem(deps: Deps, adapter: MessagingChannelAdapter, conn: ConnectionRow | null, chatId: string, text: string, opts: { tenantId?: string; userId?: string | null; buttons?: OutboundMessage["buttons"]; target?: ReturnType<typeof targetOf> } = {}): Promise<void> {
-  const target = opts.target ?? (conn ? targetOf(conn, chatId) : { channel: adapter.channel, chatId, accountId: null, accessToken: null });
+  let target = opts.target ?? (conn ? await targetFor(deps, conn, chatId) : { channel: adapter.channel, chatId, accountId: null, accessToken: null });
+  if (!conn && adapter.channel === "whatsapp" && !target.accessToken) {
+    // Replies to an unpaired sender go out on Deedwell's own number.
+    const ps = await platformSender(deps.appPool);
+    if (ps) target = { channel: "whatsapp", chatId, accountId: ps.phoneNumberId, accessToken: ps.token };
+  }
   let externalId: string | null = null; let error: string | null = null;
   try { externalId = (await adapter.send(target, { text, buttons: opts.buttons })).externalMessageId; } catch (err) { error = (err as Error).message; }
   const tenantId = opts.tenantId ?? conn?.tenant_id ?? null;
@@ -108,17 +125,38 @@ async function ingestOne(deps: Deps, adapter: MessagingChannelAdapter, m: Inboun
   let userId: string | null = null;
   if (m.channel === "whatsapp") {
     if (!m.accountId) return "ignored";
-    conn = await connectionForPhoneNumberId(deps.adminPool, m.accountId);
-    if (!conn) { log.warn({ phoneNumberId: m.accountId }, "whatsapp message for an unknown number"); return "ignored"; }
-    const sender = (conn.metadata.allowedSenders ?? []).find((s) => s.phone.replace(/\D/g, "") === m.externalUserId.replace(/\D/g, ""));
-    if (!sender) {
-      await sendSystem(deps, adapter, conn, m.externalChatId, `This WhatsApp number belongs to a Deedwell workspace, and your phone isn't on its list yet. Ask the workspace admin to add ${m.externalUserId} under Connectors → WhatsApp → Manage.`, {});
-      await audit(deps.adminPool as never, { tenantId: conn.tenant_id, action: "messaging.refused", entityType: "connector_connection", entityId: conn.id, metadata: { channel: "whatsapp", from: m.externalUserId } }).catch(() => undefined);
-      return "handled";
-    }
-    userId = sender.userId;
-    if (identity.user_id !== userId || identity.active_connection_id !== conn.id) {
-      await deps.adminPool.query("UPDATE messaging_identities SET user_id = $2, active_connection_id = $3 WHERE id = $1", [identity.id, userId, conn.id]);
+    const ps = await platformSender(deps.appPool);
+    const onPlatformNumber = Boolean(ps && ps.phoneNumberId === m.accountId);
+    // Scan-to-connect: the prefilled "Connect Deedwell DW-<token>" message.
+    const pair = m.text ? WHATSAPP_PAIR_RE.exec(m.text) : null;
+    if (onPlatformNumber && pair) { await pairWhatsApp(deps, adapter, m, identity, pair[1]!, log); return "handled"; }
+    if (onPlatformNumber) {
+      // Deedwell's own number: the sender's phone is the identity, like a Telegram chat.
+      if (!identity.active_connection_id || !identity.user_id) {
+        await sendSystem(deps, adapter, null, m.externalChatId, `Hi! I'm Deedwell. This number isn't connected to your Deedwell workspace yet.\n\nOpen ${APP_ORIGIN}/dashboard/connectors, choose WhatsApp → Connect, and scan the code (or tap the button) — it opens this chat with a message that links your phone.`, {});
+        return "handled";
+      }
+      conn = await loadConnection(deps.adminPool, identity.active_connection_id);
+      if (!conn) {
+        await deps.adminPool.query("UPDATE messaging_identities SET active_connection_id = NULL, window_count = 0, window_started_at = NULL WHERE id = $1", [identity.id]);
+        await sendSystem(deps, adapter, null, m.externalChatId, "That Deedwell connection was removed. Reconnect from Deedwell → Connectors → WhatsApp when you're ready.", {});
+        return "handled";
+      }
+      userId = identity.user_id;
+    } else {
+      // A workspace's own business number (bring-your-own).
+      conn = await connectionForPhoneNumberId(deps.adminPool, m.accountId);
+      if (!conn) { log.warn({ phoneNumberId: m.accountId }, "whatsapp message for an unknown number"); return "ignored"; }
+      const sender = (conn.metadata.allowedSenders ?? []).find((s) => s.phone.replace(/\D/g, "") === m.externalUserId.replace(/\D/g, ""));
+      if (!sender) {
+        await sendSystem(deps, adapter, conn, m.externalChatId, `This WhatsApp number belongs to a Deedwell workspace, and your phone isn't on its list yet. Ask the workspace admin to add ${m.externalUserId} under Connectors → WhatsApp → Manage.`, {});
+        await audit(deps.adminPool as never, { tenantId: conn.tenant_id, action: "messaging.refused", entityType: "connector_connection", entityId: conn.id, metadata: { channel: "whatsapp", from: m.externalUserId } }).catch(() => undefined);
+        return "handled";
+      }
+      userId = sender.userId;
+      if (identity.user_id !== userId || identity.active_connection_id !== conn.id) {
+        await deps.adminPool.query("UPDATE messaging_identities SET user_id = $2, active_connection_id = $3 WHERE id = $1", [identity.id, userId, conn.id]);
+      }
     }
   } else {
     if (!identity.active_connection_id || !identity.user_id) {
@@ -142,8 +180,8 @@ async function ingestOne(deps: Deps, adapter: MessagingChannelAdapter, m: Inboun
     [uuidv7(), conn.tenant_id, conn.id, m.channel, m.kind, m.externalMessageId, m.externalUserId, m.externalChatId, userId,
      JSON.stringify({ text: m.text, command: m.command, buttonPayload: m.buttonPayload, media: m.media, replyTo: m.replyToExternalId, displayName: m.displayName, sentAt: m.sentAt, raw: m.raw })]);
   await patchConnectionMeta(deps.adminPool, conn.id, { lastInboundAt: new Date().toISOString(), lastActivityAt: new Date().toISOString() });
-  if (m.channel === "whatsapp" && "markRead" in adapter) await (adapter as { markRead: (t: ReturnType<typeof targetOf>, id: string) => Promise<void> }).markRead(targetOf(conn, m.externalChatId), m.externalMessageId).catch(() => undefined);
-  if (m.kind === "button" && adapter.acknowledgeButton) await adapter.acknowledgeButton(targetOf(conn, m.externalChatId), m.raw).catch(() => undefined);
+  if (m.channel === "whatsapp" && "markRead" in adapter) await (adapter as { markRead: (t: ReturnType<typeof targetOf>, id: string) => Promise<void> }).markRead(await targetFor(deps, conn, m.externalChatId), m.externalMessageId).catch(() => undefined);
+  if (m.kind === "button" && adapter.acknowledgeButton) await adapter.acknowledgeButton(await targetFor(deps, conn, m.externalChatId), m.raw).catch(() => undefined);
   return "queued";
 }
 
@@ -164,14 +202,62 @@ async function applyStatus(deps: Deps, s: InboundStatus): Promise<void> {
 
 export const hashToken = (token: string) => createHash("sha256").update(token).digest("hex");
 
-/** Mints the single-use token the Connect button embeds in the deep link. */
-export async function mintTelegramPairing(client: PoolClient, tenantId: string, userId: string): Promise<{ token: string; expiresAt: string }> {
+/** Mints the single-use token the Connect dialog embeds in the deep link / QR. */
+export async function mintPairing(client: PoolClient, channel: MessagingChannel, tenantId: string, userId: string): Promise<{ token: string; expiresAt: string }> {
   const token = `${randomBytes(18).toString("base64url")}`;
   const expiresAt = new Date(Date.now() + 15 * 60_000);
   await client.query(
-    `INSERT INTO connector_oauth_states (id, tenant_id, provider, state_hash, created_by, expires_at) VALUES ($1,$2,'telegram',$3,$4,$5)`,
-    [uuidv7(), tenantId, hashToken(token), userId, expiresAt]);
+    `INSERT INTO connector_oauth_states (id, tenant_id, provider, state_hash, created_by, expires_at) VALUES ($1,$2,$3,$4,$5,$6)`,
+    [uuidv7(), tenantId, channel, hashToken(token), userId, expiresAt]);
   return { token, expiresAt: expiresAt.toISOString() };
+}
+export const mintTelegramPairing = (client: PoolClient, tenantId: string, userId: string) => mintPairing(client, "telegram", tenantId, userId);
+
+/** wa.me link that opens Deedwell's number with the pairing message prefilled. */
+export function whatsappPairingLink(displayOrDigits: string, token: string): string {
+  const digits = displayOrDigits.replace(/\D/g, "");
+  return `https://wa.me/${digits}?text=${encodeURIComponent(`Connect Deedwell DW-${token}`)}`;
+}
+
+async function pairWhatsApp(deps: Deps, adapter: MessagingChannelAdapter, m: InboundMessage, identity: Identity, token: string, log: Log): Promise<boolean> {
+  const { rows } = await deps.adminPool.query(
+    `UPDATE connector_oauth_states SET consumed_at = now()
+      WHERE state_hash = $1 AND provider = 'whatsapp' AND consumed_at IS NULL AND expires_at > now()
+      RETURNING tenant_id, created_by`,
+    [hashToken(token)]);
+  const st = rows[0];
+  if (!st) {
+    await sendSystem(deps, adapter, null, m.externalChatId, "That connection code has expired or was already used. Open Deedwell → Connectors → WhatsApp and press Connect again for a fresh one.", {});
+    return false;
+  }
+  const ps = await platformSender(deps.appPool);
+  const phone = m.externalUserId.replace(/\D/g, "");
+  const secret = sealed(randomBytes(24).toString("hex"));
+  const meta = {
+    platform: true, phoneNumberId: ps?.phoneNumberId ?? m.accountId, wabaId: ps?.wabaId ?? null, displayPhone: ps?.displayPhone ?? null, verifiedName: ps?.verifiedName ?? null,
+    ownerPhone: phone, allowedSenders: [{ phone, userId: st.created_by, label: m.displayName ?? "You" }], displayName: m.displayName,
+    connectMode: "scan", notifications: {}, lastActivityAt: new Date().toISOString(),
+  };
+  const upsert = await deps.adminPool.query(
+    `INSERT INTO connector_connections
+       (id, tenant_id, provider, connector_type, provider_account_id, provider_account_name, provider_account_handle,
+        encrypted_access_token, access_iv, access_tag, key_version, scopes, status, metadata, connected_by_user_id)
+     VALUES ($1,$2,'whatsapp','whatsapp_chat',$3,$4,$5,$6,$7,$8,$9,'{}','connected',$10,$11)
+     ON CONFLICT (tenant_id, provider, connector_type, provider_account_id) WHERE status <> 'disconnected'
+     DO UPDATE SET provider_account_name = EXCLUDED.provider_account_name, metadata = connector_connections.metadata || EXCLUDED.metadata, status = 'connected', status_detail = NULL
+     RETURNING *`,
+    [uuidv7(), st.tenant_id, phone, m.displayName ?? `+${phone}`, `+${phone}`, secret.ciphertext, secret.iv, secret.tag, secret.keyVersion, JSON.stringify(meta), st.created_by]);
+  const conn = upsert.rows[0] as ConnectionRow;
+  await deps.adminPool.query("UPDATE messaging_identities SET user_id = $2, active_connection_id = $3 WHERE id = $1", [identity.id, st.created_by, conn.id]);
+  await withContext(deps.appPool, { tenantId: st.tenant_id, userId: st.created_by }, async (client) => {
+    await ensureLinkedChannel(client, conn);
+    await audit(client, { tenantId: st.tenant_id, actorUser: st.created_by, action: "messaging.connected", entityType: "connector_connection", entityId: conn.id, metadata: { channel: "whatsapp", mode: "scan" } });
+  });
+  const org = await deps.adminPool.query("SELECT name FROM organizations WHERE id = $1", [st.tenant_id]);
+  await sendSystem(deps, adapter, conn, m.externalChatId,
+    `Connected to ${org.rows[0]?.name ?? "your Deedwell workspace"}. 🎉\n\nYou can now message your AI team here just like in Deedwell — research, content, website changes, tasks, or a status update. Try:\n• "What does my team need to get done today?"\n• "Research our three biggest competitors"\n\n/help lists the shortcuts.`, {});
+  log.info({ tenantId: st.tenant_id, connectionId: conn.id }, "whatsapp paired");
+  return true;
 }
 
 async function pairTelegram(deps: Deps, adapter: MessagingChannelAdapter, m: InboundMessage, identity: Identity, log: Log): Promise<boolean> {
@@ -234,7 +320,7 @@ export async function processInboundEvent(deps: Deps, ev: EventRow, log: Log = n
     return;
   }
   const adapter = await adapterFor(deps.appPool, conn.provider);
-  const target = targetOf(conn, ev.external_chat_id);
+  const target = await targetFor(deps, conn, ev.external_chat_id);
   const payload = ev.payload as { text?: string | null; command?: { name: string; args: string } | null; buttonPayload?: string | null; media?: { providerRef: string; mime: string | null; filename: string | null; sizeBytes: number | null; caption: string | null } | null; replyTo?: string | null; displayName?: string | null; raw?: Record<string, unknown> };
   const ids = { tenantId: conn.tenant_id, userId: ev.user_id };
 
@@ -347,7 +433,7 @@ async function runCommand(deps: Deps, client: PoolClient, args: { conn: Connecti
       const mine = await deps.adminPool.query(
         `SELECT c.id, o.name, c.tenant_id FROM connector_connections c JOIN organizations o ON o.id = c.tenant_id
           WHERE c.provider = $1 AND c.status <> 'disconnected' AND (c.connected_by_user_id = $2 OR c.metadata->'allowedSenders' @> $3::jsonb)
-            AND ($1 <> 'telegram' OR c.provider_account_id = $4)
+            AND (($1 = 'telegram' AND c.provider_account_id = $4) OR ($1 = 'whatsapp' AND (c.metadata->>'platform') = 'true' AND c.provider_account_id = $4) OR ($1 = 'whatsapp' AND (c.metadata->>'platform') IS DISTINCT FROM 'true'))
           ORDER BY o.name`,
         [conn.provider, ids.userId, JSON.stringify([{ userId: ids.userId }]), conn.provider_account_id]);
       const list = mine.rows as { id: string; name: string; tenant_id: string }[];
@@ -407,7 +493,7 @@ async function sendOne(deps: Deps, ev: EventRow): Promise<void> {
   const conn = ev.connection_id ? await loadConnection(deps.adminPool, ev.connection_id) : null;
   if (!conn) { await deps.adminPool.query("UPDATE messaging_events SET status = 'skipped', error = 'connection gone' WHERE id = $1", [ev.id]); return; }
   const adapter = await adapterFor(deps.appPool, conn.provider);
-  const target = targetOf(conn, ev.external_chat_id);
+  const target = await targetFor(deps, conn, ev.external_chat_id);
   const p = ev.payload as { text?: string; buttons?: OutboundMessage["buttons"] | null; fileId?: string | null; imageFileIds?: string[]; reason?: string; authorAgent?: string | null };
   const out: OutboundMessage = { text: p.text ?? "", buttons: p.buttons ?? undefined };
   const fileId = p.fileId ?? p.imageFileIds?.[0] ?? null;
@@ -503,7 +589,7 @@ export async function testConnection(deps: Deps, conn: ConnectionRow, userId: st
 
 export async function healthOf(deps: Deps, conn: ConnectionRow): Promise<Record<string, unknown>> {
   const adapter = await adapterFor(deps.appPool, conn.provider);
-  const h = await adapter.health(conn.provider === "whatsapp" ? targetOf(conn) : null).catch((err) => ({ ok: false, detail: (err as Error).message, facts: {} }));
+  const h = await adapter.health(conn.provider === "whatsapp" ? await targetFor(deps, conn) : null).catch((err) => ({ ok: false, detail: (err as Error).message, facts: {} }));
   await patchConnectionMeta(deps.adminPool, conn.id, { health: { ...h, checkedAt: new Date().toISOString() } });
   if (!h.ok && conn.status === "connected") await setConnectionStatus(deps.adminPool, conn.id, "needs_attention", h.detail).catch(() => undefined);
   if (h.ok && conn.status === "needs_attention") await setConnectionStatus(deps.adminPool, conn.id, "connected", null).catch(() => undefined);

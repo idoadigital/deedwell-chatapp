@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { Pool } from "pg";
-import { readPlatformCredentials, updateIntegrationConfiguration, TelegramAdapter, WhatsAppCloudAdapter, type MessagingChannel, type MessagingChannelAdapter } from "@deedwell/connectors";
+import { readPlatformCredentials, savePlatformCredentials, updateIntegrationConfiguration, currentEnvironment, TelegramAdapter, WhatsAppCloudAdapter, type MessagingChannel, type MessagingChannelAdapter } from "@deedwell/connectors";
 
 /**
  * Adapters are built from the platform-level integration rows (Platform
@@ -111,3 +111,46 @@ export async function whatsappAdapter(pool: Pool): Promise<WhatsAppCloudAdapter>
 export async function adapterFor(pool: Pool, channel: MessagingChannel): Promise<MessagingChannelAdapter> {
   return channel === "telegram" ? telegramAdapter(pool) : whatsappAdapter(pool);
 }
+
+/* ---- Deedwell's own WhatsApp number ------------------------------------------
+ * Customers do not bring a business number: they scan a QR that opens a chat
+ * with Deedwell's number and send a prefilled pairing message. The number,
+ * its business account and its permanent token are platform-level, stored
+ * as the `whatsapp_sender` integration (client_id = phone number id, secret
+ * = permanent token, configuration = waba id + display number). Env
+ * fallback: WHATSAPP_PHONE_NUMBER_ID / WHATSAPP_WABA_ID / WHATSAPP_ACCESS_TOKEN. */
+export interface PlatformSender { phoneNumberId: string; wabaId: string | null; token: string; displayPhone: string | null; verifiedName: string | null }
+
+let senderCache: { at: number; value: PlatformSender | null } | null = null;
+
+export async function platformSender(pool: Pool): Promise<PlatformSender | null> {
+  if (senderCache && Date.now() - senderCache.at < TTL) return senderCache.value;
+  let value: PlatformSender | null = null;
+  try {
+    const row = await readPlatformCredentials(pool, "whatsapp_sender");
+    if (row) value = { phoneNumberId: row.clientId, wabaId: (row.configuration.wabaId as string | undefined) ?? null, token: row.clientSecret, displayPhone: (row.configuration.displayPhone as string | undefined) ?? null, verifiedName: (row.configuration.verifiedName as string | undefined) ?? null };
+  } catch (err) {
+    console.warn(JSON.stringify({ at: "messaging_platform_sender_unreadable", error: (err as Error).message }));
+  }
+  if (!value && process.env.WHATSAPP_PHONE_NUMBER_ID && process.env.WHATSAPP_ACCESS_TOKEN) {
+    value = { phoneNumberId: process.env.WHATSAPP_PHONE_NUMBER_ID, wabaId: process.env.WHATSAPP_WABA_ID ?? null, token: process.env.WHATSAPP_ACCESS_TOKEN, displayPhone: process.env.WHATSAPP_DISPLAY_PHONE ?? null, verifiedName: null };
+  }
+  senderCache = { at: Date.now(), value };
+  return value;
+}
+
+/** Saves the platform number after proving it against Graph. */
+export async function savePlatformSender(pool: Pool, input: { phoneNumberId: string; wabaId: string | null; token: string; configuredBy: string }): Promise<PlatformSender> {
+  const wa = await whatsappAdapter(pool);
+  const probe = await wa.health({ channel: "whatsapp", chatId: "", accountId: input.phoneNumberId, accessToken: input.token });
+  if (!probe.ok) throw new Error(`WhatsApp rejected those details: ${probe.detail ?? "the phone number id or token is wrong"}`);
+  let wabaId = input.wabaId;
+  if (!wabaId) wabaId = (await wa.businessAccountsFor(input.token).catch(() => []))[0] ?? null;
+  if (wabaId) await wa.subscribeApp(input.token, wabaId).catch((err) => console.warn(JSON.stringify({ at: "whatsapp_subscribe_failed", error: (err as Error).message })));
+  await savePlatformCredentials(pool, { provider: "whatsapp_sender", environment: currentEnvironment(), clientId: input.phoneNumberId, clientSecret: input.token, configuredBy: input.configuredBy });
+  await updateIntegrationConfiguration(pool, "whatsapp_sender", currentEnvironment(), { wabaId, displayPhone: probe.facts.number ?? null, verifiedName: probe.facts.name ?? null, quality: probe.facts.quality ?? null, limit: probe.facts.limit ?? null });
+  senderCache = null;
+  return (await platformSender(pool))!;
+}
+
+export function invalidatePlatformSender(): void { senderCache = null; }

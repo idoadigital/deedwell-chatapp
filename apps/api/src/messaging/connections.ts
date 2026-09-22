@@ -22,11 +22,13 @@ export const DEFAULT_PREFS: NotificationPrefs = { agent: true, tasks: true, appr
 
 export interface ConnectionMeta {
   channelId?: string | null;            // the linked dm channel
+  /** True when the conversation runs on Deedwell's own WhatsApp number (scan-to-connect). */
+  platform?: boolean;
   notifications?: Partial<NotificationPrefs>;
   // Telegram
   telegramUserId?: string; username?: string | null; displayName?: string | null;
   // WhatsApp
-  wabaId?: string | null; displayPhone?: string | null; verifiedName?: string | null;
+  wabaId?: string | null; displayPhone?: string | null; verifiedName?: string | null; phoneNumberId?: string | null;
   /** Phones allowed to talk to this number's Deedwell, each mapped to a Deedwell user. */
   allowedSenders?: { phone: string; userId: string; label?: string | null }[];
   ownerPhone?: string | null;
@@ -49,7 +51,12 @@ export function prefsOf(meta: ConnectionMeta | null | undefined): NotificationPr
   return { ...DEFAULT_PREFS, ...(meta?.notifications ?? {}) };
 }
 
-export function targetOf(row: ConnectionRow, chatId?: string | null): ConnectionTarget {
+/** Where to send for a connection. Platform-number WhatsApp connections carry
+ *  no token of their own; pass the platform sender for those. */
+export function targetOf(row: ConnectionRow, chatId?: string | null, platform?: { phoneNumberId: string; token: string } | null): ConnectionTarget {
+  if (row.provider === "whatsapp" && row.metadata.platform) {
+    return { channel: "whatsapp", chatId: chatId ?? row.metadata.ownerPhone ?? row.provider_account_id, accountId: platform?.phoneNumberId ?? row.metadata.phoneNumberId ?? null, accessToken: platform?.token ?? null };
+  }
   const token = row.provider === "whatsapp"
     ? decryptSecret({ ciphertext: row.encrypted_access_token, iv: row.access_iv, tag: row.access_tag, keyVersion: row.key_version }).toString("utf8")
     : null;
@@ -131,7 +138,8 @@ export function connectionView(row: ConnectionRow, extra: Record<string, unknown
   return {
     id: row.id, channel: row.provider, status: row.status, statusDetail: row.status_detail,
     accountName: row.provider_account_name, accountHandle: row.provider_account_handle,
-    accountId: row.provider === "whatsapp" ? row.provider_account_id : null,
+    accountId: row.provider === "whatsapp" ? (m.platform ? m.phoneNumberId ?? null : row.provider_account_id) : null,
+    platform: Boolean(m.platform),
     displayPhone: m.displayPhone ?? null, verifiedName: m.verifiedName ?? null, wabaId: m.wabaId ?? null,
     connectMode: m.connectMode ?? null,
     channelId: m.channelId ?? null,
