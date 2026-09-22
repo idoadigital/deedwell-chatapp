@@ -5,6 +5,7 @@ import { describeCron, isValidCron, nextCronRun } from "@deedwell/tasks-domain";
 import type { Deps } from "../bootstrap.js";
 import { TEAMMATES, teammateByKey } from "../teammates.js";
 import { agentName as displayName, answerTaskQuestion, createTask, decideTaskApproval, type TaskView } from "./store.js";
+import { relayMessage } from "../messaging/relay.js";
 
 /**
  * Tasks ⇄ chat. Two directions:
@@ -39,6 +40,7 @@ export async function postAgentMessage(deps: Deps, client: PoolClient, args: {
      VALUES ($1,$2,$3,'agent',NULL,$4,$5,$6)`,
     [id, args.tenantId, args.channelId, args.agentKey, args.body, JSON.stringify(args.metadata ?? {})]
   );
+  await relayMessage(client, { id, tenantId: args.tenantId, channelId: args.channelId, authorKind: "agent", authorAgent: args.agentKey, body: args.body, metadata: args.metadata ?? {} });
   deps.engine.events.emit("event", { type: "message_created", tenantId: args.tenantId, channelId: args.channelId, agentReplies: 1 } as never);
   return id;
 }

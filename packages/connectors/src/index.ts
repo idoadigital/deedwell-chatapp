@@ -28,3 +28,4 @@ export {
   type GoogleConnectionSummary, type GoogleAccess, type GoogleConnectionErrorCode,
 } from "./google-connection.js";
 export { searchGmail, getGmailMessage, GmailError, type GmailMessage } from "./gmail.js";
+export * from "./messaging/index.js";

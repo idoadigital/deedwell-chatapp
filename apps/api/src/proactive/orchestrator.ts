@@ -181,7 +181,7 @@ export async function deliverCandidate(deps: Deps, client: PoolClient, c: Candid
   const message = await insertMessage(client, {
     tenantId: c.tenant_id, channelId, authorKind: "agent", authorAgent: c.agent_key, body: composed.message,
     metadata: {
-      proactive: true, messageOrigin: "proactive_agent", agentId: c.agent_key, intentId: c.intent_id ?? null, goalId: c.goal_id ?? null,
+      proactive: true, notifyExternal: notify, userId: c.user_id, messageOrigin: "proactive_agent", agentId: c.agent_key, intentId: c.intent_id ?? null, goalId: c.goal_id ?? null,
       triggerType: c.type, orchestrationDecisionId: c.id, candidateId: c.id,
       ...(decision.intent?.run_id ? { runId: decision.intent.run_id } : {}),
       ...(extras.length ? { combinedCandidateIds: extras.map((e) => e.id) } : {}),

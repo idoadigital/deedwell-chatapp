@@ -18,6 +18,7 @@ import { registerWebsiteRoutes } from "./routes-website.js";
 import { registerWebsiteStudioRoutes } from "./routes-website-studio.js";
 import { registerContentRoutes, registerContentPublishingRoutes, registerDesignShareRoutes } from "./routes-content.js";
 import { registerConnectorRoutes } from "./routes-connectors.js";
+import { registerMessagingRoutes } from "./messaging/routes.js";
 import { registerAdminIntegrationRoutes } from "./routes-admin-integrations.js";
 import { registerDataDeletionRoutes } from "./routes-data-deletion.js";
 import { registerPublicRoutes } from "./routes-public.js";
@@ -137,7 +138,10 @@ export function buildApp(deps: Deps): FastifyInstance {
       // means (single-use state / HMAC signature) rather than by a cookie.
       // Tenant connector routes live under /v1/orgs/ and are unaffected.
       url.startsWith("/v1/connectors/") ||
-      url.startsWith("/v1/google-ads/manager/callback")
+      url.startsWith("/v1/google-ads/manager/callback") ||
+      // WhatsApp / Telegram webhooks: authenticated by Meta's HMAC signature
+      // and Telegram's secret token respectively (see messaging/routes.ts).
+      url.startsWith("/v1/integrations/")
     ) return;
 
     const header = req.headers.authorization;
@@ -248,6 +252,7 @@ export function buildApp(deps: Deps): FastifyInstance {
   registerContentPublishingRoutes(app, ctx);
   registerDesignShareRoutes(app, ctx);
   registerConnectorRoutes(app, ctx);
+  registerMessagingRoutes(app, ctx);
   registerAdminIntegrationRoutes(app, ctx);
   registerDataDeletionRoutes(app, ctx);
   registerPublicRoutes(app, ctx);

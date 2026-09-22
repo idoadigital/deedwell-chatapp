@@ -5,6 +5,7 @@ import {
   updateIntegrationConfiguration, type IntegrationEnvironment,
 } from "@deedwell/connectors";
 import { HttpError, type AppContext } from "./app.js";
+import { invalidateAdapters, telegramAdapter, webhookUrl, whatsappAdapter } from "./messaging/adapters.js";
 
 const API_ORIGIN = process.env.API_ORIGIN ?? "https://coworkers.deedwell.org";
 const envOf = (req: unknown): IntegrationEnvironment => {
@@ -15,6 +16,8 @@ const envOf = (req: unknown): IntegrationEnvironment => {
 /** Platform-level OAuth applications. requirePlatformAdmin on every route:
  *  a tenant administrator must never see a client secret, and these rows have
  *  no tenant_id to scope them by. */
+const INTEGRATION_NAMES = [...PROVIDER_NAMES, "telegram", "whatsapp"];
+
 export function registerAdminIntegrationRoutes(app: FastifyInstance, ctx: AppContext): void {
   const { deps } = ctx;
 
@@ -29,14 +32,19 @@ export function registerAdminIntegrationRoutes(app: FastifyInstance, ctx: AppCon
       ),
       // Meta requires this for App Review; Google does not use it.
       dataDeletionUrls: { meta: `${API_ORIGIN}/v1/connectors/meta/data-deletion` },
-      integrations: await listPlatformIntegrations(deps.appPool, PROVIDER_NAMES, environment),
+      integrations: await listPlatformIntegrations(deps.appPool, INTEGRATION_NAMES, environment),
+      // Messaging providers are webhook-driven, not OAuth: what Meta's and
+      // Telegram's consoles need is the callback URL (and, for Meta, the
+      // verify token, which is generated here on first save).
+      webhookUrls: { telegram: webhookUrl("telegram"), whatsapp: webhookUrl("whatsapp") },
+      whatsappVerifyToken: (await readPlatformCredentials(deps.appPool, "whatsapp", environment))?.configuration.verifyToken ?? null,
     };
   });
 
   app.post("/v1/admin/integrations/:provider", async (req, reply) => {
     ctx.requirePlatformAdmin(req);
     const { provider } = req.params as { provider: string };
-    if (!PROVIDER_NAMES.includes(provider)) throw new HttpError(404, "Unknown provider");
+    if (!INTEGRATION_NAMES.includes(provider)) throw new HttpError(404, "Unknown provider");
     const { clientId, clientSecret, environment } = req.body as {
       clientId?: string; clientSecret?: string; environment?: IntegrationEnvironment;
     };
@@ -50,6 +58,7 @@ export function registerAdminIntegrationRoutes(app: FastifyInstance, ctx: AppCon
     });
     // Audit without the secret — not even its length.
     req.log.info({ at: "integration_configured", provider, environment: env, by: req.userId });
+    invalidateAdapters();
     return reply.status(201).send({ ok: true });
   });
 
@@ -66,6 +75,37 @@ export function registerAdminIntegrationRoutes(app: FastifyInstance, ctx: AppCon
       return { ok: false, detail: "No credentials saved yet." };
     }
     const problems: string[] = [];
+    // Messaging providers: talk to the provider and register the webhook —
+    // that is the validation, and it is what makes them work.
+    if (name === "telegram" || name === "whatsapp") {
+      invalidateAdapters();
+      let detail: string | null = null;
+      try {
+        if (name === "telegram") {
+          const tg = await telegramAdapter(deps.appPool);
+          const me = await tg.getMe();
+          if (!me.username) problems.push("The bot has no username — set one in @BotFather.");
+          if (me.username && me.username.toLowerCase() !== credentials.clientId.replace(/^@/, "").toLowerCase()) {
+            await updateIntegrationConfiguration(deps.appPool, "telegram", environment, { botUsername: me.username });
+          }
+          await tg.setWebhook(webhookUrl("telegram"));
+          const h = await tg.health(null);
+          if (!h.ok) problems.push(h.detail ?? "Webhook registration did not stick.");
+          detail = `Bot @${me.username ?? "?"}, webhook ${webhookUrl("telegram")}`;
+        } else {
+          if (!/^\d{8,}$/.test(credentials.clientId)) problems.push("That does not look like a Meta App ID — it should be numeric.");
+          const res = await fetch(`https://graph.facebook.com/${credentials.clientId}?access_token=${encodeURIComponent(`${credentials.clientId}|${credentials.clientSecret}`)}&fields=name`, { signal: AbortSignal.timeout(15_000) });
+          const data = (await res.json().catch(() => null)) as { name?: string; error?: { message?: string } } | null;
+          if (!res.ok || !data?.name) problems.push(`Meta rejected the App ID / secret: ${data?.error?.message ?? `HTTP ${res.status}`}`);
+          else detail = `App "${data.name}". Webhook: ${webhookUrl("whatsapp")}`;
+          const wa = await whatsappAdapter(deps.appPool);
+          if (!wa.isConfigured()) problems.push("Credentials are not readable by the server.");
+        }
+      } catch (err) { problems.push((err as Error).message); }
+      const ok = problems.length === 0;
+      await markIntegrationValidated(deps.appPool, name, environment, ok, ok ? (detail ?? undefined) : problems.join(" "));
+      return { ok, detail: ok ? detail : problems.join(" ") };
+    }
     if (name === "meta" && !/^\d{8,}$/.test(credentials.clientId)) {
       problems.push("That does not look like a Meta App ID — it should be numeric.");
     }

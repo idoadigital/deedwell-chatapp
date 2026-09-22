@@ -264,7 +264,7 @@ export function registerChatRoutes(app: FastifyInstance, ctx: AppContext): void 
     const { rows } = await ctx.inOrg(req, async (client) => {
       await ensureChannels(client, req.orgId!);
       return client.query(
-        `SELECT c.id, c.key, c.name, c.kind, c.project_id, c.agent_key, c.starred,
+        `SELECT c.id, c.key, c.name, c.kind, c.project_id, c.agent_key, c.starred, c.source, c.external_connection_id,
                 p.type AS project_type,
                 (SELECT MAX(created_at) FROM messages m WHERE m.channel_id = c.id) AS last_message_at
          FROM channels c LEFT JOIN projects p ON p.id = c.project_id

@@ -15,6 +15,7 @@ import { resolveInfoRequest } from "./fact-fields.js";
 import { gcpRoutesChannel, handleGcpTurn } from "./gcp/turns.js";
 import { onAgentClarify, onUserMessage } from "./proactive/candidates.js";
 import { decideTaskFromChat, handleTaskConversation, startTaskDraft } from "./tasks/chat.js";
+import { relayMessage } from "./messaging/relay.js";
 
 /**
  * The Executive Assistant: conversational entry point (BRD §4.1). It maps a
@@ -231,6 +232,14 @@ export async function insertMessage(client: PoolClient, args: PostArgs): Promise
     [id, args.tenantId, args.channelId, args.authorKind, args.authorUser ?? null,
      args.authorAgent ?? null, args.body, JSON.stringify(args.metadata ?? {})]
   );
+  // WhatsApp / Telegram: mirror into a linked conversation, or push as a
+  // notification. Queued in this transaction, sent after commit.
+  if (args.authorKind !== "user") {
+    await relayMessage(client, {
+      id, tenantId: args.tenantId, channelId: args.channelId, authorKind: args.authorKind,
+      authorAgent: args.authorAgent ?? null, body: args.body, metadata: args.metadata ?? {},
+    });
+  }
   return {
     id, channel_id: args.channelId, author_kind: args.authorKind,
     author_user: args.authorUser ?? null, author_agent: args.authorAgent ?? null,

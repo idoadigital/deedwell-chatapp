@@ -90,6 +90,15 @@ async function main(): Promise<void> {
     for (const signal of ["SIGTERM", "SIGINT"] as const) process.once(signal, () => stopInbox());
   }
 
+  // WhatsApp / Telegram: processes queued inbound messages through the agent
+  // runtime and delivers queued replies. MESSAGING_WORKER=off disables it.
+  if (process.env.MESSAGING_WORKER !== "off") {
+    const { startMessagingWorker } = await import("./messaging/gateway.js");
+    const stopMessaging = startMessagingWorker(deps, { log: app.log });
+    abort.signal.addEventListener("abort", () => stopMessaging());
+    for (const signal of ["SIGTERM", "SIGINT"] as const) process.once(signal, () => stopMessaging());
+  }
+
   // Custom domains: re-checks pending domains (DNS → Google ownership →
   // Cloud Run mapping → certificate) so customers end up connected without
   // pressing "Check". SITE_DOMAINS_WORKER=off disables it.
