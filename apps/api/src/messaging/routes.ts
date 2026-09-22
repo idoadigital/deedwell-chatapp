@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { audit, uuidv7 } from "@deedwell/database";
 import { HttpError, type AppContext } from "../app.js";
-import { telegramAdapter, whatsappAdapter, webhookUrl, APP_ORIGIN, platformSender, savePlatformSender } from "./adapters.js";
+import { telegramAdapter, whatsappAdapter, webhookUrl, APP_ORIGIN, platformSender, savePlatformSender, registerPlatformSender, isUnregistered } from "./adapters.js";
 import {
   connectionView, ensureLinkedChannel, loadConnection, prefsOf, sealed, setConnectionStatus, type ConnectionRow,
 } from "./connections.js";
@@ -110,10 +110,14 @@ export function registerMessagingRoutes(app: FastifyInstance, ctx: AppContext): 
     if (phone) {
       try { await inviteWhatsApp(deps, req.orgId!, req.userId!, phone); invited = true; }
       catch (err) {
+        // Nothing reached the phone, so nothing may pair against this attempt.
+        await ctx.inOrg(req, (client) => client.query("DELETE FROM connector_oauth_states WHERE state_hash = $1 AND provider = 'whatsapp'", [hashToken(token)])).catch(() => undefined);
         const msg = (err as Error).message;
-        throw new HttpError(400, /131030|not in allowed list|recipient/i.test(msg)
-          ? `WhatsApp refused to message ${phone}: while Deedwell is on Meta's test number, only phone numbers added as test recipients in the Meta console can receive messages.`
-          : `Could not message ${phone}: ${msg}`);
+        throw new HttpError(400, isUnregistered(err)
+          ? "Deedwell's WhatsApp number isn't registered with Meta yet, so it can't send. A platform admin can fix this in Platform Admin → Integrations → WhatsApp → Deedwell's number → Register number."
+          : /131030|not in allowed list|recipient/i.test(msg)
+            ? `WhatsApp refused to message ${phone}: while Deedwell is on Meta's test number, only phone numbers added as test recipients in the Meta console can receive messages.`
+            : `Could not message ${phone}: ${msg}`);
       }
     }
     // Meta test numbers (555…) are not real WhatsApp accounts: wa.me cannot open them, so "Text me" is the way in.
@@ -303,7 +307,7 @@ export function registerMessagingRoutes(app: FastifyInstance, ctx: AppContext): 
   app.get("/v1/admin/messaging/whatsapp/sender", async (req) => {
     ctx.requirePlatformAdmin(req);
     const s = await platformSender(deps.appPool);
-    return { configured: Boolean(s), phoneNumberId: s?.phoneNumberId ?? null, wabaId: s?.wabaId ?? null, displayPhone: s?.displayPhone ?? null, verifiedName: s?.verifiedName ?? null, tokenHint: s ? `••••${s.token.slice(-4)}` : null };
+    return { configured: Boolean(s), phoneNumberId: s?.phoneNumberId ?? null, wabaId: s?.wabaId ?? null, displayPhone: s?.displayPhone ?? null, verifiedName: s?.verifiedName ?? null, registeredAt: s?.registeredAt ?? null, tokenHint: s ? `••••${s.token.slice(-4)}` : null };
   });
   app.post("/v1/admin/messaging/whatsapp/sender", async (req) => {
     ctx.requirePlatformAdmin(req);
@@ -313,6 +317,17 @@ export function registerMessagingRoutes(app: FastifyInstance, ctx: AppContext): 
       req.log.info({ at: "whatsapp_sender_configured", phoneNumberId: s.phoneNumberId, by: req.userId });
       return { ok: true, phoneNumberId: s.phoneNumberId, wabaId: s.wabaId, displayPhone: s.displayPhone, verifiedName: s.verifiedName, tokenHint: `••••${s.token.slice(-4)}` };
     } catch (err) { throw new HttpError(400, (err as Error).message); }
+  });
+
+  /** Admin: register Deedwell's number on the Cloud API (clears Meta 133010). PIN used once, never stored or logged. */
+  app.post("/v1/admin/messaging/whatsapp/sender/register", async (req) => {
+    ctx.requirePlatformAdmin(req);
+    const { pin } = z.object({ pin: z.string().regex(/^\d{6}$/, "The two-step verification PIN is 6 digits.") }).parse(req.body);
+    try {
+      const s = await registerPlatformSender(deps.appPool, pin);
+      req.log.info({ at: "whatsapp_sender_registered", phoneNumberId: s.phoneNumberId, by: req.userId });
+      return { ok: true, registeredAt: s.registeredAt };
+    } catch (err) { throw new HttpError(400, `Meta did not register the number: ${(err as Error).message}`); }
   });
 
   /** Admin: re-drive stuck outbound deliveries after a provider incident. */

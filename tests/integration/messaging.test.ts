@@ -17,7 +17,7 @@ let token: string;
 let orgId: string;
 let userId: string;
 const tg: { calls: Array<{ method: string; body: any }> } = { calls: [] };
-const wa: { calls: Array<{ path: string; body: any }>; windowClosed: boolean } = { calls: [], windowClosed: false };
+const wa: { calls: Array<{ path: string; body: any }>; windowClosed: boolean; registered: boolean } = { calls: [], windowClosed: false, registered: false };
 let tgServer: http.Server; let waServer: http.Server;
 
 const readJson = async (req: http.IncomingMessage) => { const chunks: Buffer[] = []; for await (const c of req) chunks.push(c as Buffer); const raw = Buffer.concat(chunks).toString(); try { return JSON.parse(raw); } catch { return { raw: raw.length }; } };
@@ -43,8 +43,10 @@ beforeAll(async () => {
     if (path === "PN-1" && url.searchParams.has("fields")) return json({ display_phone_number: "+1 555-000-1111", verified_name: "Hope Forward", quality_rating: "GREEN" });
     if (path === "PN-DW" && url.searchParams.has("fields")) return json({ display_phone_number: "+1 555-187-2077", verified_name: "Deedwell", quality_rating: "GREEN" });
     if (path === "WABA-DW/subscribed_apps") return json({ success: true });
+    if (path === "PN-DW/register") { if (body.pin === "123456") { wa.registered = true; return json({ success: true }); } return json({ error: { message: "Invalid PIN", code: 100 } }, 400); }
     if (path === "PN-DW/messages") {
       if (body.status === "read") return json({ success: true });
+      if (!wa.registered) return json({ error: { message: "Account not registered", code: 133010 } }, 400);
       return json({ messages: [{ id: `wamid.dw.${wa.calls.length}` }] });
     }
     if (path === "PN-1/messages") {
@@ -248,6 +250,16 @@ describe("WhatsApp", () => {
     // Platform admin registers Deedwell's own number (proven against Graph, token never read back).
     const saved = await api(env.app, "POST", "/v1/admin/messaging/whatsapp/sender", { token, body: { phoneNumberId: "PN-DW", wabaId: "WABA-DW", accessToken: "BIZ-TOKEN-platform-xxxxxxxxxxxx" } });
     expect(saved.status).toBe(200); expect(saved.body.displayPhone).toBe("+1 555-187-2077"); expect(JSON.stringify(saved.body)).not.toMatch(/BIZ-TOKEN-platform/);
+    // The number exists but is not registered on the Cloud API: Meta answers 133010 and the customer gets a pointer to the admin, not a raw code.
+    const unreg = await api(env.app, "POST", `/v1/orgs/${orgId}/messaging/whatsapp/pairing`, { token, body: { phone: "+14695141427" } });
+    expect(unreg.status).toBe(400); expect(unreg.body.error ?? unreg.body.message).toMatch(/isn't registered with Meta yet/);
+    expect((await api(env.app, "GET", "/v1/admin/messaging/whatsapp/sender", { token })).body.registeredAt).toBeNull();
+    const badPin = await api(env.app, "POST", "/v1/admin/messaging/whatsapp/sender/register", { token, body: { pin: "000000" } });
+    expect(badPin.status).toBe(400); expect(badPin.body.error ?? badPin.body.message).toMatch(/Invalid PIN/);
+    const reg = await api(env.app, "POST", "/v1/admin/messaging/whatsapp/sender/register", { token, body: { pin: "123456" } });
+    expect(reg.status).toBe(200); expect(reg.body.registeredAt).toBeTruthy();
+    expect(wa.calls.filter((c) => c.path === "PN-DW/register")).toHaveLength(2);
+    expect((await api(env.app, "GET", "/v1/admin/messaging/whatsapp/sender", { token })).body.registeredAt).toBeTruthy();
     const cat = (await api(env.app, "GET", `/v1/orgs/${orgId}/messaging`, { token })).body;
     expect(cat.catalogue.find((c: any) => c.channel === "whatsapp").scan).toMatchObject({ displayPhone: "+1 555-187-2077" });
     // Customer: Connect → QR/link.
@@ -282,7 +294,7 @@ describe("WhatsApp", () => {
     expect(pairing).toMatchObject({ invited: true, phone: "14695141427", scanWorks: false });
     // Exactly one business-initiated template went to that phone from Deedwell's number.
     const templates = wa.calls.slice(before).filter((c) => c.path === "PN-DW/messages" && c.body.type === "template");
-    expect(templates).toHaveLength(1); expect(templates[0].body).toMatchObject({ to: "14695141427", template: { name: "hello_world" } });
+    expect(templates).toHaveLength(1); expect(templates[0]!.body).toMatchObject({ to: "14695141427", template: { name: "hello_world" } });
     // A different phone replying does not consume the invite.
     const dwSent = () => wa.calls.filter((c) => c.path === "PN-DW/messages" && c.body.type).map((c) => c.body.text?.body ?? `[${c.body.type}]`);
     await post({ metadata: { phone_number_id: "PN-DW" }, contacts: [{ wa_id: "15550001234", profile: { name: "Nobody" } }], messages: [{ id: `wamid.in.${++n}`, from: "15550001234", timestamp: "1", type: "text", text: { body: "hi" } }] });

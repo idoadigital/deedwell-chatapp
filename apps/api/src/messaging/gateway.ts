@@ -9,7 +9,7 @@ import { handleUserMessage, insertMessage } from "../assistant.js";
 import { mentionedTeammate } from "../routes-chat.js";
 import { TEAMMATES } from "../teammates.js";
 import { listTasks } from "../tasks/store.js";
-import { adapterFor, APP_ORIGIN, platformSender } from "./adapters.js";
+import { adapterFor, APP_ORIGIN, platformSender, withRegistration } from "./adapters.js";
 import {
   CHANNEL_LABEL, connectionView, ensureLinkedChannel, loadConnection, connectionForPhoneNumberId, patchConnectionMeta, sealed, setConnectionStatus, targetOf,
   type ConnectionRow,
@@ -70,7 +70,7 @@ async function sendSystem(deps: Deps, adapter: MessagingChannelAdapter, conn: Co
     if (ps) target = { channel: "whatsapp", chatId, accountId: ps.phoneNumberId, accessToken: ps.token };
   }
   let externalId: string | null = null; let error: string | null = null;
-  try { externalId = (await adapter.send(target, { text, buttons: opts.buttons })).externalMessageId; } catch (err) { error = (err as Error).message; }
+  try { externalId = (await withRegistration(deps.appPool, () => adapter.send(target, { text, buttons: opts.buttons }))).externalMessageId; } catch (err) { error = (err as Error).message; }
   const tenantId = opts.tenantId ?? conn?.tenant_id ?? null;
   if (tenantId) {
     await deps.adminPool.query(
@@ -235,7 +235,7 @@ export async function inviteWhatsApp(deps: Deps, tenantId: string, userId: strin
   const name = process.env.WHATSAPP_PAIRING_TEMPLATE ?? "hello_world";
   const lang = process.env.WHATSAPP_PAIRING_TEMPLATE_LANG ?? "en_US";
   let externalId: string | null = null; let error: string | null = null;
-  try { externalId = (await wa.sendTemplate(target, name, lang)).externalMessageId; } catch (err) { error = (err as Error).message; }
+  try { externalId = (await withRegistration(deps.appPool, () => wa.sendTemplate(target, name, lang))).externalMessageId; } catch (err) { error = (err as Error).message; }
   await deps.adminPool.query(
     `INSERT INTO messaging_events (id, tenant_id, connection_id, channel, direction, kind, external_message_id, external_chat_id, user_id, status, payload, error, sent_at)
      VALUES ($1,$2,NULL,'whatsapp','out','template',$3,$4,$5,$6,$7,$8, CASE WHEN $8::text IS NULL THEN now() ELSE NULL END)`,
@@ -539,7 +539,7 @@ async function sendOne(deps: Deps, ev: EventRow): Promise<void> {
     }
   }
   // Agent messages that are just a link to something ("Open the artifact panel") still read fine as text.
-  const res = await adapter.send(target, out);
+  const res = await withRegistration(deps.appPool, () => adapter.send(target, out));
   await deps.adminPool.query("UPDATE messaging_events SET status = 'sent', sent_at = now(), external_message_id = $2, error = NULL WHERE id = $1", [ev.id, res.externalMessageId]);
   await meter(deps.adminPool, ev.tenant_id, conn.provider, "out", conn.id);
   await patchConnectionMeta(deps.adminPool, conn.id, { lastActivityAt: new Date().toISOString(), lastError: null });

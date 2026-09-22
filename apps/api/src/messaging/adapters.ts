@@ -119,7 +119,7 @@ export async function adapterFor(pool: Pool, channel: MessagingChannel): Promise
  * as the `whatsapp_sender` integration (client_id = phone number id, secret
  * = permanent token, configuration = waba id + display number). Env
  * fallback: WHATSAPP_PHONE_NUMBER_ID / WHATSAPP_WABA_ID / WHATSAPP_ACCESS_TOKEN. */
-export interface PlatformSender { phoneNumberId: string; wabaId: string | null; token: string; displayPhone: string | null; verifiedName: string | null }
+export interface PlatformSender { phoneNumberId: string; wabaId: string | null; token: string; displayPhone: string | null; verifiedName: string | null; registeredAt: string | null }
 
 let senderCache: { at: number; value: PlatformSender | null } | null = null;
 
@@ -128,12 +128,12 @@ export async function platformSender(pool: Pool): Promise<PlatformSender | null>
   let value: PlatformSender | null = null;
   try {
     const row = await readPlatformCredentials(pool, "whatsapp_sender");
-    if (row) value = { phoneNumberId: row.clientId, wabaId: (row.configuration.wabaId as string | undefined) ?? null, token: row.clientSecret, displayPhone: (row.configuration.displayPhone as string | undefined) ?? null, verifiedName: (row.configuration.verifiedName as string | undefined) ?? null };
+    if (row) value = { phoneNumberId: row.clientId, wabaId: (row.configuration.wabaId as string | undefined) ?? null, token: row.clientSecret, displayPhone: (row.configuration.displayPhone as string | undefined) ?? null, verifiedName: (row.configuration.verifiedName as string | undefined) ?? null, registeredAt: (row.configuration.registeredAt as string | undefined) ?? null };
   } catch (err) {
     console.warn(JSON.stringify({ at: "messaging_platform_sender_unreadable", error: (err as Error).message }));
   }
   if (!value && process.env.WHATSAPP_PHONE_NUMBER_ID && process.env.WHATSAPP_ACCESS_TOKEN) {
-    value = { phoneNumberId: process.env.WHATSAPP_PHONE_NUMBER_ID, wabaId: process.env.WHATSAPP_WABA_ID ?? null, token: process.env.WHATSAPP_ACCESS_TOKEN, displayPhone: process.env.WHATSAPP_DISPLAY_PHONE ?? null, verifiedName: null };
+    value = { phoneNumberId: process.env.WHATSAPP_PHONE_NUMBER_ID, wabaId: process.env.WHATSAPP_WABA_ID ?? null, token: process.env.WHATSAPP_ACCESS_TOKEN, displayPhone: process.env.WHATSAPP_DISPLAY_PHONE ?? null, verifiedName: null, registeredAt: null };
   }
   senderCache = { at: Date.now(), value };
   return value;
@@ -151,6 +151,38 @@ export async function savePlatformSender(pool: Pool, input: { phoneNumberId: str
   await updateIntegrationConfiguration(pool, "whatsapp_sender", currentEnvironment(), { wabaId, displayPhone: probe.facts.number ?? null, verifiedName: probe.facts.name ?? null, quality: probe.facts.quality ?? null, limit: probe.facts.limit ?? null });
   senderCache = null;
   return (await platformSender(pool))!;
+}
+
+/** Meta's "Account not registered" — the number exists but has never been
+ *  registered on the Cloud API. */
+export const isUnregistered = (err: unknown) => /133010|not registered/i.test((err as Error)?.message ?? "");
+
+/** Registers Deedwell's number with its two-step PIN and remembers when. The
+ *  PIN is used once and never stored; WHATSAPP_REGISTRATION_PIN lets sends
+ *  self-heal if Meta drops the registration. */
+export async function registerPlatformSender(pool: Pool, pin: string): Promise<PlatformSender> {
+  const s = await platformSender(pool);
+  if (!s) throw new Error("Deedwell's WhatsApp number is not configured");
+  if (!/^\d{6}$/.test(pin)) throw new Error("The two-step verification PIN is 6 digits.");
+  const wa = await whatsappAdapter(pool);
+  await wa.register(s.token, s.phoneNumberId, pin);
+  if (!(await readPlatformCredentials(pool, "whatsapp_sender").catch(() => null))) return { ...s, registeredAt: new Date().toISOString() }; // env-configured sender: nothing to persist
+  await updateIntegrationConfiguration(pool, "whatsapp_sender", currentEnvironment(), { registeredAt: new Date().toISOString() });
+  senderCache = null;
+  return (await platformSender(pool))!;
+}
+
+/** Runs a send; if Meta says the sender is unregistered and a PIN is in the
+ *  environment, registers and retries once. */
+export async function withRegistration<T>(pool: Pool, send: () => Promise<T>): Promise<T> {
+  try { return await send(); }
+  catch (err) {
+    const pin = process.env.WHATSAPP_REGISTRATION_PIN;
+    if (!isUnregistered(err) || !pin) throw err;
+    console.warn(JSON.stringify({ at: "whatsapp_sender_reregister", reason: (err as Error).message }));
+    await registerPlatformSender(pool, pin);
+    return send();
+  }
 }
 
 export function invalidatePlatformSender(): void { senderCache = null; }

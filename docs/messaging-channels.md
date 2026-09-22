@@ -101,6 +101,13 @@ configuration) and confirms it. Customers then see "Connect Telegram" on Connect
 App Secret → Validate. In the Meta app, WhatsApp → Configuration → Webhook: callback URL and verify token as shown
 in the wizard, subscribe to `messages`. Optional: an Embedded Signup configuration id in the checklist enables
 "Continue with Meta" for customers; without it they paste a phone number id + permanent system-user token.
+**Deedwell's own number (scan / Text me):** Platform Admin → Integrations → WhatsApp → step 4: phone number id, WABA id,
+permanent token. Then **Register number** with the number's 6-digit two-step PIN — until that has run once, Meta answers
+every send with 133010 "Account not registered". Set `WHATSAPP_REGISTRATION_PIN` so sends re-register themselves if Meta
+drops the registration. Meta test numbers (+1 555…) can't be opened from a QR and only message test recipients; the
+connect dialog defaults to "Text me" (Deedwell sends `WHATSAPP_PAIRING_TEMPLATE`, default `hello_world`, and the
+reply completes a phone-bound pairing).
+
 Customers add their own phone as the first allowed sender; teammates are added under Manage → Who can message,
 each mapped to a Deedwell user.
 

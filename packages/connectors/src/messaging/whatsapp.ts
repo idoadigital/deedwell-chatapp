@@ -216,6 +216,13 @@ export class WhatsAppCloudAdapter implements MessagingChannelAdapter {
   }
 
   /** Subscribes the app to the WABA's webhooks (needed once per business account). */
+  /** Registers the number on the Cloud API (Meta error 133010 "Account not
+   *  registered" until this has run once). `pin` is the number's 6-digit
+   *  two-step verification PIN; a fresh number takes whatever PIN is given. */
+  async register(token: string, phoneNumberId: string, pin: string): Promise<void> {
+    await this.graph(token, `${phoneNumberId}/register`, { method: "POST", body: { messaging_product: "whatsapp", pin } });
+  }
+
   async subscribeApp(token: string, wabaId: string): Promise<void> {
     await this.graph(token, `${wabaId}/subscribed_apps`, { method: "POST", body: {} });
   }
